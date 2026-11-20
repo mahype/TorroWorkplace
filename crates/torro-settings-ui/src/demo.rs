@@ -1389,6 +1389,10 @@ impl Backend for Demo {
             }
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::VoiceTimings => Response::VoiceTimings { timings: voice_timings() },
+            // Issue #838: an OpenAI account with its two engines, an xAI account without a key.
+            Request::ListLiveEngines => {
+                Response::LiveEngines { current: self.settings.voice.live_engine.clone(), engines: live_engines() }
+            }
             Request::SpeechStatus => Response::Speech { speech: speech_status(self.settings.voice.speech_provider) },
             // Issue #762: the models follow the buttons, nothing is downloaded.
             Request::ListVoiceModels
@@ -1704,6 +1708,35 @@ pub fn demo_voice_models(models: &mut [torro_ipc::VoiceModel], request: &Request
             model.completed = 0;
         }
     }
+}
+
+/// The conversation engines of the demo (issue #838): OpenAI Realtime and its mini, Grok Voice without a key.
+fn live_engines() -> Vec<torro_ipc::LiveEngineOption> {
+    use torro_core::ai::AiProvider;
+    let engine = |account: &str, provider, model: &str, name: &str, missing| torro_ipc::LiveEngineOption {
+        account: account.into(),
+        account_name: provider_name(provider),
+        provider,
+        model: model.into(),
+        name: name.into(),
+        missing,
+    };
+    vec![
+        engine("ai:openai@api.openai.com", AiProvider::OpenAi, "gpt-realtime-2.1", "OpenAI Realtime", None),
+        engine("ai:openai@api.openai.com", AiProvider::OpenAi, "gpt-realtime-2.1-mini", "OpenAI Realtime mini", None),
+        engine(
+            "ai:xai@api.x.ai",
+            AiProvider::Xai,
+            "grok-voice-latest",
+            "Grok Voice",
+            Some(torro_ipc::LiveMissing::Key),
+        ),
+    ]
+}
+
+/// The product's name of `provider`, as an account is named.
+fn provider_name(provider: torro_core::ai::AiProvider) -> String {
+    provider.name().to_string()
 }
 
 /// Twelve spoken rounds (issue #828), a little apart from each other, as the timings show them; every fourth

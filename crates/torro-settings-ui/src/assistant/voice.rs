@@ -108,6 +108,8 @@ pub enum Choice {
     Provider,
     /// "Voice" of the provider that reads (issue #745).
     SpeechVoice,
+    /// "Conversation engine": this computer or one in the cloud (issue #838).
+    Engine,
 }
 
 /// Section state: what "Say something" is doing, what the listener is still expected to follow, the
@@ -191,6 +193,8 @@ pub enum Message {
     ReadAloud(bool),
     /// An entry of the dropdown "Provider".
     Provider(SpeechProvider),
+    /// An entry of the dropdown "Conversation engine" (issue #838): `None` for this computer.
+    Engine(Option<torro_ipc::LiveEngine>),
     /// An entry of the dropdown "Voice": the voice's id for the provider.
     SpeechVoice(SpeechProvider, String),
     /// "−" or "+" of "Speed" (issue #782): the speed of Pocket TTS in percent.
@@ -296,6 +300,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::Send(Vec::new())
         }
         Message::ReadAloud(on) => set(SettingKey::ReadAloud, serde_json::Value::Bool(on)),
+        Message::Engine(engine) => {
+            state.menus.close();
+            set(SettingKey::LiveEngine, serde_json::to_value(engine).unwrap_or_default())
+        }
         Message::Provider(provider) => {
             state.menus.close();
             set(SettingKey::SpeechProvider, serde_json::Value::String(provider.id().to_string()))
@@ -508,6 +516,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data, tab: VoiceTab, class: SizeClas
     match tab {
         VoiceTab::ReadAloud => read_aloud_group(state, data, class),
         VoiceTab::Conversation => iced::widget::column![
+            engine_group(state, data),
             voice_group(state, data, class),
             turn_group(&data.settings.voice, class),
             timings_group(data)
@@ -527,6 +536,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
         Choice::Recognizer => recognizer_items(data),
         Choice::Language => language_items(data),
         Choice::Provider | Choice::SpeechVoice => speech_items(*key, data),
+        Choice::Engine => engine_items(data),
         Choice::Microphone => {
             let microphones = data.voice.as_ref().map(|voice| &voice.microphones).filter(|list| !list.is_empty())?;
             let chosen = data.settings.voice.microphone.as_deref();
@@ -634,7 +644,7 @@ fn speech_items(key: Choice, data: &Data) -> Vec<MenuItem<'_, Message>> {
                 })
                 .collect()
         }
-        Choice::Recognizer | Choice::Language | Choice::Microphone => Vec::new(),
+        Choice::Recognizer | Choice::Language | Choice::Microphone | Choice::Engine => Vec::new(),
     }
 }
 
@@ -998,6 +1008,57 @@ fn voice_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Elemen
     rows.extend(microphone_row(state, data));
     rows.push(test);
     widgets::group(tr("Conversation"), rows, Some(footer.to_string()))
+}
+
+/// "Engine" (issue #838): who hears and answers in a conversation by voice, this computer (the default) or an engine
+/// in the cloud of an AI account. Choosing one in the cloud says where the sound goes and that it is billed; without
+/// an account that offers one, the line says how to get one. No voices and no prices: the engine speaks in its own.
+fn engine_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let chosen = data.settings.voice.live_engine.as_ref();
+    let option = chosen.and_then(|engine| data.live_engines.iter().find(|option| option.engine() == *engine));
+    let label = match (chosen, option) {
+        (None, _) => tr("On this computer").to_string(),
+        (Some(_), Some(option)) => option.name.clone(),
+        (Some(engine), None) => engine.model.clone(),
+    };
+    let detail = option.map(engine_detail);
+    let button = state.menus.button(Choice::Engine, label, Message::Menus);
+    let row = setting_row(None, tr("Conversation engine"), detail, button);
+    let footer = match (chosen, option) {
+        (Some(_), Some(option)) => trf(
+            "While you talk, everything the microphone hears goes to {provider}, and {provider} bills each minute. \
+             “Hey Torro” itself stays on this computer.",
+            &[("provider", &option.provider.name())],
+        ),
+        (Some(_), None) => tr("The account of this engine is gone. Talking falls back to this computer.").to_string(),
+        (None, _) if data.live_engines.is_empty() => {
+            tr("Connect an OpenAI or xAI account in Settings › AI to talk through a cloud engine.").to_string()
+        }
+        (None, _) => tr("Everything you say stays on this computer.").to_string(),
+    };
+    widgets::group(tr("Voice engine"), vec![row], Some(footer))
+}
+
+/// "OpenAI · Cloud · US" under an engine: its provider and where its servers are, or that its key is missing.
+fn engine_detail(option: &torro_ipc::LiveEngineOption) -> String {
+    match option.missing {
+        Some(torro_ipc::LiveMissing::Key) => tr("No API key on this device").to_string(),
+        None => format!("{} · {}", option.provider.name(), option.provider.seat().label()),
+    }
+}
+
+/// The entries of "Conversation engine": this computer first, then each engine of the accounts.
+fn engine_items(data: &Data) -> Vec<MenuItem<'_, Message>> {
+    let chosen = data.settings.voice.live_engine.as_ref();
+    let here = MenuItem::plain(tr("On this computer"), Message::Engine(None)).current(chosen.is_none());
+    std::iter::once(here)
+        .chain(data.live_engines.iter().map(|option| {
+            let engine = option.engine();
+            MenuItem::plain(option.name.as_str(), Message::Engine(Some(engine.clone())))
+                .detail(engine_detail(option))
+                .current(chosen == Some(&engine))
+        }))
+        .collect()
 }
 
 /// "Response times" (issue #828, `settings.voice_timings`): the average of the last spoken answers, step
@@ -2035,6 +2096,20 @@ mod tests {
         assert_eq!(
             sent(update(&mut state, Message::Provider(SpeechProvider::OpenAi), &data)),
             (SettingKey::SpeechProvider, serde_json::json!("openai"))
+        );
+        // Issue #838: the conversation engine, and back to this computer.
+        let engine =
+            torro_ipc::LiveEngine { account: "ai:openai@api.openai.com".into(), model: "gpt-realtime-2.1".into() };
+        assert_eq!(
+            sent(update(&mut state, Message::Engine(Some(engine)), &data)),
+            (
+                SettingKey::LiveEngine,
+                serde_json::json!({"account": "ai:openai@api.openai.com", "model": "gpt-realtime-2.1"})
+            )
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::Engine(None), &data)),
+            (SettingKey::LiveEngine, serde_json::Value::Null)
         );
         assert_eq!(
             sent(update(&mut state, Message::SpeechVoice(SpeechProvider::OpenAi, "cedar".into()), &data)),
