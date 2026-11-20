@@ -287,7 +287,11 @@ fn main() -> ExitCode {
                                     let _ = p.send_event(UserEvent::Exit(0));
                                 });
                             }
-                            Mode::Interactive => {}
+                            Mode::Interactive => {
+                                // Something to look at, with a picture and a quoted history.
+                                let js = format!("window.__load({});", Value::String(reply.clone()));
+                                let _ = webview.evaluate_script(&js);
+                            }
                         }
                     }
                     ("roundtrip", Mode::Selftest) => {
@@ -308,7 +312,6 @@ fn main() -> ExitCode {
                             emit(start, json!({ "paste-sanitized": torro_mail::html::sanitize(html) }));
                         }
                     }
-                    ("input", _) => {} // too chatty; `__text` and the paste lines are enough
                     _ => emit(start, msg.clone()),
                 }
             }

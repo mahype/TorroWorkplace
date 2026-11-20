@@ -64,7 +64,14 @@ squire.addEventListener('willPaste', (e) => {
   post('paste', { types, fragment: e.fragment ? [...e.fragment.childNodes].map((n) => n.outerHTML || n.textContent).join('') : null });
   log('paste ' + types.join(','));
 });
-squire.addEventListener('input', () => post('input', { html: toCid(squire.getHTML()) }));
+squire.addEventListener('input', () => post('input', { text: ed.innerText, images: ed.querySelectorAll('img').length }));
+// What is selected (Ctrl+A, mouse): the text length and how many pictures lie inside.
+document.addEventListener('selectionchange', () => {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return;
+  const frag = sel.getRangeAt(0).cloneContents();
+  post('selection', { chars: sel.toString().length, images: frag.querySelectorAll('img').length });
+});
 squire.addEventListener('undoStateChange', (e) => post('undo-state', { canUndo: e.canUndo, canRedo: e.canRedo }));
 
 // Called from Rust: load the draft fixture, take it out again as a draft would be saved.
