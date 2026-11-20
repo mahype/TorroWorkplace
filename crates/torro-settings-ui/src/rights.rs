@@ -936,7 +936,7 @@ fn area_detail(area: Area) -> &'static str {
         Area::Accounts => tr("Connected accounts and sync"),
         Area::Ai => tr("Models of your AI accounts"),
         Area::Assistant => tr("Chats with the assistant, which acts with its own rights"),
-        Area::Bots => tr("Bots and asking them, which act with their own rights"),
+        Area::Bots => tr("Bots and asking them, which act only with what the bot and the asker both may do"),
         Area::Tools => tr("The assistant's own tools, such as making PDFs"),
         Area::Extensions => tr("Listing, switching off and removing servers"),
         Area::Settings => tr("Settings of the suite"),
