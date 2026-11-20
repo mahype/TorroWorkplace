@@ -1532,7 +1532,7 @@ MCP-Tool dafür: Agenten ändern nie Rechte („Was nie nach außen geht“, Pun
   `Rights::assistant()` und jedem Bot, den der Mensch anlegt (einer, den ein Client anlegt, startet geschlossen,
   `close_extensions`; fragt ein API- oder MCP-Client einen Bot oder schreibt ihm, läuft der Bot nur mit dem, was
   beide dürfen, `Rights::common`, #698, so dass kein Client über einen Bot einen Server oder ein Werkzeug erreicht,
-  das er selbst nicht hat); Rechte von Assistent und Bots ohne Grundstufe öffnet der Kern einmal,
+  das er selbst nicht hat; eine Unterhaltung mit einem Bot setzt er nur fort, wenn er sie selbst begonnen hat, #752); Rechte von Assistent und Bots ohne Grundstufe öffnet der Kern einmal,
   beim Laden, beim Anlegen (auch mit einer Vorlage) und bei `clients.update_client` (`Rights::opened_once`); dabei
   ersetzt `opened` auch eine engere
   Auswahl der Werkzeuge und den Bereich `tools`, gewollt nach Entscheidung 3 von #666: Wer weniger will, schaltet es

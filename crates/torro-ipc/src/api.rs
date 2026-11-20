@@ -6263,7 +6263,8 @@ static SEND_MESSAGE: Command = Command {
                   caller may not see (a chat about it is not there for that caller at all), `error` for another \
                   `about` than the conversation's or a chat about a mail with mail switched off in `without`. \
                   With `bot` the message goes to that bot, which acts only with what both it and the caller may, \
-                  as in bots_ask_bot.",
+                  as in bots_ask_bot; `conversation` must then be one this caller started itself (`forbidden` \
+                  for the person's or another client's).",
 };
 
 static CHECK_ABOUT: Command = Command {
@@ -6564,7 +6565,9 @@ static ASK_BOT: Command = Command {
     description: "Sends a message to a bot and starts its answer with the bot's engine and model, in `conversation` \
                   (one of this bot) or in a new one. The bot acts only with what both it and the caller may: a \
                   server, tool or area the caller may not use stays closed to the bot as well, and its web search \
-                  needs the person's yes in the bot's conversation. The MCP tool waits up to a minute for the answer, like assistant_send_message, and returns it with the \
+                  needs the person's yes in the bot's conversation. A caller continues only a `conversation` it \
+                  started itself (`forbidden` for the person's or another client's: its history holds what the bot \
+                  read with its own rights). The MCP tool waits up to a minute for the answer, like assistant_send_message, and returns it with the \
                   cursor `after`; the API answers at once, so follow the answer with assistant.get_conversation \
                   (needs read access to the assistant) and `after` while `running` is true. `busy` while the \
                   conversation still answers.",
