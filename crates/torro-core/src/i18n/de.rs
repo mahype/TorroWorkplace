@@ -9955,4 +9955,41 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     // The menu bar on macOS (issue #894).
     ("Hide others", "Andere ausblenden"),
+    // A conversation engine in the cloud (issue #838).
+    ("Voice engine", "Sprachmodul"),
+    ("Conversation engine", "Gesprächsmodul"),
+    ("Talk through this computer again", "Wieder über diesen Rechner sprechen"),
+    ("(not understood)", "(nicht verstanden)"),
+    ("The connection to the conversation engine was lost.", "Die Verbindung zum Gesprächsmodul ist abgebrochen."),
+    (
+        "The provider refused the API key of the conversation engine.",
+        "Der Anbieter hat den API-Schlüssel des Gesprächsmoduls abgelehnt.",
+    ),
+    (
+        "Connect the account of the conversation engine again: no API key is stored.",
+        "Verbinde das Konto des Gesprächsmoduls erneut: Es ist kein API-Schlüssel gespeichert.",
+    ),
+    (
+        "The provider refused: too many requests or no credit left.",
+        "Der Anbieter hat abgelehnt: zu viele Anfragen oder kein Guthaben mehr.",
+    ),
+    ("The provider does not offer this conversation engine.", "Der Anbieter bietet dieses Gesprächsmodul nicht an."),
+    (
+        "The API key holds characters that cannot be sent.",
+        "Der API-Schlüssel enthält Zeichen, die sich nicht senden lassen.",
+    ),
+    (
+        "While you talk, everything the microphone hears goes to {provider}, and {provider} bills each minute. “Hey Torro” itself stays on this computer.",
+        "Während du sprichst, geht alles, was das Mikrofon hört, an {provider}, und {provider} berechnet jede Minute. „Hey Torro“ selbst bleibt auf diesem Rechner.",
+    ),
+    (
+        "The account of this engine is gone. Talking falls back to this computer.",
+        "Das Konto dieses Moduls gibt es nicht mehr. Gesprochen wird wieder über diesen Rechner.",
+    ),
+    (
+        "Connect an OpenAI or xAI account in Settings › AI to talk through a cloud engine.",
+        "Verbinde ein OpenAI- oder xAI-Konto unter Einstellungen › KI, um über ein Modul in der Cloud zu sprechen.",
+    ),
+    ("Everything you say stays on this computer.", "Alles, was du sagst, bleibt auf diesem Rechner."),
+    ("No API key on this device", "Kein API-Schlüssel auf diesem Gerät"),
 ];
