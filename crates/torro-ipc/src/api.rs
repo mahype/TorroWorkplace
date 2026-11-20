@@ -6264,8 +6264,8 @@ static SEND_MESSAGE: Command = Command {
                   `about` than the conversation's or a chat about a mail with mail switched off in `without`. \
                   With `bot` the message goes to that bot, which acts only with what both it and the caller may, \
                   as in bots_ask_bot. `voice` true marks a voice message: leave `conversation` out, and the \
-                  core continues the newest conversation titled \"Voice\" or, after the person's pause without \
-                  an entry (none while it answers), starts a new \"Voice\" and renames the old one to \"Voice · \
+                  core continues the newest conversation titled \"Voice\" or, after the pause without an entry set \
+                  in the setting `voice_new_after` (0: never; not while it answers), starts a new \"Voice\" and renames the old one to \"Voice · \
                   <date it began>\"; `error` with `conversation`, `bot` or `about`.",
 };
 

@@ -1657,7 +1657,7 @@ struct Message {
     from: Option<String>,
     /// The person spoke it (issue #747): the answer is short, to be read aloud.
     spoken: bool,
-    /// A voice message (issue #859): the core picks the conversation "Voice" itself ([`Assistant::voice_for`]),
+    /// A voice message (issue #859): the core picks the conversation "Voice" itself ([`voice_for`]),
     /// with this pause in minutes after which a new one starts (0 never). `None`: no voice message.
     voice: Option<u16>,
 }

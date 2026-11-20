@@ -4515,8 +4515,8 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         spoken: bool,
         /// The message is a voice message (issue #859): the core picks the conversation "Voice" itself.
-        /// It continues the newest one titled "Voice" (without bot or mail), unless that rested longer
-        /// than the pause from the settings (Assistant › Voice › Conversation; `0` never) and does not
+        /// It continues the newest one titled "Voice" (without bot or mail), unless that rested at least
+        /// the pause from the settings (Assistant › Voice › Conversation; `0` never) and does not
         /// answer right now; then, or when there is none, a new "Voice" starts and the old one is
         /// renamed to "Voice · <date it began>". Only without `conversation`, `bot` and `about`
         /// (`error` otherwise, nothing stored); `false` when left out.
