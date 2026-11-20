@@ -1689,6 +1689,27 @@ pub mod tests {
 
     /// Issue #828 (review): the line `torroassistant --listen` writes for a round, as its test
     /// `a_round_is_told_as_the_core_reads_it` pins it; change both together.
+    /// Issue #838: a frame of the microphone for a conversation engine, as the listener writes it
+    /// (`a_frame_of_the_microphone_is_told_as_the_core_reads_it`); any other line is none.
+    #[test]
+    fn a_mic_line_of_the_listener_is_read() {
+        assert_eq!(
+            mic_frame(r#"{"mic":"AQD+/w==","clean":true}"#),
+            Some(MicFrame { samples: vec![1, -2], clean: true })
+        );
+        assert_eq!(mic_frame(r#"{"mic":"AQD+/w=="}"#).map(|frame| frame.clean), Some(false));
+        assert_eq!(mic_frame(r#""listening""#), None);
+        assert_eq!(mic_frame(r#"{"round":{}}"#), None);
+        let pipe = MicPipe::default();
+        pipe.send(MicFrame { samples: vec![1], clean: true });
+        let mut frames = pipe.open();
+        pipe.send(MicFrame { samples: vec![2], clean: false });
+        assert_eq!(frames.try_recv().map(|frame| frame.samples), Ok(vec![2]), "only once a session listens");
+        pipe.close();
+        pipe.send(MicFrame { samples: vec![3], clean: false });
+        assert!(frames.try_recv().is_err(), "nothing after it ended");
+    }
+
     #[test]
     fn a_round_line_of_the_listener_is_read() {
         let line: RoundLine = serde_json::from_str(

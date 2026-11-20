@@ -106,6 +106,13 @@ pub trait Assistant {
 
     /// Whether an answer runs in `conversation` now; a conversation gone runs none.
     fn running(&mut self, conversation: &str) -> Result<bool, VoiceError>;
+
+    /// Starts a conversation by voice with the conversation engine in the cloud (issue #838, `assistant.start_talk`
+    /// without a conversation): the core holds the connection, the first sentence starts the conversation. By
+    /// default there is none.
+    fn start_live(&mut self) -> Result<(), VoiceError> {
+        Err(VoiceError::Core(Refusal::new("unsupported", "no conversation engine")))
+    }
 }
 
 /// The conversation by voice as the core has it (`assistant.talk_status`).
@@ -256,7 +263,7 @@ const ANSWER_LOOK: Duration = Duration::from_millis(20);
 const TALK_WAIT_SECONDS: usize = 300;
 
 // Moved to `torro_ipc::assistant` (issue #838): the core hears them from a conversation engine too.
-pub use torro_ipc::assistant::{CLOSING, is_closing};
+pub use torro_ipc::assistant::is_closing;
 
 /// How one round of listening ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,6 +328,9 @@ pub struct Listener<'a, A: Assistant> {
     /// What the person began to say as they interrupted the answer (issue #835): the next sentence of the
     /// conversation by voice begins with it. `None` but between the interruption and that sentence.
     pub carried: Option<Carried>,
+    /// Takes every frame of the microphone while a conversation engine in the cloud listens (issue #838), with
+    /// whether the echo cancellation runs: the core sends it on ([`Listener::converse_live`]).
+    pub mic: Box<dyn FnMut(&[i16], bool) + 'a>,
 }
 
 impl<A: Assistant> Listener<'_, A> {
@@ -430,6 +440,23 @@ impl<A: Assistant> Listener<'_, A> {
             self.quiet();
             return Ok(Ended::Nothing);
         };
+        // A conversation engine in the cloud hears the rest itself (issue #838): the conversation by voice starts,
+        // and the microphone goes on to it after the tone, without the wake word.
+        if voice.live_engine.is_some() {
+            let tone = self.chime();
+            self.wake.reset();
+            if let Err(err) = self.assistant.start_live() {
+                eprintln!("torroassistant: {err}");
+                return Ok(Ended::Nothing);
+            }
+            for _ in 0..tone {
+                if stream.frame()?.is_none() {
+                    return Ok(Ended::RecordingStopped);
+                }
+            }
+            self.carried = Some(Carried { frames: Vec::new(), stream });
+            return Ok(Ended::Nothing);
+        }
         (self.report)(VoiceState::Recording);
         let tone = self.chime();
         // What was said before the wake word was heard is part of the sentence, but the end of the
@@ -518,6 +545,9 @@ impl<A: Assistant> Listener<'_, A> {
         chime: bool,
         carried: Option<Carried>,
     ) -> Result<Ended, VoiceError> {
+        if voice.live_engine.is_some() {
+            return self.converse_live(voice, talk, chime, carried);
+        }
         // An answer still runs there (one longer than the listener waited, or a talk started while it
         // ran): the conversation would refuse the sentence, so the microphone waits for it. One that was
         // interrupted was stopped already.
@@ -614,6 +644,70 @@ impl<A: Assistant> Listener<'_, A> {
         let said = Said::Speech { before: 0 };
         let pause = (end.trailing_quiet(), end.saved());
         Ok(self.answer(voice, &sentence, said, pause, Some(talk), (readings, opened), ahead))
+    }
+
+    /// The conversation by voice `talk` with a conversation engine in the cloud (issue #838): every frame of the
+    /// microphone goes to the core ([`Listener::mic`]), which sends it on; the engine finds the end of a sentence,
+    /// answers and speaks itself. The listener only looks at the conversation: a new one opens in the quick window,
+    /// one that ended closes the microphone with the tone. After the wake word it goes on with the microphone that
+    /// heard it (`carried`), else it opens it with the tone (`chime`).
+    fn converse_live(
+        &mut self,
+        voice: &Voice,
+        talk: Talk,
+        chime: bool,
+        carried: Option<Carried>,
+    ) -> Result<Ended, VoiceError> {
+        let (mut stream, mut early_frames, tone) = match carried {
+            Some(Carried { frames, stream }) => (stream, VecDeque::from(frames), 0),
+            None => {
+                let stream = self.recorder.open()?;
+                (stream, VecDeque::new(), if chime { self.chime() } else { 0 })
+            }
+        };
+        (self.report)(VoiceState::Conversing);
+        let mut conversation = talk.conversation;
+        if let Some(id) = &conversation {
+            self.assistant.open(id);
+        }
+        let mut frames = 0usize;
+        loop {
+            let frame = match early_frames.pop_front() {
+                Some(frame) => frame,
+                None => match stream.frame()? {
+                    Some(frame) => frame,
+                    None => {
+                        if let Err(err) = self.assistant.end_talk() {
+                            eprintln!("torroassistant: {err}");
+                        }
+                        return Ok(Ended::RecordingStopped);
+                    }
+                },
+            };
+            frames += 1;
+            // The tone is no sound of the person's.
+            if frames > tone {
+                let clean = self.echo_runs();
+                (self.mic)(&frame, clean);
+            }
+            if frames.is_multiple_of(self.check_every.max(1)) {
+                match self.check(voice) {
+                    Look::Stop(ended) => return Ok(ended),
+                    Look::Go(TalkNow { talk: None, .. }) => {
+                        drop(stream);
+                        self.speaker.chime();
+                        return Ok(Ended::Nothing);
+                    }
+                    Look::Go(TalkNow { talk: Some(now), .. }) if now.conversation != conversation => {
+                        if let Some(id) = &now.conversation {
+                            self.assistant.open(id);
+                        }
+                        conversation = now.conversation;
+                    }
+                    Look::Go(_) => {}
+                }
+            }
+        }
     }
 
     /// Whether someone speaks in `frame`: as Silero VAD judges it, else when it is at least as loud as
@@ -1297,6 +1391,13 @@ where
         }
     }
 
+    fn start_live(&mut self) -> Result<(), VoiceError> {
+        match self.request(Request::StartTalk { conversation: None })? {
+            Response::Talk { .. } => Ok(()),
+            other => Err(unexpected(&other)),
+        }
+    }
+
     fn end_talk(&mut self) -> Result<(), VoiceError> {
         self.done(Request::EndTalk)
     }
@@ -1673,6 +1774,8 @@ mod tests {
         states: Vec<VoiceState>,
         talk: Option<Talk>,
         heard: Vec<Heard>,
+        /// The frames given to the core for a conversation engine (issue #838), with whether each was clean.
+        mic: Vec<bool>,
         ended: Result<Ended, VoiceError>,
     }
 
@@ -1735,6 +1838,8 @@ mod tests {
         let reported = Rc::clone(&states);
         let told = Rc::new(RefCell::new(Vec::new()));
         let rounds = Rc::clone(&told);
+        let given = Rc::new(RefCell::new(Vec::new()));
+        let frames = Rc::clone(&given);
         let mut listener = Listener {
             recorder: Box::new(Files { files: files.iter().copied().collect(), opened: Rc::clone(&opened) }),
             wake: Box::new(WakeAt { at: wake, seen: 0 }),
@@ -1752,6 +1857,7 @@ mod tests {
             echo: ahead.echo,
             turn: ahead.turn,
             carried: None,
+            mic: Box::new(move |_, clean| frames.borrow_mut().push(clean)),
         };
         let ended = listener.run(&voice);
         drop(listener);
@@ -1766,6 +1872,7 @@ mod tests {
             states: states.borrow().clone(),
             talk: core.talk.clone(),
             heard: told.borrow().clone(),
+            mic: given.borrow().clone(),
             ended,
         }
     }
@@ -1901,6 +2008,24 @@ mod tests {
         assert_eq!(run.opened, 0, "the microphone was never opened");
         assert!(messages(&run.sent).is_empty());
         assert_eq!(run.states, [VoiceState::Off]);
+    }
+
+    /// Issue #838: with a conversation engine chosen, the wake word starts the conversation by voice without a
+    /// sentence of its own, and from the tone on every frame of the microphone goes to the core, without speech
+    /// recognition, until the conversation ends; nothing is sent or read by the listener.
+    #[test]
+    fn with_a_conversation_engine_the_microphone_goes_to_the_core() {
+        let engine =
+            torro_ipc::LiveEngine { account: "ai:openai@api.openai.com".into(), model: "gpt-realtime-2.1".into() };
+        let live = Voice { live_engine: Some(engine), ..on() };
+        let run = run(Core::new(live), &["utterance.wav"], Some(2), &["Hey Torro, what is on today?"]);
+        assert_eq!(count(&run.sent, &Request::StartTalk { conversation: None }), 1, "the engine's conversation");
+        assert!(messages(&run.sent).is_empty(), "the engine hears the sentence itself");
+        assert!(!run.sent.iter().any(|request| matches!(request, Request::SpeakAnswer { .. })));
+        assert!(!run.mic.is_empty(), "the microphone goes to the core");
+        assert!(run.mic.iter().all(|clean| !clean), "no echo cancellation runs here");
+        assert!(run.states.contains(&VoiceState::Conversing), "{:?}", run.states);
+        assert!(!run.states.contains(&VoiceState::Recognizing), "nothing is recognised here");
     }
 
     /// Issue #747: after the wake word the sentence goes to "Voice" as spoken, a conversation by voice
@@ -2296,6 +2421,7 @@ mod tests {
             echo: None,
             turn: None,
             carried: None,
+            mic: Box::new(|_, _| {}),
         };
         assert_eq!(listener.run(&on()), Ok(Ended::Changed));
         assert_eq!(*opened.borrow(), 0);

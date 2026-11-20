@@ -240,6 +240,7 @@ fn listen() -> ExitCode {
             early: parts.early,
             turn: parts.turn,
             carried: None,
+            mic: Box::new(mic),
         };
         match listener.run(&voice) {
             Ok(Ended::Changed) => continue,
@@ -292,6 +293,24 @@ fn report(state: VoiceState) {
     if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
         std::process::exit(0);
     }
+}
+
+/// Gives the core a frame of the microphone for the conversation engine in the cloud (issue #838) as
+/// `{"mic": "<base64>", "clean": true}`, 16-bit little-endian at 16 kHz; `clean` when the echo cancellation runs.
+/// Ends the listener like [`report`] when the core no longer reads.
+fn mic(samples: &[i16], clean: bool) {
+    let line = mic_line(samples, clean);
+    let mut out = std::io::stdout();
+    if writeln!(out, "{line}").and_then(|()| out.flush()).is_err() {
+        std::process::exit(0);
+    }
+}
+
+/// `samples` as the line the core reads (`torroworkplace`, `apps::mic_frame`).
+fn mic_line(samples: &[i16], clean: bool) -> String {
+    use base64::Engine as _;
+    let bytes: Vec<u8> = samples.iter().flat_map(|sample| sample.to_le_bytes()).collect();
+    serde_json::json!({"mic": base64::engine::general_purpose::STANDARD.encode(bytes), "clean": clean}).to_string()
 }
 
 /// Tells the core the listener's half of a timed round (issue #828) as `{"round": {…}}` on one line,
@@ -358,6 +377,14 @@ mod tests {
         )
         .expect("the pinned line");
         assert_eq!(told, pinned);
+    }
+
+    /// Issue #838: the line of a frame for a conversation engine is the one the core's test
+    /// `a_mic_line_of_the_listener_is_read` reads; change both together.
+    #[test]
+    fn a_frame_of_the_microphone_is_told_as_the_core_reads_it() {
+        let told: serde_json::Value = serde_json::from_str(&mic_line(&[1, -2], true)).expect("one JSON line");
+        assert_eq!(told, serde_json::json!({"mic": "AQD+/w==", "clean": true}));
     }
 
     #[test]
