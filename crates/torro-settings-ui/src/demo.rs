@@ -1718,6 +1718,7 @@ fn voice_timings() -> torro_ipc::VoiceTimings {
             first_word_ms: 1290 + n * 10,
             first_sound_ms: 610 + n * 5,
             held: n % 4 == 3,
+            engine: None,
         })
         .collect();
     torro_ipc::VoiceTimings { rounds }

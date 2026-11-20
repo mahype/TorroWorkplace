@@ -1380,6 +1380,28 @@ pub struct Voice {
     /// ([`Voice::hold_or_default`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<u16>,
+    /// The conversation engine in the cloud that hears and speaks itself (issue #838, way B of
+    /// `docs/sprachchat.md`); `None` for the local chain on this computer. Everything the microphone hears
+    /// during a conversation then goes to its provider, so only a person chooses one
+    /// (`torro_ipc::Request::kept_for_people`). A value that does not read is `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_engine")]
+    pub live_engine: Option<LiveEngine>,
+}
+
+/// A conversation engine in the cloud (issue #838): a model of an AI account that hears and speaks
+/// itself (`torro_core::ai::live_models`). Names the account by its id, never its key.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct LiveEngine {
+    /// The id of the AI account (`ai.list_accounts`).
+    pub account: String,
+    /// The model of the engine, like `gpt-realtime-2.1` or `grok-voice-latest`.
+    pub model: String,
+}
+
+/// A live engine that does not read (written by a newer version, or broken) is `None`: the local chain.
+fn lenient_engine<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<LiveEngine>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
 /// Who reads the assistant's answers aloud (issue #745, `docs/assistent.md` "Vorlesen"). More may
@@ -1512,6 +1534,7 @@ impl Default for Voice {
             pause_done: None,
             pause_open: None,
             hold: None,
+            live_engine: None,
         }
     }
 }
@@ -1774,6 +1797,22 @@ impl Voice {
         }
         let fits = style.chars().count() <= MAX_STYLE_CHARS && !style.chars().any(char::is_control);
         fits.then(|| Some(style.to_string())).ok_or_else(refused)
+    }
+
+    /// The value of `settings.set_setting live_engine` (issue #838): `null` for the local chain, or
+    /// `{"account": "<id>", "model": "<id>"}` with both ids not empty. Whether the account offers the model
+    /// is the core's check.
+    pub fn live_engine_from(value: &serde_json::Value) -> Result<Option<LiveEngine>, String> {
+        if value.is_null() {
+            return Ok(None);
+        }
+        let engine: LiveEngine = serde_json::from_value(value.clone())
+            .map_err(|_| "live_engine takes null or {\"account\": \"<id>\", \"model\": \"<id>\"}".to_string())?;
+        let engine = LiveEngine { account: engine.account.trim().to_string(), model: engine.model.trim().to_string() };
+        if engine.account.is_empty() || engine.model.is_empty() {
+            return Err("live_engine needs an account and a model".into());
+        }
+        Ok(Some(engine))
     }
 
     /// The provider in `value`: `"pocket"`, `"qwen"` (only in a build with [`QWEN_BUILT`]) or
@@ -2956,6 +2995,27 @@ fn write_synced(path: &Path, content: &str) -> io::Result<()> {
 mod tests {
     /// Issue #243: the modifiers of the template keys default per system, read their names and
     /// fall back to the default when a file holds something else.
+    /// Issue #838: the engine is `null` or an account with a model; one that does not read is the local chain.
+    #[test]
+    fn a_live_engine_names_an_account_and_a_model() {
+        use serde_json::json;
+        let engine = LiveEngine { account: "ai:openai@api.openai.com".into(), model: "gpt-realtime-2.1".into() };
+        assert_eq!(Voice::live_engine_from(&json!(null)), Ok(None));
+        assert_eq!(
+            Voice::live_engine_from(&json!({"account": " ai:openai@api.openai.com ", "model": "gpt-realtime-2.1"})),
+            Ok(Some(engine))
+        );
+        for refused in [json!("openai"), json!({"account": "", "model": "x"}), json!({"account": "a"})] {
+            assert!(Voice::live_engine_from(&refused).is_err(), "{refused}");
+        }
+        let voice: Voice =
+            serde_json::from_value(json!({"liveEngine": {"account": "a", "model": "m"}})).expect("voice");
+        assert_eq!(voice.live_engine, Some(LiveEngine { account: "a".into(), model: "m".into() }));
+        let broken: Voice = serde_json::from_value(json!({"liveEngine": "grok"})).expect("voice");
+        assert_eq!(broken.live_engine, None, "a value that does not read is this computer");
+        assert!(!serde_json::to_string(&Voice::default()).expect("json").contains("liveEngine"));
+    }
+
     #[test]
     fn the_template_keys_modifiers_are_read_leniently() {
         use super::{Settings, ShortcutModifiers};

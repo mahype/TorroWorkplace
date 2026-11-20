@@ -573,7 +573,10 @@ pub fn ids(request: &Request) -> Vec<String> {
         // Issue #704: never the words searched for, nor how many hits were asked for.
         Request::SearchConversations { .. } => Vec::new(),
         // Voice (task C.9): no ids, never what was said.
-        Request::VoiceStatus | Request::VoiceTimings | Request::TestVoice | Request::Dictate | Request::StopDictation => Vec::new(),
+        Request::VoiceStatus
+        | Request::VoiceTimings
+        | Request::ListLiveEngines
+        | Request::TestVoice | Request::Dictate | Request::StopDictation => Vec::new(),
         // Reading aloud (issue #745): never the text read.
         Request::Speak { .. } | Request::StopSpeaking | Request::SpeechStatus => Vec::new(),
         // A conversation by voice (issue #747): the conversation by the id the core made, never a

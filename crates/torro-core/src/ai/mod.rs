@@ -75,6 +75,10 @@ pub enum AiProvider {
     OpenAi,
     /// Google Gemini through its OpenAI-compatible endpoint.
     Gemini,
+    /// xAI, the Grok models (issue #838): chat over its OpenAI-compatible API and Grok Voice as a live
+    /// engine. Written `xai`.
+    #[serde(rename = "xai")]
+    Xai,
     /// Mistral AI, a provider in the EU.
     Mistral,
     /// DeepSeek. Written `deepseek`.
@@ -177,7 +181,7 @@ impl AiProvider {
     /// Every provider in the order the suite lists them (Open First): this computer, open models in
     /// the cloud, the providers, those run from China, Jev (it only sorts mail, issue #323), and any
     /// other server last.
-    pub const ALL: [AiProvider; 16] = [
+    pub const ALL: [AiProvider; 17] = [
         AiProvider::Ollama,
         AiProvider::LmStudio,
         AiProvider::Strata,
@@ -186,6 +190,7 @@ impl AiProvider {
         AiProvider::Anthropic,
         AiProvider::OpenAi,
         AiProvider::Gemini,
+        AiProvider::Xai,
         AiProvider::Mistral,
         AiProvider::DeepSeek,
         AiProvider::Qwen,
@@ -201,12 +206,13 @@ impl AiProvider {
     pub const LOCAL: [AiProvider; 3] = [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::Strata];
 
     /// The cloud providers with an API key of their own (task W.3), in the order of [`AiProvider::ALL`].
-    pub const CLOUD: [AiProvider; 12] = [
+    pub const CLOUD: [AiProvider; 13] = [
         AiProvider::OpenRouter,
         AiProvider::OllamaCloud,
         AiProvider::Anthropic,
         AiProvider::OpenAi,
         AiProvider::Gemini,
+        AiProvider::Xai,
         AiProvider::Mistral,
         AiProvider::DeepSeek,
         AiProvider::Qwen,
@@ -229,6 +235,7 @@ impl AiProvider {
             AiProvider::Anthropic => "Anthropic",
             AiProvider::OpenAi => "OpenAI",
             AiProvider::Gemini => "Google Gemini",
+            AiProvider::Xai => "xAI",
             AiProvider::Mistral => "Mistral",
             AiProvider::DeepSeek => "DeepSeek",
             AiProvider::Qwen => "Qwen",
@@ -252,6 +259,7 @@ impl AiProvider {
             AiProvider::Anthropic => "anthropic",
             AiProvider::OpenAi => "openai",
             AiProvider::Gemini => "gemini",
+            AiProvider::Xai => "xai",
             AiProvider::Mistral => "mistral",
             AiProvider::DeepSeek => "deepseek",
             AiProvider::Qwen => "qwen",
@@ -280,6 +288,8 @@ impl AiProvider {
             // documentation on 2026-10-15 (task W.3). Outside China the international ones.
             AiProvider::OpenAi => Some("https://api.openai.com/v1"),
             AiProvider::Gemini => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
+            // Checked against xAI's documentation on 2026-11-20 (issue #838).
+            AiProvider::Xai => Some("https://api.x.ai/v1"),
             AiProvider::Mistral => Some("https://api.mistral.ai/v1"),
             AiProvider::DeepSeek => Some("https://api.deepseek.com/v1"),
             AiProvider::Qwen => Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
@@ -319,6 +329,7 @@ impl AiProvider {
             AiProvider::Anthropic => Some("https://platform.claude.com/settings/keys"),
             AiProvider::OpenAi => Some("https://platform.openai.com/api-keys"),
             AiProvider::Gemini => Some("https://aistudio.google.com/apikey"),
+            AiProvider::Xai => Some("https://console.x.ai"),
             AiProvider::Mistral => Some("https://console.mistral.ai/api-keys"),
             AiProvider::DeepSeek => Some("https://platform.deepseek.com/api_keys"),
             AiProvider::Qwen => Some("https://modelstudio.console.alibabacloud.com/"),
@@ -342,6 +353,7 @@ impl AiProvider {
             | AiProvider::Anthropic
             | AiProvider::OpenAi
             | AiProvider::Gemini
+            | AiProvider::Xai
             | AiProvider::Jev => Seat::Us,
             AiProvider::Mistral => Seat::Eu,
             AiProvider::DeepSeek | AiProvider::Qwen | AiProvider::Kimi | AiProvider::Glm | AiProvider::MiniMax => {
@@ -389,6 +401,34 @@ impl AiProvider {
             }]),
             _ => None,
         }
+    }
+}
+
+/// A conversation engine a provider offers (issue #838, way B of `docs/sprachchat.md`): a model that hears
+/// and speaks itself over a live connection, for the voice chat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveModel {
+    /// The model as the provider's API names it.
+    pub id: &'static str,
+    /// Its name in the settings, not translated.
+    pub name: &'static str,
+    /// The longest one connection may last, in minutes: the session reconnects shortly before.
+    pub minutes: u32,
+}
+
+/// The conversation engines of `provider` (issue #838): OpenAI Realtime (also mini) and xAI's Grok Voice,
+/// both over the same protocol (`wss://<host>/v1/realtime`). Empty for every other provider. Checked
+/// against the providers' documentation on 2026-11-20.
+pub fn live_models(provider: AiProvider) -> &'static [LiveModel] {
+    const OPENAI: &[LiveModel] = &[
+        LiveModel { id: "gpt-realtime-2.1", name: "OpenAI Realtime", minutes: 60 },
+        LiveModel { id: "gpt-realtime-2.1-mini", name: "OpenAI Realtime mini", minutes: 60 },
+    ];
+    const XAI: &[LiveModel] = &[LiveModel { id: "grok-voice-latest", name: "Grok Voice", minutes: 120 }];
+    match provider {
+        AiProvider::OpenAi => OPENAI,
+        AiProvider::Xai => XAI,
+        _ => &[],
     }
 }
 
@@ -1208,6 +1248,7 @@ const ASSUMED_CONTEXT: &[(AiProvider, &str, u64)] = &[
     (AiProvider::Kimi, "moonshot-v1-32k", 32_000),
     (AiProvider::Kimi, "", 128_000),
     (AiProvider::Mistral, "", 128_000),
+    (AiProvider::Xai, "", 128_000),
     (AiProvider::DeepSeek, "", 128_000),
     (AiProvider::Qwen, "", 128_000),
     (AiProvider::Glm, "", 128_000),

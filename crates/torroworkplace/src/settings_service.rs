@@ -214,7 +214,15 @@ impl SettingsStore {
                 }
                 provider => provider,
             };
-            let voice = Voice { enabled, speech_provider, ..new.voice.clone() };
+            // Nor what the microphone hears to a provider (issue #838): another engine than the stored one stays
+            // as stored; back to this computer is the client's to choose.
+            let live_engine = match &new.voice.live_engine {
+                Some(engine) if settings.voice.live_engine.as_ref() != Some(engine) => {
+                    settings.voice.live_engine.clone()
+                }
+                engine => engine.clone(),
+            };
+            let voice = Voice { enabled, speech_provider, live_engine, ..new.voice.clone() };
             let ai_slots = std::mem::take(&mut settings.ai_slots);
             let reminders = Reminders { calendars, ..new.reminders.clone() };
             let tools = settings.tools.from_client(&new.tools);
@@ -300,6 +308,10 @@ impl SettingsStore {
         // Nor what loads from other providers (point 14, issue #672), in either direction.
         if matches!(key, SettingKey::PrivacyContent | SettingKey::PrivacyProvider) {
             return Err("only a person decides what loads from other providers".into());
+        }
+        // Nor a conversation engine in the cloud (issue #838): back to this computer only.
+        if key == SettingKey::LiveEngine && !value.is_null() {
+            return Err("only a person chooses a conversation engine in the cloud".into());
         }
         let change = Change::parse(key, value)?;
         self.change(|settings| change.limited_for_clients(settings).apply(settings))
@@ -666,6 +678,9 @@ enum Change {
     VoiceHold(Option<u16>),
     /// How OpenAI speaks (issue #782); never logged or repeated in a refusal.
     OpenAiStyle(Option<String>),
+    /// The conversation engine in the cloud (issue #838); who may choose one is the core's check
+    /// (`Request::kept_for_people`), whether an account offers it too.
+    LiveEngine(Option<torro_core::settings::LiveEngine>),
     /// What a new chat of the assistant starts with (issue #131): the slot Chat (issue #325), written
     /// without the checks of `ai.set_slot`; `None` for the one used last.
     AssistantDefault(Option<AssistantDefault>),
@@ -801,6 +816,7 @@ impl Change {
             SettingKey::VoicePauseDone => Change::VoicePauseDone(Voice::pause_done_from(value)?),
             SettingKey::VoicePauseOpen => Change::VoicePauseOpen(Voice::pause_open_from(value)?),
             SettingKey::VoiceHold => Change::VoiceHold(Voice::hold_from(value)?),
+            SettingKey::LiveEngine => Change::LiveEngine(Voice::live_engine_from(value)?),
             SettingKey::VoiceAnnouncements => {
                 Change::VoiceAnnouncements(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
@@ -934,6 +950,7 @@ impl Change {
             Change::VoicePauseDone(pause) => settings.voice.pause_done = pause,
             Change::VoicePauseOpen(pause) => settings.voice.pause_open = pause,
             Change::VoiceHold(hold) => settings.voice.hold = hold,
+            Change::LiveEngine(engine) => settings.voice.live_engine = engine,
             Change::OpenAiStyle(style) => settings.voice.openai_style = style,
             Change::AssistantDefault(default) => settings.ai_slots.chat = default,
             Change::Setup(state) => settings.setup = settings.setup.moved_to(state),

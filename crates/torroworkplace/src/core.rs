@@ -7676,6 +7676,12 @@ impl Core {
                 if let Some(message) = crate::settings_service::gone(key, &value) {
                     return Response::Error { code: "unsupported".into(), message };
                 }
+                // Only an engine an account offers (issue #838).
+                if key == SettingKey::LiveEngine
+                    && let Some(refused) = self.live_engine_refusal(&value).await
+                {
+                    return refused;
+                }
                 // A new SearXNG address answers in JSON before it is stored (issue #305).
                 if key == SettingKey::SearxngAddress
                     && let Some(refused) = self.searxng_refusal(&value).await
@@ -7712,6 +7718,7 @@ impl Core {
             }
             Request::VoiceStatus => self.voice_status().await,
             Request::VoiceTimings => self.voice_timings(),
+            Request::ListLiveEngines => self.list_live_engines().await,
             Request::TestVoice => self.test_voice().await,
             Request::Dictate => self.dictate().await,
             Request::StopDictation => {
@@ -15238,6 +15245,7 @@ impl Core {
             first_word_ms: span_ms(asked, first_word),
             first_sound_ms: span_ms(first_word, first_sound),
             held,
+            engine: None,
         };
         // Issue #850: the first sound split into the wait for the first sentence and its sound; only in the log.
         let (sentence, ready) = match stamps.first_piece {
@@ -15260,9 +15268,28 @@ impl Core {
         }
     }
 
+    /// `settings.list_live_engines` (issue #838): the conversation engines of the AI accounts and the one chosen.
+    async fn list_live_engines(&self) -> Response {
+        Response::LiveEngines {
+            current: self.settings.current().voice.live_engine,
+            engines: self.ai.live_engines().await,
+        }
+    }
+
+    /// Why `settings.set_setting live_engine` with `value` is not stored (issue #838): `not-found` for an engine no
+    /// account offers. `None` for `null`, an engine there is and a value the settings refuse anyway (they say why).
+    async fn live_engine_refusal(&self, value: &serde_json::Value) -> Option<Response> {
+        let Ok(Some(engine)) = torro_core::settings::Voice::live_engine_from(value) else { return None };
+        let offered = self.ai.live_engines().await.iter().any(|option| option.engine() == engine);
+        (!offered).then(|| Response::Error {
+            code: "not-found".into(),
+            message: format!("no account offers the conversation engine {:?}", engine.model),
+        })
+    }
+
     /// `settings.voice_timings` (issue #828): the rounds timed since the start, oldest first.
     fn voice_timings(&self) -> Response {
-        let rounds = self.voice_rounds.lock().unwrap_or_else(PoisonError::into_inner).iter().copied().collect();
+        let rounds = self.voice_rounds.lock().unwrap_or_else(PoisonError::into_inner).iter().cloned().collect();
         Response::VoiceTimings { timings: torro_ipc::VoiceTimings { rounds } }
     }
 
@@ -40585,6 +40612,67 @@ done"#,
             let core = core(dir.path());
             assert_eq!(code(&core.handle(scoped("0123456789abcdef", ApprovalScope::Always)).await), "not-found");
         }
+    }
+
+    /// A core with an OpenAI account with a key and an xAI account without one (issue #838), loaded from `dir`.
+    async fn core_with_live_accounts(dir: &std::path::Path) -> (Core, String, String) {
+        let keys = MemoryTokens::default();
+        let openai = torro_core::Account::ai(AiProvider::OpenAi, "https://api.openai.com/v1");
+        let xai = torro_core::Account::ai(AiProvider::Xai, "https://api.x.ai/v1");
+        let file = crate::account::github::tests::accounts_file(dir);
+        std::fs::create_dir_all(file.parent().expect("a folder")).expect("folder");
+        torro_core::account::save_to(&file, &[openai.clone(), xai.clone()]).expect("accounts");
+        keys.put(&openai.id, AI_KEY);
+        let core = core_with_ai(dir, &keys, Vec::new());
+        core.ai.load().await.expect("loaded");
+        (core, openai.id, xai.id)
+    }
+
+    /// Issue #838: the engines of the accounts are listed without a key; only a person chooses one in the cloud, an
+    /// engine no account offers is `not-found`, and back to this computer is open to clients.
+    #[tokio::test]
+    async fn only_people_choose_a_conversation_engine_the_accounts_offer() {
+        use torro_ipc::{LiveEngine, LiveMissing};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, openai, xai) = core_with_live_accounts(dir.path()).await;
+        let Response::LiveEngines { current, engines } = core.handle(Request::ListLiveEngines).await else {
+            panic!("the engines")
+        };
+        assert_eq!(current, None, "this computer unless chosen");
+        let listed: Vec<_> = engines.iter().map(|option| (option.model.as_str(), option.missing)).collect();
+        assert_eq!(
+            listed,
+            [
+                ("gpt-realtime-2.1", None),
+                ("gpt-realtime-2.1-mini", None),
+                ("grok-voice-latest", Some(LiveMissing::Key))
+            ]
+        );
+        assert!(!serde_json::to_string(&engines).expect("json").contains(AI_KEY), "never the key");
+        let engine = LiveEngine { account: openai.clone(), model: "gpt-realtime-2.1".into() };
+        let set = |value: serde_json::Value| Request::SetSetting { key: SettingKey::LiveEngine, value };
+        let chosen = set(serde_json::to_value(&engine).expect("json"));
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, client_key) = client(&core, rights).await;
+        assert_eq!(code(&ask(&core, Some(&client_key), chosen.clone()).await), "forbidden");
+        assert_eq!(core.settings.current().voice.live_engine, None);
+        let unknown = set(serde_json::json!({"account": xai, "model": "gpt-realtime-2.1"}));
+        assert_eq!(code(&core.handle(unknown).await), "not-found");
+        assert_eq!(core.handle(chosen).await, Response::Ok);
+        assert_eq!(core.settings.current().voice.live_engine, Some(engine.clone()));
+        // A client sending the whole settings with another engine keeps the chosen one.
+        let mut sent = core.settings.current();
+        sent.voice.live_engine = Some(LiveEngine { account: openai, model: "gpt-realtime-2.1-mini".into() });
+        assert_eq!(core.settings.update_keeping_hidden(sent), Ok(()));
+        assert_eq!(core.settings.current().voice.live_engine, Some(engine));
+        // Back to this computer is an admin change like others: it waits for the person, said plainly.
+        let asked = waits(ask(&core, Some(&client_key), set(serde_json::Value::Null)).await);
+        assert_eq!(asked.summary, tr("Talk through this computer again"));
+        assert_eq!(core.handle(set(serde_json::Value::Null)).await, Response::Ok);
+        assert_eq!(core.settings.current().voice.live_engine, None, "back to this computer");
     }
 }
 

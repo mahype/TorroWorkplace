@@ -1378,6 +1378,9 @@ impl Request {
             Request::SetSetting { key: crate::SettingKey::SpeechProvider, value } => {
                 value.as_str().is_some_and(|id| id.trim() == crate::SpeechProvider::OpenAi.id())
             }
+            // Only a person sends what the microphone hears to a provider (issue #838); back to this computer
+            // is open to clients with the rights.
+            Request::SetSetting { key: crate::SettingKey::LiveEngine, value } => !value.is_null(),
             Request::SetSetting {
                 key:
                     crate::SettingKey::VoiceEnabled
@@ -2070,6 +2073,7 @@ impl Request {
             Request::AskBot { .. } => &ASK_BOT,
             Request::VoiceStatus => &VOICE_STATUS,
             Request::VoiceTimings => &VOICE_TIMINGS,
+            Request::ListLiveEngines => &LIST_LIVE_ENGINES,
             Request::TestVoice => &TEST_VOICE,
             Request::Dictate => &DICTATE,
             Request::StopDictation => &STOP_DICTATION,
@@ -2367,6 +2371,7 @@ pub static CATALOGUE: &[&Command] = &[
     &LIST_COLOR_SCHEMES,
     &VOICE_STATUS,
     &VOICE_TIMINGS,
+    &LIST_LIVE_ENGINES,
     &TEST_VOICE,
     &DICTATE,
     &STOP_DICTATION,
@@ -4249,7 +4254,10 @@ static SET_SETTING: Command = Command {
                   \"and then …\" or \"um\"), `voice_hold` (seconds from 5 to 30 in 5s, or null for 15: how long \
                   \"wait a moment\" holds the turn; these three pauses need Silero VAD) or `openai_style` (how OpenAI \
                   speaks, one line of at most 500 \
-                  characters like \"calm, slow\", or null; it only reaches OpenAI once a person chose OpenAI); \
+                  characters like \"calm, slow\", or null; it only reaches OpenAI once a person chose OpenAI) or \
+                  `live_engine` (only null: the voice chat talks through this computer again; choosing a \
+                  conversation engine in the cloud from settings_list_live_engines is for a person, since \
+                  everything the microphone hears then goes to its provider); \
                   `stt_model` and `voice` are gone and refused or \
                   `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
                   assistant_list_engines>\", \"model\": \"<model id>\", \"effort\": \"low\"|\"medium\"|\"high\"}, \
@@ -4358,6 +4366,20 @@ static VOICE_STATUS: Command = Command {
                   a model that is not downloaded or a missing sound device) and which microphones there are. It \
                   runs local checks and may take a few seconds. Switching voice on is for a person only; \
                   settings_set_setting with voice_enabled false switches it off.",
+};
+
+// Read access (issue #838): which engines there are and which is chosen; never a key. Choosing one that sends
+// what the microphone hears to a provider is `settings.set_setting live_engine`, for a person only.
+static LIST_LIVE_ENGINES: Command = Command {
+    name: "settings.list_live_engines",
+    area: Area::Settings,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists the conversation engines in the cloud the voice chat can talk through instead of the local \
+                  chain on this computer: one per AI account and model that hears and speaks itself (OpenAI \
+                  Realtime, Grok Voice), with `missing: key` when the account has no API key, and `current`, the \
+                  one chosen (absent: this computer). Only a person chooses a cloud engine; \
+                  settings_set_setting with live_engine null switches back to this computer.",
 };
 
 // Read access: only durations the core keeps in memory; no text, no sound, no microphone.
@@ -4575,7 +4597,8 @@ static UPDATE_SETTINGS: Command = Command {
                   change one value and keep changes others made meanwhile. Settings without `font` or \
                   `colorScheme` keep the stored ones. `design` takes a spacing level (\"torro\", \"comfort\", \
                   \"dense\"); \"compact\" and \"console\" are stored as \"dense\", any other id as \"torro\". \
-                  `privacy` is a person's: what a client sends there is ignored and the stored one stays.",
+                  `privacy` is a person's: what a client sends there is ignored and the stored one stays, so is \
+                  `voice.liveEngine` unless it is null (back to this computer).",
 };
 
 static LIST_APPS: Command = Command {
@@ -7726,6 +7749,7 @@ mod tests {
             Request::AskBot { bot: "1a2b3c4d".into(), text: "Plan Lisbon".into(), conversation: None },
             Request::VoiceStatus,
             Request::VoiceTimings,
+            Request::ListLiveEngines,
             Request::TestVoice,
             Request::Dictate,
             Request::StopDictation,
@@ -8625,6 +8649,27 @@ mod tests {
         assert_eq!(timings.command.mcp, Mcp::Tool);
     }
 
+    /// Issue #838: a cloud engine hears everything the microphone hears, so only a person chooses one; back to
+    /// this computer and reading the list are open to agents.
+    #[test]
+    fn only_people_choose_a_cloud_conversation_engine() {
+        let engine = |value| Request::SetSetting { key: crate::SettingKey::LiveEngine, value };
+        let cloud = engine(serde_json::json!({"account": "ai:openai", "model": "gpt-realtime-2.1"}));
+        assert!(cloud.kept_for_people() && engine(serde_json::json!("anything")).kept_for_people());
+        assert!(!engine(serde_json::Value::Null).kept_for_people());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        assert!(!rights.allows_request(&cloud));
+        assert!(rights.allows_request(&engine(serde_json::Value::Null)));
+        let list = Request::ListLiveEngines.operation();
+        assert_eq!(
+            (list.command.name, list.access, list.command.mcp),
+            ("settings.list_live_engines", Access::Read, Mcp::Tool)
+        );
+    }
+
     /// Issue #745: reading aloud is a tool for agents, choosing OpenAI to read is a person's choice:
     /// the text of each answer would go there. The local providers and the core's choice are
     /// settings changes like any other.
@@ -9321,6 +9366,7 @@ mod tests {
                 "openai_compatible",
                 "openai",
                 "gemini",
+                "xai",
                 "mistral",
                 "deepseek",
                 "qwen",
@@ -9611,6 +9657,7 @@ mod tests {
                 "voice_pause_open",
                 "voice_hold",
                 "openai_style",
+                "live_engine",
                 "assistant_default",
                 "setup",
                 "component",

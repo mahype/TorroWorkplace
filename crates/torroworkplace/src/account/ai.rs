@@ -1889,6 +1889,27 @@ impl AiAccounts {
         Some(OpenAiCompatible::new(http, AiProvider::OpenAi, &slot.account.server, slot.key.clone()))
     }
 
+    /// The conversation engines of the accounts (issue #838, `settings.list_live_engines`): one per account and
+    /// model of [`ai::live_models`], in the order of the accounts, with `missing: key` for an account without a key
+    /// on this device. Never the key.
+    pub async fn live_engines(&self) -> Vec<torro_ipc::LiveEngineOption> {
+        let slots = self.slots.read().await;
+        slots
+            .iter()
+            .flat_map(|slot| {
+                let missing = slot.key.is_none().then_some(torro_ipc::LiveMissing::Key);
+                ai::live_models(slot.provider()).iter().map(move |model| torro_ipc::LiveEngineOption {
+                    account: slot.account.id.clone(),
+                    account_name: label(&slot.account),
+                    provider: slot.provider(),
+                    model: model.id.to_string(),
+                    name: model.name.to_string(),
+                    missing,
+                })
+            })
+            .collect()
+    }
+
     /// The HTTP client of the AI accounts, also for downloads of models ([`super::pull`]).
     pub(crate) fn http(&self) -> Result<&reqwest::Client, AiError> {
         self.http.as_ref().ok_or_else(|| AiError::Format(tr("No HTTP client to ask AI servers with.").into()))

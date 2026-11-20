@@ -1369,6 +1369,7 @@ fn describe(request: &Request) -> String {
         Request::ConfirmBot { bot, .. } => format!("confirm asking bot {bot}"),
         Request::VoiceStatus => "voice status".into(),
         Request::VoiceTimings => "voice timings".into(),
+        Request::ListLiveEngines => "live engines".into(),
         Request::TestVoice => "voice test".into(),
         Request::Dictate => "dictation".into(),
         Request::StopDictation => "stop dictation".into(),
