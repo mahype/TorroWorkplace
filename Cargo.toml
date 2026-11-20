@@ -217,8 +217,10 @@ raw-window-handle = "0.6.2"
 # The tray symbol of a design pack (torroworkplace, L.3): an SVG rastered for each tray size. The version Iced 0.14
 # already brings for its SVG widget; no text, system fonts or raster images: a tray symbol needs none of them.
 resvg = { version = "0.45.1", default-features = false }
-# GlazeWM's IPC (torro-wm): plain ws:// on 127.0.0.1, so no TLS features.
-tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
+# GlazeWM's IPC (torro-wm): plain ws:// on 127.0.0.1. The conversation engines in the cloud (torroworkplace, issue
+# #838) connect over wss://: rustls on aws-lc-rs through the connector the core builds (`torro_mail_imap::tls`), never
+# ring or native-tls; the feature brings webpki-roots, which the workspace has already.
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["handshake", "connect", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 # The tray on macOS and Windows: tray-icon (menus from muda) on a winit event loop; winit is
 # the one iced already brings along.
