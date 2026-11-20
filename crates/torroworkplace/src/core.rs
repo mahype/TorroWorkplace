@@ -3326,6 +3326,12 @@ pub struct Core {
     /// The last timed spoken rounds, oldest first (issue #828, `settings.voice_timings`): in memory
     /// only, durations only.
     voice_rounds: std::sync::Mutex<std::collections::VecDeque<torro_ipc::VoiceRound>>,
+    /// The session of a conversation engine in the cloud that runs (issue #838, [`live`]).
+    live: std::sync::Mutex<Option<live::LiveRun>>,
+    /// How the session connects to its engine: `None` through the AI accounts; tests give a fake engine.
+    live_connect: Option<live::Connect>,
+    /// The core itself, for the session's task (set by [`Core::attach_assistant`]).
+    me: std::sync::OnceLock<std::sync::Weak<Core>>,
     /// What the keys lent for runs of engine B are for (task B.2, [`LentScope`]): the assistant's
     /// conversation, or a bot's run for the assistant. In memory only, as the leases are.
     lent_scopes: std::sync::Mutex<Vec<LentScope>>,
@@ -3510,6 +3516,9 @@ impl Core {
             announced: std::sync::atomic::AtomicUsize::new(0),
             reading: Mutex::new(None),
             voice_rounds: std::sync::Mutex::default(),
+            live: std::sync::Mutex::new(None),
+            live_connect: None,
+            me: std::sync::OnceLock::new(),
             lent_scopes: std::sync::Mutex::new(Vec::new()),
             accounts_read: tokio::sync::watch::Sender::new(true),
             reminders: Arc::new(Reminders::system()),
@@ -5466,6 +5475,8 @@ impl Core {
     /// weakly, since the core holds the assistant. Part of [`Core::start`]; tests call it on their
     /// own core.
     pub(crate) fn attach_assistant(self: &Arc<Self>) {
+        // The session of a conversation engine runs on a task of its own (issue #838).
+        let _ = self.me.set(Arc::downgrade(self));
         let host = Arc::downgrade(self);
         let host: std::sync::Weak<dyn crate::assistant::Host> = host;
         self.assistant.attach(host);
@@ -7666,6 +7677,8 @@ impl Core {
                 if speech_choice(&self.settings.current().voice) != speech_before {
                     self.speech.end().await;
                 }
+                // Another engine ends the conversation by voice (issue #838).
+                self.end_talk_for_another_engine().await;
                 match updated {
                     Ok(()) => Response::Ok,
                     Err(message) => Response::Error { code: "error".into(), message },
@@ -7698,6 +7711,11 @@ impl Core {
                 // "Mute microphone" closes it also for a conversation by voice (issue #747).
                 if set.is_ok() && key == SettingKey::VoiceEnabled && value == serde_json::Value::Bool(false) {
                     self.forget_talk();
+                }
+                // Another engine, or this computer again (issue #838): the conversation by voice ends at once, so no
+                // sound goes on to where it no longer should.
+                if set.is_ok() && key == SettingKey::LiveEngine {
+                    self.end_talk_for_another_engine().await;
                 }
                 // The terminal switched off (issue #754): its commands in the background end too.
                 if set.is_ok() && key == SettingKey::Terminal && !self.settings.current().tools.terminal.enabled {
@@ -7767,7 +7785,14 @@ impl Core {
             Request::ListFonts => Response::Fonts { fonts: self.list_fonts().await },
             Request::ListColorSchemes => Response::ColorSchemes { color_schemes: self.list_color_schemes() },
             Request::Accounts => Response::Accounts { accounts: self.accounts_within(reach).await },
-            Request::RemoveAccount { id } => self.remove_account(&id).await,
+            Request::RemoveAccount { id } => {
+                let removed = self.remove_account(&id).await;
+                // The account of the conversation engine is gone (issue #838): its session ends.
+                if removed == Response::Ok {
+                    self.end_talk_for_another_engine().await;
+                }
+                removed
+            }
             // In turn with saves, loads and keys (issue #243): renaming loads and writes the whole
             // template, so a key set meanwhile would be written over, and two templates held it.
             Request::RenameTemplate { id, name } => {
@@ -14103,6 +14128,8 @@ impl Core {
 
     /// Forgets the conversation by voice (issue #747); the tray and the windows learn it.
     fn forget_talk(&self) {
+        // The conversation engine stops hearing at once (issue #838).
+        self.end_live();
         if self.lock_talk().take().is_some() {
             self.voice.notify();
         }
@@ -14134,6 +14161,8 @@ impl Core {
         }
         *self.lock_talk() = Some(TalkSlot { conversation, since: std::time::Instant::now() });
         self.follow_voice();
+        // With a conversation engine chosen, it hears and answers (issue #838).
+        self.start_live().await;
         self.voice.notify();
         self.talk_status(reach).await
     }
@@ -14905,6 +14934,10 @@ impl Core {
         if let Some(hidden) = self.hidden_conversation(conversation, reach).await {
             return hidden;
         }
+        // The conversation engine speaks its answers itself (issue #838): a window that reads aloud would say them twice.
+        if self.live_answers_in(conversation) {
+            return Response::Ok;
+        }
         let (running, entries) = match self.assistant.get(conversation, None).await {
             Response::Conversation { conversation, entries } => (conversation.running, entries),
             other => return other,
@@ -15261,10 +15294,26 @@ impl Core {
             round.total_ms(),
             round.held
         );
+        self.keep_round(round);
+    }
+
+    /// Keeps `round` with the last [`VOICE_ROUNDS_KEPT`], in memory only (issues #828, #838).
+    fn keep_round(&self, round: torro_ipc::VoiceRound) {
         let mut rounds = self.voice_rounds.lock().unwrap_or_else(PoisonError::into_inner);
         rounds.push_back(round);
         while rounds.len() > VOICE_ROUNDS_KEPT {
             rounds.pop_front();
+        }
+    }
+
+    /// Ends the conversation by voice when its session talks through another engine than the settings name now
+    /// (issue #838): another one, this computer, or one whose account is gone.
+    async fn end_talk_for_another_engine(&self) {
+        let Some(running) = self.live_engine_running() else { return };
+        let chosen = self.settings.current().voice.live_engine;
+        let offered = self.ai.knows(&running.account).await;
+        if chosen.as_ref() != Some(&running) || !offered {
+            self.end_talk().await;
         }
     }
 
@@ -16517,6 +16566,8 @@ fn error(err: &SetupsError) -> Response {
     };
     Response::Error { code: code.into(), message: err.to_string() }
 }
+
+mod live;
 
 #[cfg(test)]
 mod tests {
@@ -40673,6 +40724,228 @@ done"#,
         assert_eq!(asked.summary, tr("Talk through this computer again"));
         assert_eq!(core.handle(set(serde_json::Value::Null)).await, Response::Ok);
         assert_eq!(core.settings.current().voice.live_engine, None, "back to this computer");
+    }
+
+    /// A core whose conversation by voice talks to a fake engine (issue #838): OpenAI Realtime chosen, a listener that
+    /// converses, the assistant attached. Answers the core, what the engine was sent and the engine's voices, one per
+    /// connection.
+    #[cfg(unix)]
+    async fn live_core(
+        dir: &std::path::Path,
+    ) -> (
+        Arc<Core>,
+        Arc<live::tests::Script>,
+        tokio::sync::mpsc::UnboundedReceiver<tokio::sync::mpsc::UnboundedSender<crate::assistant::live::Incoming>>,
+    ) {
+        let (core, openai, _) = core_with_live_accounts(dir).await;
+        let script = Arc::new(live::tests::Script::default());
+        let (connect, voices) = live::tests::fake_engine(&script);
+        let program = crate::apps::tests::fake_program(dir, r#"echo '"conversing"'; sleep 30"#);
+        let assistant = crate::assistant::tests::assistant_in(dir, std::time::Duration::ZERO);
+        let core = core.with_assistant(assistant).with_listener(crate::apps::Listener::at(program));
+        let core = Arc::new(Core { live_connect: Some(connect), ..core });
+        core.attach_assistant();
+        let engine = serde_json::json!({"account": openai, "model": "gpt-realtime-2.1"});
+        let chosen = Request::SetSetting { key: SettingKey::LiveEngine, value: engine };
+        assert_eq!(core.handle(chosen).await, Response::Ok);
+        (core, script, voices)
+    }
+
+    /// What the fake engine was sent so far, by kind.
+    fn live_sent(script: &live::tests::Script) -> Vec<String> {
+        script.sent.lock().expect("lock").iter().map(|out| format!("{out:?}")).collect()
+    }
+
+    /// Waits until `holds` of the core, at most a few seconds.
+    async fn live_until(what: &str, holds: impl Fn() -> bool) {
+        for _ in 0..400 {
+            if holds() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("never: {what}");
+    }
+
+    /// The conversation of the conversation by voice, once the first sentence started it.
+    async fn live_conversation(core: &Core) -> String {
+        for _ in 0..400 {
+            if let Some(id) = core.lock_talk().as_ref().and_then(|talk| talk.conversation.clone()) {
+                return id;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("no conversation by voice");
+    }
+
+    /// Issue #838: what the person said becomes their message, the engine's answer the assistant's, spoken whole and
+    /// named by its model; the engine was configured first, and neither the store nor the log hold sound, the key or
+    /// what was said.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_conversation_engine_answers_a_round_with_its_transcript() {
+        use crate::assistant::live::Incoming;
+        use torro_ipc::assistant::EntryContent;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, script, mut voices) = live_core(dir.path()).await;
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        let say = voices.recv().await.expect("connected");
+        live_until("configured", || live_sent(&script).first().is_some_and(|kind| kind == "Configure")).await;
+        // A frame of the microphone reaches the engine.
+        core.voice.mic().send(crate::apps::MicFrame { samples: vec![7; 160], clean: true });
+        live_until("heard", || live_sent(&script).iter().any(|kind| kind == "Audio")).await;
+        for incoming in [
+            Incoming::SpeechStarted,
+            Incoming::SpeechStopped { audio_end_ms: Some(10) },
+            Incoming::AnswerText("It is ".into()),
+            Incoming::Heard("What is on today?".into()),
+            Incoming::AnswerAudio(vec![1, 2, 3]),
+            Incoming::AnswerText("quiet.".into()),
+            Incoming::AnswerDone { text: "It is quiet.".into(), calls: Vec::new() },
+        ] {
+            say.send(incoming).expect("the session listens");
+        }
+        let id = live_conversation(&core).await;
+        let entries = conversation_until(&core, &id, |running, entries| {
+            !running && entries.iter().any(|entry| matches!(entry.content, EntryContent::Answer { .. }))
+        })
+        .await;
+        let said: Vec<_> = entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                EntryContent::Message { text, from: None, .. } => Some(("person", text.clone(), None)),
+                EntryContent::Answer { spoken, model, .. } => {
+                    Some(("engine", spoken.clone().unwrap_or_default(), model.clone()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            said,
+            [
+                ("person", "What is on today?".to_string(), None),
+                ("engine", "It is quiet.".to_string(), Some("gpt-realtime-2.1".to_string())),
+            ]
+        );
+        let stored: String = walkdir_text(dir.path());
+        assert!(!stored.contains(AI_KEY), "the key never leaves the keychain");
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).unwrap_or_default();
+        assert!(!log.contains("on today") && !log.contains("quiet"), "{log}");
+        assert_eq!(core.handle(Request::EndTalk).await, Response::Ok);
+    }
+
+    /// Every file under `dir` that reads as text, joined: what the core wrote.
+    fn walkdir_text(dir: &std::path::Path) -> String {
+        let mut text = String::new();
+        let mut folders = vec![dir.to_path_buf()];
+        while let Some(folder) = folders.pop() {
+            for entry in std::fs::read_dir(&folder).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    folders.push(path);
+                } else if let Ok(read) = std::fs::read_to_string(&path) {
+                    text.push_str(&read);
+                }
+            }
+        }
+        text
+    }
+
+    /// Issue #838: speaking into the answer stops it with what was heard, and the engine is told to stop; a lost
+    /// connection is opened again with the instructions and the conversation; a closing word ends the talk.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_conversation_engine_is_interrupted_reconnected_and_closed() {
+        use crate::assistant::live::Incoming;
+        use torro_ipc::assistant::EntryContent;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, script, mut voices) = live_core(dir.path()).await;
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        let say = voices.recv().await.expect("connected");
+        say.send(Incoming::Heard("Tell me a long story".into())).expect("listens");
+        say.send(Incoming::AnswerText("Once upon a time".into())).expect("listens");
+        let id = live_conversation(&core).await;
+        conversation_until(&core, &id, |running, _| running).await;
+        say.send(Incoming::SpeechStarted).expect("listens");
+        let entries = conversation_until(&core, &id, |running, _| !running).await;
+        assert!(entries.iter().any(|entry| matches!(entry.content, EntryContent::Stopped { .. })), "{entries:?}");
+        live_until("cancelled", || live_sent(&script).iter().any(|kind| kind == "Cancel")).await;
+
+        // The connection closes: a new one gets the instructions and the conversation again.
+        drop(say);
+        let say = voices.recv().await.expect("connected again");
+        live_until("configured again", || {
+            let sent = live_sent(&script);
+            sent.iter().filter(|kind| *kind == "Configure").count() == 2
+                && sent.last().is_some_and(|kind| kind == "History")
+        })
+        .await;
+        assert_eq!(script.connections.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        // "Danke" ends the conversation by voice and stores nothing.
+        say.send(Incoming::Heard("Danke".into())).expect("listens");
+        live_until("ended", || core.lock_talk().is_none()).await;
+        let Response::Conversation { entries: after, .. } = core.assistant.get(&id, None).await else { panic!("kept") };
+        assert_eq!(after.len(), entries.len(), "the closing word is no message");
+    }
+
+    /// Issue #838: back to this computer during a conversation ends it at once: no frame reaches the engine any more.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn back_to_this_computer_ends_the_engine_at_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, script, mut voices) = live_core(dir.path()).await;
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        let _say = voices.recv().await.expect("connected");
+        let back = Request::SetSetting { key: SettingKey::LiveEngine, value: serde_json::Value::Null };
+        assert_eq!(core.handle(back).await, Response::Ok);
+        assert!(core.lock_talk().is_none() && core.live_engine_running().is_none(), "ended");
+        let before = live_sent(&script).len();
+        core.voice.mic().send(crate::apps::MicFrame { samples: vec![7; 160], clean: true });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert_eq!(live_sent(&script).len(), before, "nothing more goes out");
+    }
+
+    /// Issue #838: the engine's tools run through the core with the assistant's rights: choosing a cloud engine is
+    /// refused as for any client, back to this computer waits for the person's approval in the window.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_engine_s_tools_run_with_the_assistant_s_rights_and_approvals() {
+        use crate::assistant::live::Incoming;
+        use torro_core::ai::ToolCall;
+        use torro_ipc::assistant::EntryContent;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, script, mut voices) = live_core(dir.path()).await;
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Settings, AreaRights { level: Level::Full, admin: true });
+        core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights).await.expect("the assistant");
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        let say = voices.recv().await.expect("connected");
+        let engine = core.settings.current().voice.live_engine.expect("chosen");
+        let other = serde_json::json!({"key": "live_engine", "value": {"account": engine.account, "model": "gpt-realtime-2.1-mini"}});
+        let call = |id: &str, arguments: serde_json::Value| ToolCall {
+            id: id.into(),
+            name: "settings_set_setting".into(),
+            arguments: arguments.to_string(),
+        };
+        say.send(Incoming::Heard("Use the mini engine".into())).expect("listens");
+        say.send(Incoming::AnswerDone { text: String::new(), calls: vec![call("c1", other)] }).expect("listens");
+        let id = live_conversation(&core).await;
+        conversation_until(&core, &id, |_, entries| {
+            entries.iter().any(
+                |entry| matches!(&entry.content, EntryContent::Tool { error: Some(code), .. } if code == "forbidden"),
+            )
+        })
+        .await;
+        live_until("result sent", || live_sent(&script).iter().any(|kind| kind == "ToolResults")).await;
+        let back = serde_json::json!({"key": "live_engine", "value": null});
+        say.send(Incoming::AnswerDone { text: String::new(), calls: vec![call("c2", back)] }).expect("listens");
+        conversation_until(&core, &id, |running, entries| {
+            running && entries.iter().any(|entry| matches!(entry.content, EntryContent::Approval { .. }))
+        })
+        .await;
+        assert_eq!(core.settings.current().voice.live_engine, Some(engine), "nothing changes without the person");
+        assert_eq!(core.handle(Request::EndTalk).await, Response::Ok);
     }
 }
 

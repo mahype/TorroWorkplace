@@ -1910,6 +1910,14 @@ impl AiAccounts {
             .collect()
     }
 
+    /// How many minutes one live connection of `engine` may last at its provider (issue #838); 60 when unknown.
+    pub async fn live_minutes(&self, engine: &torro_ipc::LiveEngine) -> u32 {
+        let provider = self.server(&engine.account).await.map(|(provider, _)| provider);
+        provider
+            .and_then(|provider| ai::live_models(provider).iter().find(|model| model.id == engine.model))
+            .map_or(60, |model| model.minutes)
+    }
+
     /// Opens the live connection of the conversation engine `model` of the account `account` (issue #838): a
     /// WebSocket to `wss://<host>/v1/realtime?model=<model>` (the account's address with `ws` for `http`), the key
     /// in its `Authorization` header. Only where a key may travel ([`ai::key_may_travel`]); errors never repeat it

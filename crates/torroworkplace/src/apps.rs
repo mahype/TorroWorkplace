@@ -596,6 +596,60 @@ impl EchoPipe {
     }
 }
 
+/// How many frames of the microphone wait for a conversation engine at most (issue #838); more are dropped.
+const MIC_WAITING: usize = 64;
+
+/// One frame of the microphone the listener sent for a conversation engine in the cloud (issue #838): 16-bit mono
+/// at 16 kHz, and whether the sound read aloud was taken out of it (echo cancellation runs).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MicFrame {
+    pub samples: Vec<i16>,
+    pub clean: bool,
+}
+
+/// The way the listener's microphone goes to the session of a conversation engine (issue #838): over the pipe that
+/// already joins the core and the listener, so no other program reaches it. Clones share it; empty while no
+/// session runs, and then every frame is dropped, as one that comes while the session is behind.
+#[derive(Debug, Clone, Default)]
+pub struct MicPipe(Arc<Mutex<Option<mpsc::Sender<MicFrame>>>>);
+
+impl MicPipe {
+    /// Frames go to a new channel from now on; its receiver is the session's.
+    pub fn open(&self) -> mpsc::Receiver<MicFrame> {
+        let (sender, frames) = mpsc::channel(MIC_WAITING);
+        *self.lock() = Some(sender);
+        frames
+    }
+
+    /// No more frames go anywhere.
+    pub fn close(&self) {
+        *self.lock() = None;
+    }
+
+    /// Hands `frame` to the session; dropped when none runs or it is behind.
+    pub(crate) fn send(&self, frame: MicFrame) {
+        if let Some(sender) = self.lock().as_ref() {
+            let _ = sender.try_send(frame);
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Option<mpsc::Sender<MicFrame>>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// The frame of a listener's line `{"mic": "<base64>", "clean": true}` (issue #838); `None` for any other line.
+fn mic_frame(line: &str) -> Option<MicFrame> {
+    use base64::Engine as _;
+    if !line.starts_with("{\"mic\"") {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(value.get("mic")?.as_str()?).ok()?;
+    let samples = bytes.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect();
+    Some(MicFrame { samples, clean: value.get("clean").and_then(serde_json::Value::as_bool).unwrap_or(false) })
+}
+
 /// Whether `line` of the speech helper is an echo line (`{"echo": …}`) and no answer of a job.
 fn is_echo(line: &str) -> bool {
     serde_json::from_str::<serde_json::Value>(line.trim()).is_ok_and(|value| value.get("echo").is_some())
@@ -618,6 +672,8 @@ pub struct Listener {
     stop_ahead: Mutex<Option<std::time::Instant>>,
     /// The running listener's standard input for the speech helper's echo lines (issue #834).
     echo: EchoPipe,
+    /// Where the listener's microphone goes while a conversation engine talks (issue #838).
+    mic: MicPipe,
 }
 
 /// The one place for a dictation: free, or taken by one that runs with its standard input (`None`
@@ -666,7 +722,13 @@ impl Listener {
             dictation: Mutex::default(),
             stop_ahead: Mutex::default(),
             echo: EchoPipe::default(),
+            mic: MicPipe::default(),
         }
+    }
+
+    /// Where the listener's microphone goes for a conversation engine (issue #838).
+    pub fn mic(&self) -> MicPipe {
+        self.mic.clone()
     }
 
     /// The way to the running listener's standard input for the echo lines ([`SpeechHelper::with_echo`]).
@@ -784,12 +846,17 @@ impl Listener {
                 }
             });
         }
-        let echo = self.echo.clone();
+        let (echo, mic) = (self.echo.clone(), self.mic.clone());
         let (shared, changes) = (Arc::clone(&self.running), self.changes.clone());
         tokio::spawn(async move {
             let mut lines = BufReader::new(output).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let line = line.trim();
+                // The microphone for a conversation engine (issue #838): a dozen lines a second, before any lock.
+                if let Some(frame) = mic_frame(line) {
+                    mic.send(frame);
+                    continue;
+                }
                 let state = serde_json::from_str::<VoiceState>(line);
                 let round = || serde_json::from_str::<RoundLine>(line).map(|line| line.round);
                 let mut running = shared.lock().unwrap_or_else(PoisonError::into_inner);

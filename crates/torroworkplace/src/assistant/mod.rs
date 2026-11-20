@@ -1009,6 +1009,18 @@ impl Assistant {
         state.running.insert(id.to_string(), Run { id: state.next_run, task: task.abort_handle(), engine, partial });
     }
 
+    /// Adds an error entry with `code` and `message` (for people) to conversation `id` now (issue #838): the
+    /// connection to a conversation engine was lost outside an answer. Nothing while an answer runs there: its own
+    /// error says it.
+    pub async fn note_error(&self, id: &str, code: &str, message: &str) {
+        let mut state = self.state().await;
+        if state.running.contains_key(id) {
+            return;
+        }
+        let error = EntryContent::Error { code: code.into(), message: message.into() };
+        self.add_now(&mut state, id, error).await;
+    }
+
     /// Ends the run `run` of conversation `id` without another entry, while it is still the
     /// running one.
     async fn end_run(&self, id: &str, run: u64) {
