@@ -73,6 +73,7 @@ pub(crate) mod cards;
 mod compact;
 mod delegate;
 mod engines;
+pub mod live;
 mod model;
 pub(crate) mod profile;
 mod prompt;
@@ -736,6 +737,81 @@ impl Assistant {
         kind: EngineKind,
         now: DateTime<Utc>,
     ) -> Response {
+        self.send_with(message, about, kind, now, None).await
+    }
+
+    /// What the person said to a conversation engine in the cloud (issue #838, `crate::core::live`): `text` goes to
+    /// `conversation` (a new one with `None`) as their message, sent with the app key, and the engine's turn `turn`
+    /// answers it, the account and model of `engine` named in its entries. `busy` while an answer runs there: what
+    /// was said meanwhile is dropped.
+    pub async fn send_live(
+        self: &Arc<Self>,
+        conversation: Option<String>,
+        text: String,
+        engine: &torro_ipc::LiveEngine,
+        turn: Arc<live::LiveTurn>,
+    ) -> Response {
+        let message = Message {
+            conversation,
+            engine: engine.account.clone(),
+            model: Some(engine.model.clone()),
+            effort: None,
+            text,
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+            on_behalf: None,
+            from: None,
+            spoken: true,
+        };
+        self.send_with(message, None, EngineKind::Ai, Utc::now(), Some(turn)).await
+    }
+
+    /// The instructions and tools a conversation engine of `engine` starts with in `conversation` (issue #838), as
+    /// the assistant's answer would give them ([`model::live_setup`]); `None` before the core is there.
+    pub async fn live_setup(
+        self: &Arc<Self>,
+        conversation: Option<String>,
+        engine: &torro_ipc::LiveEngine,
+        turn: Arc<live::LiveTurn>,
+    ) -> Option<(String, Vec<torro_core::ai::ToolSpec>)> {
+        let host = self.host()?;
+        let (history, results, untrusted, about) = {
+            let state = self.state().await;
+            match conversation.as_ref().and_then(|id| state.conversations.get(id)) {
+                Some(held) => (held.entries.clone(), held.results.clone(), held.untrusted, held.about.clone()),
+                None => (Vec::new(), std::collections::BTreeMap::new(), false, None),
+            }
+        };
+        let job = model::Job {
+            conversation: conversation.unwrap_or_default(),
+            run: 0,
+            engine: engine.account.clone(),
+            model: Some(engine.model.clone()),
+            effort: None,
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            history,
+            results,
+            untrusted,
+            partial: Arc::default(),
+            actor: Actor::Assistant,
+            bot: None,
+            about,
+            spoken: true,
+            live: Some(turn),
+        };
+        Some(model::live_setup(Arc::clone(self), host, job).await)
+    }
+
+    async fn send_with(
+        self: &Arc<Self>,
+        message: Message,
+        about: Option<MailRef>,
+        kind: EngineKind,
+        now: DateTime<Utc>,
+        live: Option<Arc<live::LiveTurn>>,
+    ) -> Response {
         let mut state = self.state().await;
         let (mut conversation, new) = match &message.conversation {
             Some(id) if state.running.contains_key(id) => return busy(),
@@ -823,6 +899,7 @@ impl Assistant {
             bot: message.bot,
             about,
             spoken,
+            live,
         };
         match kind {
             EngineKind::Test => self.start_test_answer(&mut state, &id, engine),

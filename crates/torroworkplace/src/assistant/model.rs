@@ -61,7 +61,7 @@ use std::time::Duration;
 use chrono::{Local, Utc};
 use serde_json::{Value, json};
 use torro_core::ai::{
-    AiError, AiModel, BoxFuture, ChatMessage, ChatReply, ChatRequest, Provider, ToolCall, open_weights_only,
+    AiError, AiModel, BoxFuture, ChatMessage, ChatReply, ChatRequest, Provider, ToolCall, ToolSpec, open_weights_only,
 };
 use torro_core::i18n::{self, tr, trf};
 use torro_ipc::api::{Area, Lack, Operation, Rights};
@@ -658,7 +658,15 @@ pub(super) struct Job {
     /// answers aloud (issue #774). The prompt ends with [`prompt::spoken`], so the answer comes in a short
     /// spoken part and a shown part, and for the assistant with [`prompt::voice`] (issue #832, [`prompt::spoken_parts`]).
     pub spoken: bool,
+    /// The conversation engine in the cloud that answers (issue #838, [`super::live`]): it is the model, hears the
+    /// person itself and speaks all it says. The prompt ends with [`prompt::voice`] only, and no context fill is kept:
+    /// the engine holds the conversation. `None` for every other answer.
+    pub live: Option<Arc<super::live::LiveTurn>>,
 }
+
+/// The context window assumed for a conversation engine (issue #838): it keeps the conversation itself, so the loop
+/// only needs room for this answer's tools.
+const LIVE_CONTEXT: u64 = 128_000;
 
 /// The id of the call the loop makes itself to read the mail a chat is about (issue #605).
 const ABOUT_CALL: &str = "call_about_mail";
@@ -705,6 +713,25 @@ enum Outcome {
 /// Runs the answer `job` of `assistant` with the model of its engine and the tools of `host`, until
 /// the model answers, fails, takes too many steps, or the run is stopped. Its last entry ends the run.
 pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: Job) {
+    let mut run = prepare(assistant, host, job).await;
+    if let Err(error) = run.go().await {
+        let entry = EntryContent::Error { code: error.code().into(), message: error.to_string() };
+        run.add(entry, true).await;
+    }
+}
+
+/// The instructions and tools a conversation engine starts with (issue #838), as the first step of an answer of
+/// `job` would give them: the session configures the engine before the person's first sentence, so its first
+/// answer has the tools already.
+pub(super) async fn live_setup(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: Job) -> (String, Vec<ToolSpec>) {
+    let model = job.live.as_ref().map(|turn| turn.model.clone()).unwrap_or_default();
+    let run = prepare(assistant, host, job).await;
+    let machine = prompt::Machine::here(run.host.window_manager());
+    run.setup(&model, Place::Remote, Local::now(), &machine, false)
+}
+
+/// The answer `job` before its first step: what it knows of the person, the assistant and the conversation.
+async fn prepare(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: Job) -> Answering {
     // A bot has its own personality and no memory of the assistant's (task B.1).
     let (persona, memory) = match &job.bot {
         Some(bot) => (bot.personality.clone(), Vec::new()),
@@ -757,7 +784,7 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
             last
         }
     };
-    let mut run = Answering {
+    Answering {
         limits: assistant.limits,
         assistant,
         host,
@@ -772,10 +799,6 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         said,
         summaries: BTreeMap::new(),
         repeated: BTreeMap::new(),
-    };
-    if let Err(error) = run.go().await {
-        let entry = EntryContent::Error { code: error.code().into(), message: error.to_string() };
-        run.add(entry, true).await;
     }
 }
 
@@ -880,7 +903,16 @@ impl Answering {
     /// entry.
     async fn go(&mut self) -> Result<(), Ended> {
         // First the model, then where it runs (task S.23): everything below follows from that place.
-        let access = self.host.model(&self.job.engine, self.job.model.as_deref()).await.map_err(Ended::Model)?;
+        let access = match &self.job.live {
+            // The conversation engine is the model (issue #838): in the cloud, with the conversation in its memory.
+            Some(turn) => ModelAccess {
+                provider: Box::new(super::live::LiveProvider(Arc::clone(turn))),
+                model: turn.model.clone(),
+                place: Place::Remote,
+                context: Some(LIVE_CONTEXT),
+            },
+            None => self.host.model(&self.job.engine, self.job.model.as_deref()).await.map_err(Ended::Model)?,
+        };
         let model = access.model.clone();
         let small = tools::is_small(&model, access.place == Place::Local);
         // A small model loses its way sooner (issue #701).
@@ -924,63 +956,7 @@ impl Answering {
         // The system prompt and the tools of the step before, to see what changed since ([`without_thinking`]).
         let mut sent: Option<(String, Vec<torro_core::ai::ToolSpec>)> = None;
         for _ in 0..steps {
-            let rights = self.rights();
-            let allowed = self.allowed(rights.as_ref());
-            // The memory and the bots (task B.2) are the assistant's own, not areas the person granted;
-            // a server's tools (issue #302) are named in the prompt by their servers, not as the area.
-            let areas: BTreeSet<Area> = allowed
-                .iter()
-                .filter(|tool| !tool.is_server())
-                // The terminal (issue #754) is switched on by a person, not granted with an area; the prompt names it
-                // on a line of its own.
-                .filter(|tool| !torro_ipc::tools::is_terminal_command(tool.command.name))
-                .map(|tool| tool.command.area)
-                // The help (issue #702) is the one tool of `system`, no area the person granted.
-                .filter(|area| !matches!(area, Area::Assistant | Area::Bots | Area::System))
-                .collect();
-            let areas: Vec<Area> = areas.into_iter().collect();
-            let servers: BTreeSet<String> = allowed
-                .iter()
-                .filter(|tool| tool.is_server())
-                .filter_map(|tool| torro_ipc::extensions::parse_tool_name(&tool.spec.name).map(|(id, _)| id.into()))
-                .collect();
-            let servers: Vec<String> = servers.into_iter().collect();
-            let context = prompt::Context {
-                now,
-                lang: i18n::lang(),
-                machine: &machine,
-                person: Some(&self.person),
-                areas: &areas,
-                without: &self.job.without,
-                rights: rights.as_ref(),
-                engine: &self.job.engine,
-                model: &model,
-                place: access.place,
-                memory: &self.memory,
-                skills: &self.skills,
-                servers: &servers,
-                terminal: allowed.iter().any(|tool| torro_ipc::tools::is_terminal_command(tool.command.name)),
-            };
-            let mut system = match &self.job.bot {
-                Some(bot) => prompt::bot_system(Some(&self.persona), &prompt::BotParts::of(bot), &context),
-                None => prompt::system(Some(&self.persona), &context),
-            };
-            if let Some(about) = &self.job.about {
-                system = format!("{system}\n\n{}", prompt::about_mail(about));
-            }
-            if self.job.spoken {
-                system = format!("{system}\n\n{}", prompt::spoken_parts(self.job.bot.is_some()));
-            }
-            // A small model gets the reading tools first; a chat about a mail (issue #605) needs its one way to
-            // suggest among them, not behind find_tools, and the tool of the call that read the mail: else, with
-            // more tools than fit, the request shows the model a call of a tool it is not offered, and it cannot
-            // read the mail again without find_tools. Only order: the rights still decide what is offered.
-            let mut loaded = self.loaded.clone();
-            if let Some(about) = &self.job.about {
-                loaded.insert(tools::EXTRACT_ACTION.replace('.', "_"));
-                loaded.insert(about_call(about).name);
-            }
-            let tools = tools::offered(&allowed, small, &loaded);
+            let (system, tools) = self.setup(&model, access.place, now, &machine, small);
             let changed = sent.as_ref().is_some_and(|(before, offered)| *before != system || *offered != tools);
             if changed {
                 without_thinking(&mut messages);
@@ -1013,7 +989,7 @@ impl Answering {
             // Stored, not worked out on request (decision 1 of issue #831): the next step carries the answer too.
             // Written with the answer's line, in one go: the window that sees the answer reads the new value with
             // it, and a stop before the answer keeps none.
-            let fill = done.then(|| {
+            let fill = (done && self.job.live.is_none()).then(|| {
                 let answer = compact::estimate(&[ChatMessage::assistant(reply.text.clone(), Vec::new())], &[]);
                 let used = peak.saturating_add(answer);
                 ContextFill { used, limit: budget, window, shortened }
@@ -1058,6 +1034,79 @@ impl Answering {
             }
         }
         Err(Ended::TooManySteps(steps))
+    }
+
+    /// The system prompt and the tools of one step for `model` at `place`, with the time `now` and the computer
+    /// `machine` of the whole answer; a `small` model gets the reading tools first.
+    fn setup(
+        &self,
+        model: &str,
+        place: Place,
+        now: chrono::DateTime<Local>,
+        machine: &prompt::Machine,
+        small: bool,
+    ) -> (String, Vec<torro_core::ai::ToolSpec>) {
+        let rights = self.rights();
+        let allowed = self.allowed(rights.as_ref());
+        // The memory and the bots (task B.2) are the assistant's own, not areas the person granted;
+        // a server's tools (issue #302) are named in the prompt by their servers, not as the area.
+        let areas: BTreeSet<Area> = allowed
+            .iter()
+            .filter(|tool| !tool.is_server())
+            // The terminal (issue #754) is switched on by a person, not granted with an area; the prompt names it
+            // on a line of its own.
+            .filter(|tool| !torro_ipc::tools::is_terminal_command(tool.command.name))
+            .map(|tool| tool.command.area)
+            // The help (issue #702) is the one tool of `system`, no area the person granted.
+            .filter(|area| !matches!(area, Area::Assistant | Area::Bots | Area::System))
+            .collect();
+        let areas: Vec<Area> = areas.into_iter().collect();
+        let servers: BTreeSet<String> = allowed
+            .iter()
+            .filter(|tool| tool.is_server())
+            .filter_map(|tool| torro_ipc::extensions::parse_tool_name(&tool.spec.name).map(|(id, _)| id.into()))
+            .collect();
+        let servers: Vec<String> = servers.into_iter().collect();
+        let context = prompt::Context {
+            now,
+            lang: i18n::lang(),
+            machine,
+            person: Some(&self.person),
+            areas: &areas,
+            without: &self.job.without,
+            rights: rights.as_ref(),
+            engine: &self.job.engine,
+            model,
+            place,
+            memory: &self.memory,
+            skills: &self.skills,
+            servers: &servers,
+            terminal: allowed.iter().any(|tool| torro_ipc::tools::is_terminal_command(tool.command.name)),
+        };
+        let mut system = match &self.job.bot {
+            Some(bot) => prompt::bot_system(Some(&self.persona), &prompt::BotParts::of(bot), &context),
+            None => prompt::system(Some(&self.persona), &context),
+        };
+        if let Some(about) = &self.job.about {
+            system = format!("{system}\n\n{}", prompt::about_mail(about));
+        }
+        // A conversation engine speaks all it says (issue #838): only how to talk, no spoken and shown parts.
+        if self.job.live.is_some() {
+            system = format!("{system}\n\n{}", prompt::voice());
+        } else if self.job.spoken {
+            system = format!("{system}\n\n{}", prompt::spoken_parts(self.job.bot.is_some()));
+        }
+        // A small model gets the reading tools first; a chat about a mail (issue #605) needs its one way to
+        // suggest among them, not behind find_tools, and the tool of the call that read the mail: else, with
+        // more tools than fit, the request shows the model a call of a tool it is not offered, and it cannot
+        // read the mail again without find_tools. Only order: the rights still decide what is offered.
+        let mut loaded = self.loaded.clone();
+        if let Some(about) = &self.job.about {
+            loaded.insert(tools::EXTRACT_ACTION.replace('.', "_"));
+            loaded.insert(about_call(about).name);
+        }
+        let tools = tools::offered(&allowed, small, &loaded);
+        (system, tools)
     }
 
     /// The link cards after the final answer `answer` (issue #785, [`super::cards::link::after_answer`]): an address
