@@ -733,6 +733,14 @@ impl Assistant {
                     None if about.is_some() && about != conversation.about => {
                         return failure("this conversation is about another mail or none; start a new one for it");
                     }
+                    // A client that writes to a bot (issue #752) goes on only with a conversation it started itself: the
+                    // history holds what the bot read with its full rights, and the bot could tell it again.
+                    None if message.on_behalf.as_ref().is_some_and(|via| !conversation.started_by(&via.caller)) => {
+                        return refusal(
+                            "forbidden",
+                            "this key may continue only a conversation with a bot that it started itself",
+                        );
+                    }
                     None => (conversation.clone(), false),
                 },
                 None => return unknown(id),
