@@ -40925,6 +40925,38 @@ done"#,
         assert_eq!(after.len(), before, "the closing word is no message");
     }
 
+    /// Issue #838: a transcript that comes too late was stood in for by "(not understood)", which the answer went to:
+    /// it starts no message of its own that no answer would end.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_late_transcript_starts_no_second_turn() {
+        use crate::assistant::live::Incoming;
+        use torro_ipc::assistant::EntryContent;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, _script, mut voices) = live_core(dir.path()).await;
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        let say = voices.recv().await.expect("connected");
+        say.send(Incoming::SpeechStopped { audio_end_ms: None }).expect("listens");
+        say.send(Incoming::AnswerStarted).expect("listens");
+        say.send(Incoming::AnswerText("It is three.".into())).expect("listens");
+        say.send(Incoming::AnswerDone { text: "It is three.".into(), calls: Vec::new() }).expect("listens");
+        let id = live_conversation(&core).await;
+        let entries = conversation_until(&core, &id, |running, entries| {
+            !running && entries.iter().any(|entry| matches!(entry.content, EntryContent::Answer { .. }))
+        })
+        .await;
+        assert!(entries.iter().any(
+            |entry| matches!(&entry.content, EntryContent::Message { text, .. } if text == tr("(not understood)"))
+        ));
+        say.send(Incoming::Heard("What time is it?".into())).expect("listens");
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let Response::Conversation { conversation, entries: after } = core.assistant.get(&id, None).await else {
+            panic!("kept")
+        };
+        assert_eq!((after.len(), conversation.running), (entries.len(), false), "no second message, nothing runs");
+        assert_eq!(core.handle(Request::EndTalk).await, Response::Ok);
+    }
+
     /// Issue #838: a fault that comes back on every connection ends the talk after a few tries, saying so, instead of
     /// connecting again and again.
     #[cfg(unix)]

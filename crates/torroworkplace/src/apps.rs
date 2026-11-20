@@ -1687,8 +1687,6 @@ pub mod tests {
         listener.follow(false);
     }
 
-    /// Issue #828 (review): the line `torroassistant --listen` writes for a round, as its test
-    /// `a_round_is_told_as_the_core_reads_it` pins it; change both together.
     /// Issue #838: a frame of the microphone for a conversation engine, as the listener writes it
     /// (`a_frame_of_the_microphone_is_told_as_the_core_reads_it`); any other line is none.
     #[test]
@@ -1710,6 +1708,8 @@ pub mod tests {
         assert!(frames.try_recv().is_err(), "nothing after it ended");
     }
 
+    /// Issue #828 (review): the line `torroassistant --listen` writes for a round, as its test
+    /// `a_round_is_told_as_the_core_reads_it` pins it; change both together.
     #[test]
     fn a_round_line_of_the_listener_is_read() {
         let line: RoundLine = serde_json::from_str(

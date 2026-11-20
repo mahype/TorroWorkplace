@@ -1178,6 +1178,8 @@ Modul in der Cloud; Agenten dürfen die Liste lesen und auf diesen Rechner zurü
   (`Talk.live` sagt dem Hörer, welcher Weg gilt). Ein Fehler, der bei jeder neuen Verbindung wiederkommt, beendet das
   Gespräch nach drei Versuchen. Unterbrochen wird nur, solange die Antwort klingt; „Stop“ im Fenster bringt auch das
   Modul zum Schweigen. Was nach dem Weckwort während des Tons gesagt wird, hört das Modul nicht.
+  Was die Person sagt, während ein Werkzeug läuft oder eine Freigabe wartet, beantwortet das Modul nicht: Seine Antwort
+  darauf wird gestoppt, die Freigabe gibt es nur im Fenster.
 - **Messung:** Jede Runde erscheint unter „Response times“ mit dem Modell (`VoiceRound.engine`), ohne
   Erkennungszeit.
 

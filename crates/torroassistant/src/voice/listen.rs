@@ -715,6 +715,9 @@ impl<A: Assistant> Listener<'_, A> {
                         self.speaker.chime();
                         return Ok(Ended::Nothing);
                     }
+                    // The engine no longer hears (another start could not connect): the next round answers with this
+                    // computer.
+                    Look::Go(TalkNow { talk: Some(now), .. }) if !now.live => return Ok(Ended::Nothing),
                     Look::Go(TalkNow { talk: Some(now), .. }) if now.conversation != conversation => {
                         if let Some(id) = &now.conversation {
                             self.assistant.open(id);

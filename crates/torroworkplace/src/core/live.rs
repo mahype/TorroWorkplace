@@ -103,6 +103,10 @@ impl Core {
                 return;
             }
         };
+        // The talk ended or another engine was chosen while it connected: nothing more goes to this one.
+        if self.lock_talk().is_none() || self.settings.current().voice.live_engine.as_ref() != Some(&engine) {
+            return;
+        }
         let id = SESSIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
         let (stop, stops) = mpsc::unbounded_channel();
         let mut live = self.lock_live();
@@ -197,6 +201,9 @@ impl Core {
             discarding: false,
             person_speaks: false,
             failures: 0,
+            late_heard: None,
+            awaiting_results: false,
+            item_sounds: None,
         };
         session.run(frames, stops).await;
     }
@@ -219,10 +226,11 @@ impl Core {
         if !ours {
             return;
         }
-        self.speech.stop().await;
+        // The talk first, without waiting between: a talk started meanwhile is not taken with it.
         self.voice.mic().close();
         self.forget_talk();
         self.follow_voice();
+        self.speech.stop().await;
     }
 }
 
@@ -312,7 +320,18 @@ struct Session<'a> {
     person_speaks: bool,
     /// Connections lost in a row without a round between them: a fault that comes back every time ends the talk.
     failures: usize,
+    /// A transcript that came too late for its sentence, which "(not understood)" stood in for: dropped when it comes
+    /// within [`LATE_HEARD`], so it starts no turn of its own that no answer would end.
+    late_heard: Option<Instant>,
+    /// The turn's answer called tools and waits for their results: an answer the engine begins meanwhile (to speech
+    /// during a tool or an approval) is none of this turn's, and is stopped.
+    awaiting_results: bool,
+    /// When the sound of the answer's current item began, for where the engine cuts it ([`Outgoing::Cancel`]).
+    item_sounds: Option<Instant>,
 }
+
+/// How long a transcript that came too late is still taken for the sentence "(not understood)" stood in for.
+const LATE_HEARD: Duration = Duration::from_secs(10);
 
 /// The next line of `reader`'s helper; never while there is none.
 async fn next_line(reader: &mut Option<LiveReader<'_>>) -> Result<SpeechLine, crate::apps::SpeechError> {
@@ -334,6 +353,9 @@ impl<'a> Session<'a> {
                     true
                 }
                 Some(order) = self.orders.recv() => {
+                    if matches!(order, Outgoing::ToolResults(_)) {
+                        self.awaiting_results = false;
+                    }
                     if self.wire.send(order).await.is_err() {
                         self.reconnect(false).await
                     } else {
@@ -412,9 +434,21 @@ impl<'a> Session<'a> {
             }
             Incoming::Heard(text) => {
                 self.failures = 0;
+                // The transcript of a sentence "(not understood)" already stood in for: its answer went there.
+                if self.late_heard.take().is_some_and(|at| at.elapsed() < LATE_HEARD) {
+                    return true;
+                }
                 return self.on_heard(&text).await;
             }
-            Incoming::AnswerStarted => self.discarding = false,
+            // An answer the engine begins while the turn waits for its tools' results answers speech during a tool or an
+            // approval, not the turn: it stops, and what it says is dropped. Approvals are given in the window only.
+            Incoming::AnswerStarted if self.awaiting_results => {
+                self.discarding = true;
+                let _ = self.wire.send(Outgoing::Cancel { played_ms: 0 }).await;
+            }
+            Incoming::AnswerStarted => {
+                (self.discarding, self.answering, self.item_sounds) = (false, true, None);
+            }
             // The rest of an answer that was stopped.
             Incoming::AnswerText(_) | Incoming::AnswerAudio(_) | Incoming::AnswerDone { .. } if self.discarding => {}
             Incoming::AnswerText(piece) => {
@@ -427,11 +461,13 @@ impl<'a> Session<'a> {
             }
             Incoming::AnswerAudio(samples) => {
                 self.answering = true;
+                self.item_sounds.get_or_insert_with(Instant::now);
                 self.play(&samples).await;
             }
             Incoming::AnswerDone { text, calls } => {
                 self.failures = 0;
                 let over = calls.is_empty();
+                self.awaiting_results = !over && self.turn.is_some();
                 self.tell(TurnEvent::Done { text, calls });
                 if over {
                     self.answering = false;
@@ -442,12 +478,15 @@ impl<'a> Session<'a> {
                     self.turn = None;
                 }
             }
-            Incoming::Closed | Incoming::Failed { .. } => {
-                if let Incoming::Failed { code } = &incoming {
-                    eprintln!("torroworkplace: conversation engine failed: {code}");
+            // An error of one request (OpenAI keeps the connection): a turn that waits for an answer to it gets none, so it
+            // ends; the connection goes on. A connection that is gone says `Closed`.
+            Incoming::Failed { code } => {
+                eprintln!("torroworkplace: conversation engine failed: {code}");
+                if self.turn.is_some() && !self.answering {
+                    (self.turn, self.awaiting_results) = (None, false);
                 }
-                return self.reconnect(false).await;
             }
+            Incoming::Closed => return self.reconnect(false).await,
         }
         true
     }
@@ -515,11 +554,8 @@ impl<'a> Session<'a> {
         if !self.answering && self.reader.is_none() && self.turn.is_none() {
             return;
         }
-        let played_ms = self
-            .reader
-            .as_ref()
-            .and_then(|reader| reader.playing)
-            .map_or(0, |at| u32::try_from(at.elapsed().as_millis()).unwrap_or(u32::MAX));
+        // Of the item that sounds now: an answer with tools has one item before them and one after.
+        let played_ms = self.item_sounds.map_or(0, |at| u32::try_from(at.elapsed().as_millis()).unwrap_or(u32::MAX));
         let heard =
             self.reader.as_ref().map(|reader| reader.heard.lock().unwrap_or_else(PoisonError::into_inner).clone());
         self.stop_reading().await;
@@ -538,21 +574,20 @@ impl<'a> Session<'a> {
         }
         let running = self.answering;
         (self.turn, self.answering, self.response) = (None, false, Spoken::default());
+        (self.awaiting_results, self.item_sounds) = (false, None);
         self.pending.clear();
         // Only an answer that still comes has more to drop; one that was over sends nothing more.
         self.discarding = running;
         let _ = self.wire.send(Outgoing::Cancel { played_ms }).await;
     }
 
-    /// The engine and model the person's message names (issue #838): the chat model of the settings when it is one of
-    /// an AI account, else the engine's account without a model. The engine answers it either way; a message typed
-    /// later in the same conversation goes to that chat model, not to the conversation engine.
+    /// The engine and model the person's message names (issue #838): the engine's account, so tools, approvals and the
+    /// log name where the data goes; the model is the chat model of the settings when it is one of that account, else
+    /// none. A message typed later in the same conversation goes to a chat model, never to the conversation engine.
     fn named(&self) -> (String, Option<String>) {
         let chat = self.core.settings.current().ai_slots.chat;
-        match chat {
-            Some(slot) if slot.engine.starts_with("ai:") => (slot.engine, slot.model),
-            _ => (self.engine.account.clone(), None),
-        }
+        let model = chat.filter(|slot| slot.engine == self.engine.account).and_then(|slot| slot.model);
+        (self.engine.account.clone(), model)
     }
 
     /// A frame of the microphone goes to the engine, unless it may hold Torro's own voice.
@@ -735,6 +770,7 @@ impl<'a> Session<'a> {
     /// session is over.
     async fn on_tick(&mut self) -> bool {
         if self.stopped.is_some_and(|at| at.elapsed() >= HEARD_WAIT) {
+            self.late_heard = Some(Instant::now());
             return self.on_heard("").await;
         }
         let busy = self.answering
@@ -757,10 +793,13 @@ impl<'a> Session<'a> {
     /// that comes back every time (a field the provider refuses) never loops. `false` once it ended.
     async fn reconnect(&mut self, planned: bool) -> bool {
         let lost = tr("The connection to the conversation engine was lost.");
+        // An answer that runs says the loss itself: the conversation does not say it twice.
+        let told = self.turn.is_some();
         if !planned {
             self.failures += 1;
             if self.failures > RECONNECTS {
-                self.core.close_live(self.id, self.conversation.clone().as_deref(), Some(lost)).await;
+                let failed = (!told).then_some(lost);
+                self.core.close_live(self.id, self.conversation.clone().as_deref(), failed).await;
                 return false;
             }
         }
@@ -769,6 +808,7 @@ impl<'a> Session<'a> {
         self.stop_reading().await;
         (self.turn, self.answering, self.stopped, self.round) = (None, false, None, None);
         (self.discarding, self.person_speaks) = (false, false);
+        (self.awaiting_results, self.item_sounds, self.late_heard) = (false, None, None);
         self.pending.clear();
         self.response = Spoken::default();
         (self.commands, self.orders) = mpsc::unbounded_channel();
@@ -789,7 +829,8 @@ impl<'a> Session<'a> {
                 }
             }
         }
-        self.core.close_live(self.id, self.conversation.clone().as_deref(), Some(lost)).await;
+        let failed = (!told).then_some(lost);
+        self.core.close_live(self.id, self.conversation.clone().as_deref(), failed).await;
         false
     }
 }
