@@ -78,7 +78,7 @@ impl Core {
         let usable =
             self.ai.live_engines().await.iter().any(|option| option.engine() == engine && option.missing.is_none());
         let Some(core) = self.me.get().and_then(std::sync::Weak::upgrade) else { return };
-        if !usable && self.live_connect.is_none() {
+        if !usable {
             eprintln!("torroworkplace: the conversation engine has no account with a key; the local chain answers");
             return;
         }

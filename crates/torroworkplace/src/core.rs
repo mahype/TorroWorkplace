@@ -14202,7 +14202,9 @@ impl Core {
             Some(slot) => {
                 // The conversation just checked, not one the slot may hold meanwhile.
                 let (state, tool) = self.voice_in(slot.conversation.as_deref()).await;
-                Some(torro_ipc::Talk { conversation: slot.conversation, state, tool })
+                // Whether the conversation engine hears (issue #838): else the listener answers with the local chain.
+                let live = self.live_engine_running().is_some();
+                Some(torro_ipc::Talk { conversation: slot.conversation, state, tool, live })
             }
             None => None,
         };
@@ -40887,6 +40889,34 @@ done"#,
         live_until("ended", || core.lock_talk().is_none()).await;
         let Response::Conversation { entries: after, .. } = core.assistant.get(&id, None).await else { panic!("kept") };
         assert_eq!(after.len(), entries.len(), "the closing word is no message");
+    }
+
+    /// Issue #838: an engine whose account has no key does not start: the talk says so, and the listener answers with
+    /// the local chain.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_engine_without_a_key_leaves_the_talk_to_this_computer() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, script, _voices) = live_core(dir.path()).await;
+        let Response::Talk { talk: Some(talk), .. } = core.handle(Request::StartTalk { conversation: None }).await
+        else {
+            panic!("a talk")
+        };
+        assert!(talk.live, "OpenAI with its key hears");
+        assert_eq!(core.handle(Request::EndTalk).await, Response::Ok);
+        let xai = core.ai.live_engines().await.into_iter().find(|option| option.missing.is_some()).expect("xai");
+        let chosen = Request::SetSetting {
+            key: SettingKey::LiveEngine,
+            value: serde_json::to_value(xai.engine()).expect("json"),
+        };
+        assert_eq!(core.handle(chosen).await, Response::Ok);
+        let Response::Talk { talk: Some(talk), .. } = core.handle(Request::StartTalk { conversation: None }).await
+        else {
+            panic!("a talk")
+        };
+        assert!(!talk.live && core.live_engine_running().is_none(), "no key, no engine");
+        assert!(script.connections.load(std::sync::atomic::Ordering::SeqCst) <= 1, "nothing connects for xAI");
+        assert_eq!(core.handle(Request::EndTalk).await, Response::Ok);
     }
 
     /// Issue #838: back to this computer during a conversation ends it at once: no frame reaches the engine any more.

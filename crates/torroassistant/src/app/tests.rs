@@ -2203,8 +2203,12 @@ fn a_new_answer_is_read_aloud_from_its_first_sentence() {
     // The window's own conversation by voice: the listener has its answers read, the window does not.
     let mut talking = started(&["--chat", TOOLS]);
     talking.read_aloud = true;
-    talking.talk =
-        Some(torro_ipc::Talk { conversation: Some(TOOLS.into()), state: torro_ipc::VoiceState::Answering, tool: None });
+    talking.talk = Some(torro_ipc::Talk {
+        conversation: Some(TOOLS.into()),
+        state: torro_ipc::VoiceState::Answering,
+        tool: None,
+        live: false,
+    });
     sent(&mut talking);
     let next = talking.transcript.last() + 1;
     let summary = head(&talking, next, false);
@@ -2239,7 +2243,7 @@ fn talk_starts_a_conversation_by_voice_in_the_window() {
     let _ = app.view();
     let _ = app.update(Message::Talk);
     assert!(sent(&mut app).is_empty(), "no second start");
-    let talk = Talk { conversation: Some(TOOLS.into()), state: VoiceState::Conversing, tool: None };
+    let talk = Talk { conversation: Some(TOOLS.into()), state: VoiceState::Conversing, tool: None, live: false };
     let _ = app.update(Message::TalkStarted(Ok(Some(talk.clone()))));
     assert_eq!(app.own_talk(), Some(&talk));
     for state in [VoiceState::Recording, VoiceState::Answering, VoiceState::Conversing] {
@@ -2293,9 +2297,10 @@ fn talk_in_a_new_chat_follows_into_the_new_conversation() {
         conversation: None,
         state: VoiceState::Conversing,
         tool: None,
+        live: false,
     }))));
     assert!(app.own_talk().is_some(), "the line while the first sentence is not said");
-    let moved = Talk { conversation: Some(TOOLS.into()), state: VoiceState::Answering, tool: None };
+    let moved = Talk { conversation: Some(TOOLS.into()), state: VoiceState::Answering, tool: None, live: false };
     let _ = app.update(Message::TalkStatus(Ok((Some(moved.clone()), false))));
     assert_eq!(app.current.as_deref(), Some(TOOLS), "the window shows the new conversation");
     assert_eq!(app.own_talk(), Some(&moved));
@@ -2305,10 +2310,11 @@ fn talk_in_a_new_chat_follows_into_the_new_conversation() {
         conversation: Some(TOOLS.into()),
         state: VoiceState::Conversing,
         tool: None,
+        live: false,
     }))));
     let _ = left.update(Message::NewChat);
     let _ = left.update(Message::TalkStatus(Ok((
-        Some(Talk { conversation: Some(TOOLS.into()), state: VoiceState::Conversing, tool: None }),
+        Some(Talk { conversation: Some(TOOLS.into()), state: VoiceState::Conversing, tool: None, live: false }),
         false,
     ))));
     assert_eq!(left.current, None, "the new chat stays");
@@ -2444,6 +2450,7 @@ fn repeat_reads_the_spoken_part_again_and_stop_stops_it() {
         conversation: app.current.clone(),
         state: torro_ipc::VoiceState::Answering,
         tool: None,
+        live: false,
     });
     let _ = app.update(Message::TalkStatus(Ok((app.talk.clone(), true))));
     assert!(app.talk_speaking);

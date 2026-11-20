@@ -834,8 +834,8 @@ pub enum Request {
     #[serde(rename = "accounts.connect_ai")]
     ConnectAi {
         /// Which kind of server: `ollama`, `lm_studio`, `strata`, `openrouter`, `ollama_cloud`, `openai_compatible`, or a cloud
-        /// provider with a key of its own (tasks W.3, KI.1b): `anthropic`, `openai`, `gemini`,
-        /// `mistral`, `deepseek`, `qwen`, `kimi`, `glm`, `minimax`, and `jev` (issue #323, TypeSafe's
+        /// provider with a key of its own (tasks W.3, KI.1b): `anthropic`, `openai`, `gemini`, `xai`
+        /// (issue #838), `mistral`, `deepseek`, `qwen`, `kimi`, `glm`, `minimax`, and `jev` (issue #323, TypeSafe's
         /// decision model, which only sorts mail and is checked with one small decision). A cloud
         /// provider's usual address is its international API; for its platform for mainland China
         /// pass that address as `server`.
@@ -5466,6 +5466,10 @@ pub struct Talk {
     /// never what it reads or finds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    /// A conversation engine in the cloud hears and answers (issue #838): the listener sends it the microphone. `false`
+    /// for the local chain, also when an engine is chosen but cannot run (its account has no key or is gone).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live: bool,
 }
 
 /// One part the listener needs, found or not (`settings.voice_status`). Every part is built into the
