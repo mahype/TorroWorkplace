@@ -4103,6 +4103,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Dem Assistenten eine Nachricht in einer unbekannten Unterhaltung schicken, beantwortet von „{engine}“",
     ),
     (
+        "Send the assistant a voice message in \"{voice}\" (a new one after the pause, the old one keeps its date), answered by \"{engine}\"",
+        "Dem Assistenten eine Sprachnachricht in „{voice}“ schicken (nach der Pause ein neues, das alte behält sein Datum), beantwortet von „{engine}“",
+    ),
+    (
         "Start an assistant conversation answered by \"{engine}\"",
         "Eine Unterhaltung mit dem Assistenten beginnen, beantwortet von „{engine}“",
     ),
