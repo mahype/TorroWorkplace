@@ -1026,8 +1026,8 @@ fn engine_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let row = setting_row(None, tr("Conversation engine"), detail, button);
     let footer = match (chosen, option) {
         (Some(_), Some(option)) => trf(
-            "While you talk, everything the microphone hears goes to {provider}, and {provider} bills each minute. \
-             “Hey Torro” itself stays on this computer.",
+            "While you talk, everything the microphone hears goes to {provider}, with the conversation so far and what the \
+             assistant's tools read, and {provider} bills each minute. “Hey Torro” itself stays on this computer.",
             &[("provider", &option.provider.name())],
         ),
         (Some(_), None) => tr("The account of this engine is gone. Talking falls back to this computer.").to_string(),

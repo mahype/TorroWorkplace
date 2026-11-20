@@ -9979,8 +9979,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Der API-Schlüssel enthält Zeichen, die sich nicht senden lassen.",
     ),
     (
-        "While you talk, everything the microphone hears goes to {provider}, and {provider} bills each minute. “Hey Torro” itself stays on this computer.",
-        "Während du sprichst, geht alles, was das Mikrofon hört, an {provider}, und {provider} berechnet jede Minute. „Hey Torro“ selbst bleibt auf diesem Rechner.",
+        "While you talk, everything the microphone hears goes to {provider}, with the conversation so far and what the assistant's tools read, and {provider} bills each minute. “Hey Torro” itself stays on this computer.",
+        "Während du sprichst, geht alles, was das Mikrofon hört, an {provider}, dazu das bisherige Gespräch und was die Werkzeuge des Assistenten lesen, und {provider} berechnet jede Minute. „Hey Torro“ selbst bleibt auf diesem Rechner.",
     ),
     (
         "The account of this engine is gone. Talking falls back to this computer.",

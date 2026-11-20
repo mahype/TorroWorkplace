@@ -187,6 +187,12 @@ impl Dialect {
                 let error = event.get("error").unwrap_or(event);
                 let field = |key: &str| error.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
                 let code = Some(field("code")).filter(|code| !code.is_empty()).unwrap_or_else(|| field("type"));
+                // The server chooses the code: only a short word of letters, digits and `_.-` goes on to the log.
+                let code: String = code
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+                    .take(64)
+                    .collect();
                 // A cancel or truncate of an answer that was over already: nothing is wrong.
                 if ["cancel", "truncat", "no_active_response"].iter().any(|part| code.contains(part)) {
                     eprintln!("torroworkplace: conversation engine: ignored error {code}");
