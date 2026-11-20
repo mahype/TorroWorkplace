@@ -4689,9 +4689,8 @@ impl Core {
         if matches!(answer, Ok(Response::RecipientSuggestions { .. })) {
             ids.extend(read);
         }
-        if by_voice && let Ok(Response::Conversation { conversation, .. }) = &answer {
-            let renamed = self.assistant.take_retired(&conversation.id).await;
-            ids.extend(crate::audit::voice_ids(&conversation.id, renamed.as_deref()));
+        if by_voice && let Ok(answer) = &answer {
+            ids.extend(self.voice_log_ids(answer).await);
         }
         let shown = match &answer {
             Ok(response) => crate::audit::entry(client, command, ids, response, Utc::now()),
@@ -4699,6 +4698,19 @@ impl Core {
         };
         self.audit.record(&shown);
         answer
+    }
+
+    /// The ids of a voice message that ran (issue #859, [`crate::audit::voice_ids`]): the conversation the core
+    /// picked, and the old "Voice" it renamed when this message started the new one (its first entry is `1`).
+    /// Nothing for any other answer.
+    async fn voice_log_ids(&self, answer: &Response) -> Vec<String> {
+        let Response::Conversation { conversation, entries } = answer else { return Vec::new() };
+        let started = entries.first().is_some_and(|entry| entry.seq == 1);
+        let renamed = match started {
+            true => self.assistant.take_retired(&conversation.id).await,
+            false => None,
+        };
+        crate::audit::voice_ids(&conversation.id, renamed.as_deref())
     }
 
     /// The client of `key` and why it may not come in `door` now (#231,
@@ -6760,8 +6772,9 @@ impl Core {
             }
             Err(err) => return err.response(),
         };
-        let (command, ids) =
+        let (command, mut ids) =
             (request.operation().name(), [decided_ids(&request, &origin), self.holder_ids(&request)].concat());
+        let by_voice = matches!(request, Request::SendMessage { voice: true, .. });
         // Boxed: the run goes through `handle_within` again, deep in the stack already, and the
         // checks of the tools (#225) and of the models' switches (#231) made this frame too big.
         let response = match origin.terminal.is_some() {
@@ -6773,6 +6786,10 @@ impl Core {
             },
             false => Box::pin(self.run_approved(&client, request, pin, fingerprint.as_deref(), &origin)).await,
         };
+        // A voice message (issue #859): the conversation the core picked, as when it runs at once.
+        if by_voice {
+            ids.extend(self.voice_log_ids(&response).await);
+        }
         // The run is the client's request, logged with the approval it ran with; the answer
         // itself stays out of the log (it holds titles).
         let mut ran = crate::audit::entry(Some(client), command, ids, &response, Utc::now());
@@ -31726,6 +31743,7 @@ done"#,
         let mut rights = RightsTemplate::ReadAndWrite.rights();
         rights.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
         let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
         let by_voice = || Request::SendMessage {
             conversation: None,
             engine: torro_ipc::assistant::TEST_ENGINE.into(),
@@ -31749,6 +31767,19 @@ done"#,
         assert!(!line.ids.iter().any(|id| id.starts_with("renamed:")), "nothing renamed: {:?}", line.ids);
         let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
         assert!(!log.contains("Dinner") && !log.contains(tr("Voice")), "{log}");
+
+        // One that waited for the person: the line of its run names the conversation as well.
+        let mut asking = RightsTemplate::ReadAndWrite.rights();
+        asking.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, waiting) = client(&core, asking).await;
+        let asked = waits(ask(&core, Some(&waiting), by_voice()).await);
+        assert!(asked.summary.contains(tr("Voice")), "{}", asked.summary);
+        let decided = ask(&core, Some(&app_key), decide(&asked.id, true)).await;
+        assert!(matches!(decided, Response::Approval { .. }), "{decided:?}");
+        let ran = audit_lines(dir.path()).pop().expect("the line of the run");
+        assert_eq!(ran.approval.as_deref(), Some(asked.id.as_str()));
+        assert!(ran.ids.contains(&format!("conversation:{}", conversation.id)), "{:?}", ran.ids);
     }
 
     /// Decision 7: no template opens the area `assistant` for an agent, *Full access* neither; a

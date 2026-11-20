@@ -183,9 +183,9 @@ struct State {
     /// not by an agent with access to the assistant. Only that message can name a bot. In memory
     /// only: after a restart the person names the bot again.
     said: HashMap<String, u64>,
-    /// The last "Voice" a client's voice message renamed (issue #859), as (new conversation, old one): for the
-    /// line of that message in the log ([`Assistant::take_retired`]). Only the last one, so it never grows.
-    retired: Option<(String, String)>,
+    /// The "Voice" a client's voice message renamed (issue #859), by the new conversation it started: for the
+    /// line of that message in the log, which takes it at once ([`Assistant::take_retired`]).
+    retired: HashMap<String, String>,
 }
 
 /// An answer that runs.
@@ -800,7 +800,7 @@ impl Assistant {
                     }
                     // Only a client's line in the log names it; the person's own (app key) has none.
                     if message.from.is_some() {
-                        state.retired = Some((conversation.id.clone(), old));
+                        state.retired.insert(conversation.id.clone(), old);
                     }
                 }
                 Err(err) => eprintln!("torroworkplace: cannot keep the old conversation \"Voice\" by its date: {err}"),
@@ -1036,14 +1036,7 @@ impl Assistant {
     /// The "Voice" a client's voice message that started `conversation` renamed (issue #859), for that
     /// message's line in the log; taken once.
     pub async fn take_retired(&self, conversation: &str) -> Option<String> {
-        let mut state = self.state().await;
-        match state.retired.take() {
-            Some((new, old)) if new == conversation => Some(old),
-            other => {
-                state.retired = other;
-                None
-            }
-        }
+        self.state().await.retired.remove(conversation)
     }
 
     /// `assistant.cancel`: stops the running answer of `id`, keeps what the model wrote so far as
@@ -2115,7 +2108,7 @@ pub(crate) mod tests {
         let first = voiced(&assistant, &ai, by_client("Hello"), start).await;
         assert_eq!(assistant.take_retired(&first).await, None, "nothing renamed");
         let second = voiced(&assistant, &ai, by_client("Later"), start + TimeDelta::minutes(45)).await;
-        assert_eq!(assistant.take_retired("fedcba9876543210").await, None, "only for its own message");
+        assert_eq!(assistant.take_retired(&first).await, None, "only by the new conversation");
         assert_eq!(assistant.take_retired(&second).await, Some(first.clone()));
         assert_eq!(assistant.take_retired(&second).await, None, "taken once");
         let own = voiced(&assistant, &ai, spoken("Mine", Some(30)), start + TimeDelta::minutes(90)).await;
