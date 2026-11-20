@@ -8188,6 +8188,10 @@ impl Core {
                     Request::CancelAnswer { conversation } => vec![conversation.clone()],
                     _ => Vec::new(),
                 };
+                // A stop in the window silences the conversation engine too (issue #838): else its sound goes on.
+                if let Request::CancelAnswer { conversation } = &request {
+                    self.live_stop(conversation, false);
+                }
                 let answered = Box::pin(self.assistant_request(request, from)).await;
                 // Only once the deletion or the stop went through (review of #754); of several deleted, those that are
                 // gone, also when another could not be deleted.
@@ -14226,19 +14230,21 @@ impl Core {
     async fn voice_in(&self, conversation: Option<&str>) -> (torro_ipc::VoiceState, Option<String>) {
         use torro_ipc::VoiceState;
         let state = self.voice.state();
-        if state != VoiceState::Answering {
+        // With a conversation engine the listener only converses (issue #838): what it does is the core's to say.
+        let live = state == VoiceState::Conversing && self.live_engine_running().is_some();
+        if state != VoiceState::Answering && !live {
             return (state, None);
         }
         if self.speaking.now().0 {
             return (VoiceState::Speaking, None);
         }
         let Some(id) = conversation else {
-            return (VoiceState::Answering, None);
+            return (state, None);
         };
         match self.assistant.activity(id).await {
             Some(Some(tool)) => (VoiceState::UsingTool, Some(tool)),
             Some(None) => (VoiceState::Thinking, None),
-            None => (VoiceState::Answering, None),
+            None => (state, None),
         }
     }
 
@@ -15003,6 +15009,10 @@ impl Core {
     async fn interrupt(&self, conversation: &str, reach: Reach<'_>) -> Response {
         if let Some(hidden) = self.hidden_conversation(conversation, reach).await {
             return hidden;
+        }
+        // The conversation engine's answer (issue #838): its session stops it and keeps what was heard.
+        if self.live_stop(conversation, true) {
+            return Response::Ok;
         }
         // Where the answer that runs or was last there begins, and its message: a reading of this turn is stopped, and
         // what it read is taken while it is still the answer's (an approval decided since moves its start on).
@@ -40865,13 +40875,36 @@ done"#,
         assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
         let say = voices.recv().await.expect("connected");
         say.send(Incoming::Heard("Tell me a long story".into())).expect("listens");
+        say.send(Incoming::AnswerStarted).expect("listens");
         say.send(Incoming::AnswerText("Once upon a time".into())).expect("listens");
         let id = live_conversation(&core).await;
         conversation_until(&core, &id, |running, _| running).await;
-        say.send(Incoming::SpeechStarted).expect("listens");
+        // Interrupted (as the listener or the window does): the answer stops with a `stopped` entry.
+        assert_eq!(core.handle(Request::InterruptAnswer { conversation: id.clone() }).await, Response::Ok);
         let entries = conversation_until(&core, &id, |running, _| !running).await;
         assert!(entries.iter().any(|entry| matches!(entry.content, EntryContent::Stopped { .. })), "{entries:?}");
         live_until("cancelled", || live_sent(&script).iter().any(|kind| kind == "Cancel")).await;
+        // What still comes of the stopped answer is dropped; the next round has only its own answer, which may be
+        // over before what was said comes.
+        say.send(Incoming::AnswerText(" there lived".into())).expect("listens");
+        say.send(Incoming::AnswerDone { text: "Once upon a time there lived".into(), calls: Vec::new() })
+            .expect("listens");
+        say.send(Incoming::AnswerStarted).expect("listens");
+        say.send(Incoming::AnswerText("Tomorrow is sunny.".into())).expect("listens");
+        say.send(Incoming::AnswerDone { text: "Tomorrow is sunny.".into(), calls: Vec::new() }).expect("listens");
+        say.send(Incoming::Heard("And tomorrow?".into())).expect("listens");
+        let entries = conversation_until(&core, &id, |running, entries| {
+            !running
+                && entries.iter().any(
+                    |entry| matches!(&entry.content, EntryContent::Message { text, .. } if text == "And tomorrow?"),
+                )
+                && matches!(entries.last().map(|entry| &entry.content), Some(EntryContent::Answer { .. }))
+        })
+        .await;
+        let Some(EntryContent::Answer { spoken, .. }) = entries.last().map(|entry| &entry.content) else {
+            panic!("answered")
+        };
+        assert_eq!(spoken.as_deref(), Some("Tomorrow is sunny."), "not the rest of the old answer");
 
         // The connection closes: a new one gets the instructions and the conversation again.
         drop(say);
@@ -40885,10 +40918,34 @@ done"#,
         assert_eq!(script.connections.load(std::sync::atomic::Ordering::SeqCst), 2);
 
         // "Danke" ends the conversation by voice and stores nothing.
+        let before = entries.len();
         say.send(Incoming::Heard("Danke".into())).expect("listens");
         live_until("ended", || core.lock_talk().is_none()).await;
         let Response::Conversation { entries: after, .. } = core.assistant.get(&id, None).await else { panic!("kept") };
-        assert_eq!(after.len(), entries.len(), "the closing word is no message");
+        assert_eq!(after.len(), before, "the closing word is no message");
+    }
+
+    /// Issue #838: a fault that comes back on every connection ends the talk after a few tries, saying so, instead of
+    /// connecting again and again.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_fault_that_comes_back_ends_the_talk() {
+        use crate::assistant::live::Incoming;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, script, mut voices) = live_core(dir.path()).await;
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        for _ in 0..4 {
+            let say = voices.recv().await.expect("connected");
+            say.send(Incoming::Failed { code: "invalid_session_config".into() }).expect("listens");
+        }
+        for _ in 0..800 {
+            if core.lock_talk().is_none() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(core.lock_talk().is_none(), "ended");
+        assert_eq!(script.connections.load(std::sync::atomic::Ordering::SeqCst), 4, "the first and three more");
     }
 
     /// Issue #838: an engine whose account has no key does not start: the talk says so, and the listener answers with

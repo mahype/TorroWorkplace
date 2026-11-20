@@ -43,8 +43,16 @@ pub(super) type Connect =
 #[derive(Debug)]
 pub(super) struct LiveRun {
     pub(super) engine: LiveEngine,
+    /// Which session it is: one that ends takes only its own run.
+    id: u64,
     task: tokio::task::AbortHandle,
+    /// Stops the engine's answer from outside (the window's stop): `true` keeps what was heard in the conversation as
+    /// an interruption, `false` only silences the engine (the answer was cancelled already).
+    stop: mpsc::UnboundedSender<bool>,
 }
+
+/// Counts the sessions, for [`LiveRun::id`].
+static SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// How long a frame the echo cancellation did not clean stays dropped after something was read aloud: the echo of
 /// the room fades.
@@ -70,8 +78,9 @@ const TICK: Duration = Duration::from_millis(250);
 const SENT_KEPT: Duration = Duration::from_secs(30);
 
 impl Core {
-    /// Starts the session for the conversation by voice when a person chose an engine and its account has a key;
-    /// otherwise the local chain answers as before. One that runs ends first.
+    /// Starts the session for the conversation by voice when a person chose an engine, its account has a key and the
+    /// engine answers; otherwise the local chain answers as before (`assistant.talk_status` says which). One that runs
+    /// ends first.
     pub(super) async fn start_live(&self) {
         self.end_live();
         let Some(engine) = self.settings.current().voice.live_engine else { return };
@@ -82,12 +91,40 @@ impl Core {
             eprintln!("torroworkplace: the conversation engine has no account with a key; the local chain answers");
             return;
         }
+        // Connected before the talk says it is live: an engine that does not answer (a refused key, no network) leaves
+        // the conversation to this computer instead of a microphone nobody hears.
+        let wire = match self.connect_live(&engine).await {
+            Ok(wire) => wire,
+            Err(err) => {
+                eprintln!(
+                    "torroworkplace: cannot connect the conversation engine, the local chain answers: {}",
+                    err.code()
+                );
+                return;
+            }
+        };
+        let id = SESSIONS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let (stop, stops) = mpsc::unbounded_channel();
+        let mut live = self.lock_live();
+        // Another start came meanwhile: the newer session wins, the older ends.
+        if let Some(older) = live.take() {
+            older.task.abort();
+        }
         let frames = self.voice.mic().open();
         let task = tokio::spawn({
             let engine = engine.clone();
-            async move { core.run_live(engine, frames).await }
+            async move { core.run_live(id, engine, wire, frames, stops).await }
         });
-        *self.lock_live() = Some(LiveRun { engine, task: task.abort_handle() });
+        *live = Some(LiveRun { engine, id, task: task.abort_handle(), stop });
+    }
+
+    /// Stops the engine's answer in `conversation` when the session answers there (issue #838): the window's stop or
+    /// interruption. `interrupt` keeps what was heard in the conversation. `false` when no session answers there.
+    pub(super) fn live_stop(&self, conversation: &str, interrupt: bool) -> bool {
+        if !self.live_answers_in(conversation) {
+            return false;
+        }
+        self.lock_live().as_ref().is_some_and(|run| run.stop.send(interrupt).is_ok())
     }
 
     /// Ends the session at once, if one runs: no frame goes to the engine any more.
@@ -124,20 +161,20 @@ impl Core {
     }
 
     /// The session (see the module) until the conversation by voice ends.
-    async fn run_live(self: Arc<Self>, engine: LiveEngine, frames: mpsc::Receiver<MicFrame>) {
+    async fn run_live(
+        self: Arc<Self>,
+        id: u64,
+        engine: LiveEngine,
+        wire: Box<dyn LiveWire>,
+        frames: mpsc::Receiver<MicFrame>,
+        stops: mpsc::UnboundedReceiver<bool>,
+    ) {
         let conversation = self.lock_talk().as_ref().and_then(|talk| talk.conversation.clone());
-        let wire = match self.connect_live(&engine).await {
-            Ok(wire) => wire,
-            Err(err) => {
-                eprintln!("torroworkplace: cannot connect the conversation engine: {}", err.code());
-                self.close_live(conversation.as_deref(), Some(&live_error(&err))).await;
-                return;
-            }
-        };
         let (commands, orders) = mpsc::unbounded_channel();
         let minutes = self.ai.live_minutes(&engine).await;
         let mut session = Session {
             core: &self,
+            id,
             engine,
             limit: Duration::from_secs(u64::from(minutes) * 60).saturating_sub(RENEW_BEFORE),
             wire,
@@ -157,30 +194,35 @@ impl Core {
             sent_ms: 0,
             sent: VecDeque::new(),
             quiet_until: None,
+            discarding: false,
+            person_speaks: false,
+            failures: 0,
         };
-        session.run(frames).await;
+        session.run(frames, stops).await;
     }
 
-    /// Ends the conversation by voice from the session: what is read stops, a lost connection says so in the
-    /// conversation (`failed`), and the microphone closes. Ending it ends the session's task too, so this comes last.
-    async fn close_live(&self, conversation: Option<&str>, failed: Option<&str>) {
-        if let (Some(id), Some(message)) = (conversation, failed) {
-            self.assistant.note_error(id, "offline", message).await;
+    /// Ends the conversation by voice from the session `id`: what is read stops, a lost connection says so in the
+    /// conversation (`failed`), and the microphone closes. Only while it is still the session that runs: a newer one
+    /// keeps its conversation. The session's task returns after this.
+    async fn close_live(&self, id: u64, conversation: Option<&str>, failed: Option<&str>) {
+        if let (Some(conversation), Some(message)) = (conversation, failed) {
+            self.assistant.note_error(conversation, "offline", message).await;
+        }
+        let ours = {
+            let mut live = self.lock_live();
+            let ours = live.as_ref().is_some_and(|run| run.id == id);
+            if ours {
+                live.take();
+            }
+            ours
+        };
+        if !ours {
+            return;
         }
         self.speech.stop().await;
         self.voice.mic().close();
-        self.lock_live().take();
         self.forget_talk();
         self.follow_voice();
-    }
-}
-
-/// The text of a connection that could not be opened, for people.
-fn live_error(error: &AiError) -> String {
-    match error {
-        AiError::Auth => tr("The provider refused the API key of the conversation engine.").into(),
-        AiError::NoKey => tr("Connect the account of the conversation engine again: no API key is stored.").into(),
-        _ => tr("The connection to the conversation engine was lost.").into(),
     }
 }
 
@@ -234,6 +276,8 @@ struct Round {
 /// One session (see the module).
 struct Session<'a> {
     core: &'a Core,
+    /// Which session it is ([`LiveRun::id`]).
+    id: u64,
     engine: LiveEngine,
     /// How long one connection may last before a new one is opened in a pause.
     limit: Duration,
@@ -262,6 +306,12 @@ struct Session<'a> {
     sent: VecDeque<(u64, Instant)>,
     /// Until when a frame the echo cancellation did not clean is dropped.
     quiet_until: Option<Instant>,
+    /// The answer that runs was stopped: what still comes of it is dropped, until the engine begins the next.
+    discarding: bool,
+    /// The person speaks now (between the engine's start and end of their speech): no new connection meanwhile.
+    person_speaks: bool,
+    /// Connections lost in a row without a round between them: a fault that comes back every time ends the talk.
+    failures: usize,
 }
 
 /// The next line of `reader`'s helper; never while there is none.
@@ -273,7 +323,7 @@ async fn next_line(reader: &mut Option<LiveReader<'_>>) -> Result<SpeechLine, cr
 }
 
 impl<'a> Session<'a> {
-    async fn run(&mut self, mut frames: mpsc::Receiver<MicFrame>) {
+    async fn run(&mut self, mut frames: mpsc::Receiver<MicFrame>, mut stops: mpsc::UnboundedReceiver<bool>) {
         self.configure().await;
         let mut tick = tokio::time::interval(TICK);
         loop {
@@ -285,10 +335,14 @@ impl<'a> Session<'a> {
                 }
                 Some(order) = self.orders.recv() => {
                     if self.wire.send(order).await.is_err() {
-                        self.reconnect().await
+                        self.reconnect(false).await
                     } else {
                         true
                     }
+                }
+                Some(keep) = stops.recv() => {
+                    self.stop_answer(keep).await;
+                    true
                 }
                 line = next_line(&mut self.reader) => {
                     self.on_line(line);
@@ -338,11 +392,17 @@ impl<'a> Session<'a> {
         match incoming {
             Incoming::SpeechStarted => {
                 self.last_speech = Instant::now();
-                self.interrupt().await;
+                self.person_speaks = true;
+                // Only into an answer that sounds now (#835): a word while a tool runs or an approval waits stops
+                // nothing.
+                if self.reader.as_ref().is_some_and(|reader| reader.speaking.is_some()) {
+                    self.stop_answer(true).await;
+                }
             }
             Incoming::SpeechStopped { audio_end_ms } => {
                 let now = Instant::now();
                 self.last_speech = now;
+                self.person_speaks = false;
                 self.stopped = Some(now);
                 let spoken_end =
                     audio_end_ms.and_then(|end| self.sent.iter().find(|(ms, _)| *ms >= end).map(|(_, at)| *at));
@@ -350,7 +410,13 @@ impl<'a> Session<'a> {
                     spoken_end.map_or(0, |at| u32::try_from(now.duration_since(at).as_millis()).unwrap_or(u32::MAX));
                 self.round = Some(Round { stopped: now, pause_ms, first_word: None });
             }
-            Incoming::Heard(text) => return self.on_heard(&text).await,
+            Incoming::Heard(text) => {
+                self.failures = 0;
+                return self.on_heard(&text).await;
+            }
+            Incoming::AnswerStarted => self.discarding = false,
+            // The rest of an answer that was stopped.
+            Incoming::AnswerText(_) | Incoming::AnswerAudio(_) | Incoming::AnswerDone { .. } if self.discarding => {}
             Incoming::AnswerText(piece) => {
                 self.answering = true;
                 if let Some(round) = self.round.as_mut() {
@@ -364,6 +430,7 @@ impl<'a> Session<'a> {
                 self.play(&samples).await;
             }
             Incoming::AnswerDone { text, calls } => {
+                self.failures = 0;
                 let over = calls.is_empty();
                 self.tell(TurnEvent::Done { text, calls });
                 if over {
@@ -379,7 +446,7 @@ impl<'a> Session<'a> {
                 if let Incoming::Failed { code } = &incoming {
                     eprintln!("torroworkplace: conversation engine failed: {code}");
                 }
-                return self.reconnect().await;
+                return self.reconnect(false).await;
             }
         }
         true
@@ -405,13 +472,14 @@ impl<'a> Session<'a> {
         };
         if torro_ipc::assistant::is_closing(&text) {
             let _ = self.wire.send(Outgoing::Cancel { played_ms: 0 }).await;
-            self.core.close_live(None, None).await;
+            self.core.close_live(self.id, None, None).await;
             return false;
         }
         let (events, heard) = mpsc::unbounded_channel();
         let turn =
             Arc::new(LiveTurn::new(&self.engine.model, self.commands.clone(), heard, Arc::clone(&self.configured)));
-        match self.core.assistant.send_live(self.conversation.clone(), text, &self.engine, turn).await {
+        let named = self.named();
+        match self.core.assistant.send_live(self.conversation.clone(), text, named, turn).await {
             torro_ipc::Response::Conversation { conversation, .. } => {
                 if self.conversation.as_deref() != Some(conversation.id.as_str()) {
                     if let Some(talk) = self.core.lock_talk().as_mut() {
@@ -420,29 +488,31 @@ impl<'a> Session<'a> {
                     self.core.voice.notify();
                     self.conversation = Some(conversation.id);
                 }
+                // The answer may be over before what was said came (OpenAI's transcript comes on its own): then the turn
+                // has it all, and no later answer goes to it.
+                let over =
+                    self.pending.iter().any(|event| matches!(event, TurnEvent::Done { calls, .. } if calls.is_empty()));
                 for event in self.pending.drain(..) {
                     let _ = events.send(event);
                 }
-                self.turn = Some(events);
+                self.turn = (!over).then_some(events);
             }
-            // An answer runs there still, or the message could not be stored: what was said is dropped, and so is
-            // the engine's answer to it.
+            // An answer runs there still (one that came late after "(not understood)", too), or the message could not be
+            // stored: what was said is dropped; the answer that runs goes on.
             torro_ipc::Response::Error { code, .. } => {
                 eprintln!("torroworkplace: what was said to the conversation engine is dropped: {code}");
                 self.pending.clear();
-                if self.answering {
-                    let _ = self.wire.send(Outgoing::Cancel { played_ms: 0 }).await;
-                }
             }
             _ => self.pending.clear(),
         }
         true
     }
 
-    /// The person spoke into the answer: it stops where they began, the conversation keeps what was heard, and the
-    /// engine forgets what was not played.
-    async fn interrupt(&mut self) {
-        if !self.answering && self.reader.is_none() {
+    /// The person spoke into the answer, or stopped it in the window: it stops where they began, the engine forgets
+    /// what was not played, and what still comes of it is dropped. With `keep` the conversation keeps what was heard
+    /// as an interruption ([`crate::assistant::Assistant::interrupt`]); without, the answer was cancelled already.
+    async fn stop_answer(&mut self, keep: bool) {
+        if !self.answering && self.reader.is_none() && self.turn.is_none() {
             return;
         }
         let played_ms = self
@@ -454,6 +524,7 @@ impl<'a> Session<'a> {
             self.reader.as_ref().map(|reader| reader.heard.lock().unwrap_or_else(PoisonError::into_inner).clone());
         self.stop_reading().await;
         if let Some(id) = self.conversation.clone()
+            && keep
             && (self.turn.is_some() || heard.is_some())
         {
             let heard = heard.as_deref().and_then(said_so_far);
@@ -465,9 +536,23 @@ impl<'a> Session<'a> {
                 self.core.end_terminal_conversation(&assistant.id, &id, false).await;
             }
         }
+        let running = self.answering;
         (self.turn, self.answering, self.response) = (None, false, Spoken::default());
         self.pending.clear();
+        // Only an answer that still comes has more to drop; one that was over sends nothing more.
+        self.discarding = running;
         let _ = self.wire.send(Outgoing::Cancel { played_ms }).await;
+    }
+
+    /// The engine and model the person's message names (issue #838): the chat model of the settings when it is one of
+    /// an AI account, else the engine's account without a model. The engine answers it either way; a message typed
+    /// later in the same conversation goes to that chat model, not to the conversation engine.
+    fn named(&self) -> (String, Option<String>) {
+        let chat = self.core.settings.current().ai_slots.chat;
+        match chat {
+            Some(slot) if slot.engine.starts_with("ai:") => (slot.engine, slot.model),
+            _ => (self.engine.account.clone(), None),
+        }
     }
 
     /// A frame of the microphone goes to the engine, unless it may hold Torro's own voice.
@@ -652,27 +737,43 @@ impl<'a> Session<'a> {
         if self.stopped.is_some_and(|at| at.elapsed() >= HEARD_WAIT) {
             return self.on_heard("").await;
         }
-        let busy = self.answering || self.reader.is_some() || self.stopped.is_some() || self.turn.is_some();
+        let busy = self.answering
+            || self.reader.is_some()
+            || self.stopped.is_some()
+            || self.turn.is_some()
+            || self.person_speaks;
         if !busy && self.last_speech.elapsed() >= SILENCE {
-            self.core.close_live(None, None).await;
+            self.core.close_live(self.id, None, None).await;
             return false;
         }
         if !busy && self.connected.elapsed() >= self.limit {
-            return self.reconnect().await;
+            return self.reconnect(true).await;
         }
         true
     }
 
-    /// A new connection after the old one closed, failed or came near its limit: [`RECONNECTS`] tries, then the
-    /// conversation says so and ends. `false` once it ended.
-    async fn reconnect(&mut self) -> bool {
-        // What ran on the old connection is over: its answer's turn fails and says so in the conversation.
+    /// A new connection after the old one closed or failed, or (`planned`) came near its limit in a pause: [`RECONNECTS`]
+    /// tries a second apart. A connection lost again and again without a round between ends the talk too, so a fault
+    /// that comes back every time (a field the provider refuses) never loops. `false` once it ended.
+    async fn reconnect(&mut self, planned: bool) -> bool {
+        let lost = tr("The connection to the conversation engine was lost.");
+        if !planned {
+            self.failures += 1;
+            if self.failures > RECONNECTS {
+                self.core.close_live(self.id, self.conversation.clone().as_deref(), Some(lost)).await;
+                return false;
+            }
+        }
+        // What ran on the old connection is over: its answer's turn fails and says so in the conversation, and its
+        // commands go nowhere: a result of a tool never reaches the new connection, which does not know the call.
         self.stop_reading().await;
         (self.turn, self.answering, self.stopped, self.round) = (None, false, None, None);
+        (self.discarding, self.person_speaks) = (false, false);
         self.pending.clear();
         self.response = Spoken::default();
+        (self.commands, self.orders) = mpsc::unbounded_channel();
         for attempt in 0..RECONNECTS {
-            if attempt > 0 {
+            if attempt > 0 || !planned {
                 tokio::time::sleep(RECONNECT_WAIT).await;
             }
             match self.core.connect_live(&self.engine).await {
@@ -688,8 +789,7 @@ impl<'a> Session<'a> {
                 }
             }
         }
-        let lost = tr("The connection to the conversation engine was lost.");
-        self.core.close_live(self.conversation.clone().as_deref(), Some(lost)).await;
+        self.core.close_live(self.id, self.conversation.clone().as_deref(), Some(lost)).await;
         false
     }
 }

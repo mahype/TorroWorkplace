@@ -56,6 +56,8 @@ pub enum Incoming {
     SpeechStopped { audio_end_ms: Option<u64> },
     /// What the person said, as text; empty when nothing was understood.
     Heard(String),
+    /// The engine begins an answer: what comes from here on is this answer's.
+    AnswerStarted,
     /// A piece of the answer's text as it is spoken.
     AnswerText(String),
     /// A piece of the answer's sound, 16-bit mono at [`ANSWER_RATE`].
@@ -86,6 +88,7 @@ impl std::fmt::Debug for Incoming {
             Incoming::SpeechStarted => f.write_str("SpeechStarted"),
             Incoming::SpeechStopped { .. } => f.write_str("SpeechStopped"),
             Incoming::Heard(_) => f.write_str("Heard"),
+            Incoming::AnswerStarted => f.write_str("AnswerStarted"),
             Incoming::AnswerText(_) => f.write_str("AnswerText"),
             Incoming::AnswerAudio(_) => f.write_str("AnswerAudio"),
             Incoming::AnswerDone { calls, .. } => write!(f, "AnswerDone({} calls)", calls.len()),

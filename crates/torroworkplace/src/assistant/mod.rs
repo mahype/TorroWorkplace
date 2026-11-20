@@ -742,19 +742,20 @@ impl Assistant {
 
     /// What the person said to a conversation engine in the cloud (issue #838, `crate::core::live`): `text` goes to
     /// `conversation` (a new one with `None`) as their message, sent with the app key, and the engine's turn `turn`
-    /// answers it, the account and model of `engine` named in its entries. `busy` while an answer runs there: what
-    /// was said meanwhile is dropped.
+    /// answers it; its answer names the engine's model. The message names `named` (engine and model of the chat), so
+    /// a message typed later goes to the chat model. `busy` while an answer runs there: what was said is dropped.
     pub async fn send_live(
         self: &Arc<Self>,
         conversation: Option<String>,
         text: String,
-        engine: &torro_ipc::LiveEngine,
+        named: (String, Option<String>),
         turn: Arc<live::LiveTurn>,
     ) -> Response {
+        let (engine, model) = named;
         let message = Message {
             conversation,
-            engine: engine.account.clone(),
-            model: Some(engine.model.clone()),
+            engine,
+            model,
             effort: None,
             text,
             without: Vec::new(),

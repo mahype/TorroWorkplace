@@ -151,7 +151,7 @@ impl Dialect {
             }
             "response.created" => {
                 (state.text, state.calls, state.item) = (String::new(), Vec::new(), None);
-                None
+                Some(Incoming::AnswerStarted)
             }
             "response.output_audio.delta" | "response.audio.delta" => {
                 if let Some(item) = event.get("item_id").and_then(Value::as_str) {
@@ -304,6 +304,7 @@ mod tests {
             vec![
                 Incoming::SpeechStarted,
                 Incoming::SpeechStopped { audio_end_ms: Some(1840) },
+                Incoming::AnswerStarted,
                 Incoming::AnswerText("Let me ".into()),
                 Incoming::AnswerAudio(vec![1, -2]),
                 Incoming::AnswerText("look.".into()),
@@ -324,6 +325,7 @@ mod tests {
                 Incoming::SpeechStarted,
                 Incoming::SpeechStopped { audio_end_ms: None },
                 Incoming::Heard("Was steht an?".into()),
+                Incoming::AnswerStarted,
                 Incoming::AnswerDone { text: String::new(), calls: vec![call] },
                 Incoming::Failed { code: "invalid_api_key".into() },
             ]

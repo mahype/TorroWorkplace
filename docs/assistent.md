@@ -1174,6 +1174,10 @@ Modul in der Cloud; Agenten dürfen die Liste lesen und auf diesen Rechner zurü
   entfernte Konto beenden das Gespräch sofort. Eine abgebrochene Verbindung und die Zeitgrenze des Anbieters
   (OpenAI 60, Grok 120 Minuten; fünf Minuten vorher, in einer Pause) überbrückt ein Neuaufbau mit den letzten 40
   Nachrichten als Text; scheitert er dreimal, steht das in der Unterhaltung.
+  Fehlt dem Konto der Schlüssel oder antwortet das Modul beim Start nicht, beantwortet die lokale Kette das Gespräch
+  (`Talk.live` sagt dem Hörer, welcher Weg gilt). Ein Fehler, der bei jeder neuen Verbindung wiederkommt, beendet das
+  Gespräch nach drei Versuchen. Unterbrochen wird nur, solange die Antwort klingt; „Stop“ im Fenster bringt auch das
+  Modul zum Schweigen. Was nach dem Weckwort während des Tons gesagt wird, hört das Modul nicht.
 - **Messung:** Jede Runde erscheint unter „Response times“ mit dem Modell (`VoiceRound.engine`), ohne
   Erkennungszeit.
 
