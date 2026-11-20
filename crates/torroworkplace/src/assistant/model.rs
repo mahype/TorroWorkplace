@@ -90,6 +90,12 @@ pub trait Host: Send + Sync {
         ""
     }
 
+    /// After how many minutes without an entry a voice message starts a new conversation "Voice" (issue #859,
+    /// [`torro_core::settings::Voice::new_after_or_default`]); 0 never. Read anew on every voice message.
+    fn voice_new_after(&self) -> u16 {
+        torro_core::settings::VOICE_NEW_AFTER_DEFAULT
+    }
+
     /// The model `model` of the engine `engine` (an AI account id), or for `None` the one
     /// "Automatic" picks among its models ([`ModelAccess::automatic`]), and where that model runs
     /// ([`torro_core::ai::place_of`], task S.23: account **and** model; a model the account does not
@@ -2352,6 +2358,7 @@ pub(crate) mod tests {
             // The person writes (task WEB.5: only their message is their word).
             from: None,
             spoken: false,
+            voice: None,
         };
         match assistant.send(message, EngineKind::Ai, Utc::now()).await {
             Response::Conversation { conversation, .. } => conversation.id,
@@ -2571,6 +2578,7 @@ pub(crate) mod tests {
             on_behalf: None,
             from: Some(crate::assistant::TEST_CLIENT.into()),
             spoken: false,
+            voice: None,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -2809,6 +2817,7 @@ pub(crate) mod tests {
             on_behalf: None,
             from: Some(crate::assistant::TEST_CLIENT.into()),
             spoken: false,
+            voice: None,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -3499,6 +3508,7 @@ pub(crate) mod tests {
                 on_behalf: None,
                 from: None,
                 spoken: false,
+                voice: None,
             };
             let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
             else {
@@ -3539,6 +3549,7 @@ pub(crate) mod tests {
             on_behalf: None,
             from: None,
             spoken: false,
+            voice: None,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -3761,6 +3772,7 @@ pub(crate) mod tests {
             from: Some(delegation.caller.clone()),
             on_behalf: Some(delegation),
             spoken: false,
+            voice: None,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -3798,6 +3810,7 @@ pub(crate) mod tests {
             on_behalf: None,
             from: Some(crate::assistant::TEST_CLIENT.into()),
             spoken: false,
+            voice: None,
         };
         assert!(matches!(assistant.send(from_client, EngineKind::Ai, Utc::now()).await, Response::Conversation { .. }));
         finished(&assistant, &main).await;
@@ -3833,6 +3846,7 @@ pub(crate) mod tests {
             from: Some(delegation.caller.clone()),
             on_behalf: Some(delegation),
             spoken: false,
+            voice: None,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -3863,6 +3877,7 @@ pub(crate) mod tests {
             on_behalf: None,
             from: Some(crate::assistant::TEST_CLIENT.into()),
             spoken: false,
+            voice: None,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -3901,6 +3916,7 @@ pub(crate) mod tests {
             on_behalf: None,
             from: Some(crate::assistant::TEST_CLIENT.into()),
             spoken: false,
+            voice: None,
         };
         let Response::Conversation { conversation, entries } =
             assistant.send(message, EngineKind::Ai, Utc::now()).await
@@ -4013,6 +4029,7 @@ pub(crate) mod tests {
             on_behalf: None,
             from: None,
             spoken: false,
+            voice: None,
         }
     }
 

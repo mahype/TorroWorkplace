@@ -1054,6 +1054,7 @@ pub(crate) mod tests {
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert_eq!(
             super::ids(&send),
@@ -1070,6 +1071,7 @@ pub(crate) mod tests {
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert_eq!(super::ids(&new), vec!["engine:test".to_string()]);
         let odd = Request::SendMessage {
@@ -1083,6 +1085,7 @@ pub(crate) mod tests {
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert_eq!(super::ids(&odd), vec![format!("engine:hash:{}", hashed("Anna's server"))]);
         // Issue #605: a chat about a mail names the account and the mail hashed, never the text.
@@ -1097,6 +1100,7 @@ pub(crate) mod tests {
             bot: None,
             about: Some(torro_ipc::assistant::MailRef { account: "mail:anna@example.org".into(), id: "m:4".into() }),
             spoken: false,
+            voice: false,
         };
         let logged = super::ids(&about);
         assert_eq!(logged[0], "engine:test");

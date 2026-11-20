@@ -15532,6 +15532,10 @@ impl crate::assistant::Host for Core {
         self.backend.name()
     }
 
+    fn voice_new_after(&self) -> u16 {
+        self.settings.current().voice.new_after_or_default()
+    }
+
     /// First the model, then where it runs (task S.23): the model asked or "Automatic" among the
     /// account's models as last listed ([`AiAccounts::known_models`], asked anew only for a model
     /// the list lacks), then [`torro_core::ai::place_of`] for that model. Only models turned on
@@ -21389,6 +21393,7 @@ done"#,
             bot: None,
             about: None,
             spoken: true,
+            voice: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         conversation.id
@@ -31471,6 +31476,7 @@ done"#,
                 bot: None,
                 about: None,
                 spoken: false,
+                voice: false,
             },
             Request::CancelAnswer { conversation: id.into() },
             Request::RenameConversation { id: id.into(), title: "Renamed".into() },
@@ -31667,6 +31673,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         let Response::Conversation { conversation, entries } = ask(&core, Some(&app_key), send).await else {
             panic!("the person starts a conversation")
@@ -31737,6 +31744,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         let Response::Conversation { conversation, entries } = ask(&core, Some(&key), send).await else {
             panic!("the agent starts a conversation")
@@ -31764,6 +31772,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "not-found", "no such engine");
         let bot = Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::Bot("travel".into()) };
@@ -31847,6 +31856,7 @@ done"#,
             bot: Some(bot.into()),
             about: None,
             spoken: false,
+            voice: false,
         }
     }
 
@@ -34791,6 +34801,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         match core.handle(send).await {
             Response::Conversation { conversation, .. } => conversation.id,
@@ -34984,6 +34995,7 @@ done"#,
                     bot: None,
                     about: None,
                     spoken: false,
+                    voice: false,
                 };
                 let Response::Conversation { conversation, .. } = core.handle(send).await else {
                     panic!("a conversation")
@@ -35356,6 +35368,7 @@ done"#,
             bot: Some(bot.id.clone()),
             about: None,
             spoken: false,
+            voice: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         conversation_until(&core, &conversation.id, |running, _| !running).await;
@@ -35436,6 +35449,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert!(matches!(core.handle(send).await, Response::Conversation { .. }), "sent");
     }
@@ -35680,6 +35694,7 @@ done"#,
             bot: Some(bot.id.clone()),
             about: None,
             spoken: false,
+            voice: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         let asked = waiting_approval(&core).await;
@@ -35805,6 +35820,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         let entries = conversation_until(&core, &conversation.id, |running, _| !running).await;
@@ -36381,6 +36397,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         conversation_until(core, &conversation.id, |running, _| !running).await;
@@ -36462,6 +36479,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert!(matches!(core.handle(named).await, Response::Conversation { .. }));
         let entries = conversation_until(&core, &first, |running, _| !running).await;
@@ -36808,6 +36826,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert!(matches!(ask(&core, Some(&agent_key), by_agent).await, Response::Conversation { .. }));
         conversation_until(&core, &named, |running, _| !running).await;
@@ -37210,6 +37229,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         let label = core.ai.label_of(&account.id).await.expect("a label");
         let off = trf("Turn on a model of {provider} in Settings › AI.", &[("provider", &label)]);
@@ -37645,6 +37665,7 @@ done"#,
                     bot: None,
                     about,
                     spoken: false,
+                    voice: false,
                 };
             // Without the assistant's own client nobody reads the mail for it.
             assert_eq!(code(&ask(&core, Some(&app_key), send(None, Some(mail.clone()))).await), "forbidden");
@@ -37808,6 +37829,7 @@ done"#,
                 bot: None,
                 about: Some(mail.clone()),
                 spoken: false,
+                voice: false,
             };
             // Every change of these clients waits for the person.
             let careful = |account: &str| {

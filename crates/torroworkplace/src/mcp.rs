@@ -4213,8 +4213,15 @@ mod tests {
                 bot: None,
                 about: None,
                 spoken: false,
+                voice: false,
             })
         );
+        // Issue #859: a voice message leaves the conversation to the core.
+        let by_voice = args(json!({"engine": "test", "text": "What time is it?", "voice": true}));
+        assert!(matches!(
+            request_for("assistant_send_message", by_voice, &Utc),
+            Ok(Request::SendMessage { voice: true, conversation: None, .. })
+        ));
         // Issue #132: the permission mode comes through as given.
         let narrowed = args(json!({"engine": "test", "text": "Look only", "mode": "read_only"}));
         assert!(matches!(

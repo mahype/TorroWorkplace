@@ -825,6 +825,7 @@ fn sending_starts_a_conversation_and_the_growing_answer_replaces_itself() {
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         }]
     );
     let result = block_on(app.backend.ask(requests[0].clone()));

@@ -214,6 +214,7 @@ impl Demo {
                 bot,
                 about: _,
                 spoken: _,
+                voice: _,
             } => state.send(conversation, (engine, model, effort), text, (without, mode), bot),
             // No default for new chats in the demo: the one used last (issue #131).
             Request::Settings => Response::Settings { settings: torro_core::settings::Settings::default() },
@@ -1448,6 +1449,7 @@ mod tests {
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         let (summary, entries) = conversation(demo.answer(send));
         assert_eq!((summary.last, summary.running, entries.len()), (1, true, 1));

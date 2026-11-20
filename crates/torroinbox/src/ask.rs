@@ -663,6 +663,7 @@ pub fn send_request(
         bot: None,
         about: about.filter(|_| conversation.is_none()).cloned(),
         spoken: false,
+        voice: false,
     })
 }
 

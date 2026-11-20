@@ -6335,6 +6335,7 @@ pub(crate) mod tests {
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         let with_engine = Facts { engine: Some("Ollama".into()), ..held.clone() };
         // Issue #852: the engine by the core's name, never the model the client names.

@@ -6263,7 +6263,10 @@ static SEND_MESSAGE: Command = Command {
                   caller may not see (a chat about it is not there for that caller at all), `error` for another \
                   `about` than the conversation's or a chat about a mail with mail switched off in `without`. \
                   With `bot` the message goes to that bot, which acts only with what both it and the caller may, \
-                  as in bots_ask_bot.",
+                  as in bots_ask_bot. `voice` true marks a voice message: leave `conversation` out, and the \
+                  core continues the newest conversation titled \"Voice\" or, after the person's pause without \
+                  an entry (none while it answers), starts a new \"Voice\" and renames the old one to \"Voice · \
+                  <date it began>\"; `error` with `conversation`, `bot` or `about`.",
 };
 
 static CHECK_ABOUT: Command = Command {
@@ -7660,6 +7663,7 @@ mod tests {
                 bot: None,
                 about: None,
                 spoken: false,
+                voice: false,
             },
             Request::CheckAbout {
                 engine: "ai:ollama@localhost:11434".into(),
@@ -8567,6 +8571,7 @@ mod tests {
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         for template in RightsTemplate::ALL {
             let rights = template.rights();
