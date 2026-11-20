@@ -1647,8 +1647,8 @@ mod flow {
         let (chat, server) = service(dir.path());
         let reference = |title: &str| torro_nextcloud::Reference {
             title: title.into(),
-            description: None,
             image: Some("abc123".into()),
+            ..Default::default()
         };
         {
             let mut state = server.state();
@@ -1718,8 +1718,7 @@ mod flow {
         let read_setting = Arc::clone(&setting);
         chat.set_privacy(Arc::new(move || read_setting.lock().expect("setting").clone()));
         let set = |change: &dyn Fn(&mut Privacy)| change(&mut setting.lock().expect("setting"));
-        let reference =
-            |title: &str| torro_nextcloud::Reference { title: title.into(), description: None, image: None };
+        let reference = |title: &str| torro_nextcloud::Reference { title: title.into(), ..Default::default() };
         {
             let mut state = server.state();
             let own = "https://cloud.example.org/f/12";
@@ -1819,7 +1818,7 @@ mod flow {
         {
             let mut state = server.state();
             let known = "https://www.youtube.com/watch?v=M7lc1UVf-VE&t=90";
-            let reference = torro_nextcloud::Reference { title: "Intro".into(), description: None, image: None };
+            let reference = torro_nextcloud::Reference { title: "Intro".into(), ..Default::default() };
             state.references.insert(known.into(), reference);
             let list = state.messages.get_mut("ben4chat").expect("Ben");
             list.push(super::super::remote::tests::message(6, &format!("watch {known}")));
