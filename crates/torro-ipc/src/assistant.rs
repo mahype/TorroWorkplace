@@ -1095,6 +1095,38 @@ pub fn profile_refusal(
 /// splits at it ([`split_spoken`]), so no client sees it.
 pub const SHOWN_MARK: &str = "---shown---";
 
+/// Words that end a conversation by voice (issue #747, decision 4), German and English, lower case. Shared by the
+/// listener and the core, which hears them from a conversation engine (issue #838).
+pub const CLOSING: [&str; 14] = [
+    "danke",
+    "stopp",
+    "tschüss",
+    "ende",
+    "das war's",
+    "das wars",
+    "thanks",
+    "thank you",
+    "stop",
+    "bye",
+    "goodbye",
+    "end",
+    "that's all",
+    "that's it",
+];
+
+/// Whether `text` closes a conversation by voice (issue #747, decision 4): at most three words, and one of
+/// [`CLOSING`] among them. "Danke, und das Wetter?" goes on.
+pub fn is_closing(text: &str) -> bool {
+    let lower = text.to_lowercase().replace('’', "'");
+    let words: Vec<&str> =
+        lower.split(|c: char| !c.is_alphanumeric() && c != '\'').filter(|word| !word.is_empty()).collect();
+    if words.is_empty() || words.len() > 3 {
+        return false;
+    }
+    let said = format!(" {} ", words.join(" "));
+    CLOSING.iter().any(|closing| said.contains(&format!(" {closing} ")))
+}
+
 /// At most about this many characters of an answer are read aloud when it has no spoken part
 /// (issue #774): the reading ends at the last sentence end before them. A spoken part is read whole,
 /// as `assistant.speak` reads it.

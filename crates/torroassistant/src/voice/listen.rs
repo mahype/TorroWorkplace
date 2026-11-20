@@ -255,36 +255,8 @@ const ANSWER_LOOK: Duration = Duration::from_millis(20);
 /// microphone left open and forgotten.
 const TALK_WAIT_SECONDS: usize = 300;
 
-/// Words that end a conversation by voice (issue #747, decision 4), German and English, lower case.
-pub const CLOSING: [&str; 14] = [
-    "danke",
-    "stopp",
-    "tschüss",
-    "ende",
-    "das war's",
-    "das wars",
-    "thanks",
-    "thank you",
-    "stop",
-    "bye",
-    "goodbye",
-    "end",
-    "that's all",
-    "that's it",
-];
-
-/// Whether `text` closes a conversation by voice (issue #747, decision 4): at most three words, and
-/// one of [`CLOSING`] among them. "Danke, und das Wetter?" goes on.
-pub fn is_closing(text: &str) -> bool {
-    let lower = text.to_lowercase().replace('’', "'");
-    let words: Vec<&str> =
-        lower.split(|c: char| !c.is_alphanumeric() && c != '\'').filter(|word| !word.is_empty()).collect();
-    if words.is_empty() || words.len() > 3 {
-        return false;
-    }
-    let said = format!(" {} ", words.join(" "));
-    CLOSING.iter().any(|closing| said.contains(&format!(" {closing} ")))
-}
+// Moved to `torro_ipc::assistant` (issue #838): the core hears them from a conversation engine too.
+pub use torro_ipc::assistant::{CLOSING, is_closing};
 
 /// How one round of listening ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
