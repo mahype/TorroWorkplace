@@ -1,0 +1,10 @@
+{"type":"session.created","event_id":"x0"}
+{"type":"input_audio_buffer.speech_started","event_id":"x1"}
+{"type":"input_audio_buffer.speech_stopped","event_id":"x2"}
+{"type":"conversation.item.input_audio_transcription.updated","event_id":"x3","transcript":"Was"}
+{"type":"conversation.item.input_audio_transcription.updated","event_id":"x4","transcript":"Was steht an?"}
+{"type":"conversation.item.input_audio_transcription.completed","event_id":"x5"}
+{"type":"response.created","event_id":"x6"}
+{"type":"response.function_call_arguments.done","event_id":"x7","call_id":"c7","name":"tasks_list_todos","arguments":"{\"list\":\"a\"}"}
+{"type":"response.done","event_id":"x8","response":{"output":[{"type":"function_call","call_id":"c7","name":"tasks_list_todos","arguments":"{\"list\":\"a\"}"}]}}
+{"type":"error","event_id":"x9","error":{"code":"invalid_api_key","message":"Incorrect API key provided: xai-****"}}
