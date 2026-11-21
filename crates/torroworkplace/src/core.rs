@@ -15344,7 +15344,7 @@ impl Core {
         let offered = self.ai.live_engines().await.iter().any(|option| option.engine() == engine);
         (!offered).then(|| Response::Error {
             code: "not-found".into(),
-            message: format!("no account offers the conversation engine {:?}", engine.model),
+            message: trf("No account offers the conversation engine {model}.", &[("model", &engine.model)]),
         })
     }
 
