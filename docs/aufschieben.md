@@ -5,10 +5,17 @@ Aufgabe verschoben wurde und welche Arten von Aufgaben man am häufigsten aufsch
 erkennen, nicht zu tadeln. Das Verschieben selbst („To tomorrow“, Ziehen auf einen Tag, Fokus-Plan auf morgen)
 gehört zu #596 und steht schon; dieses Konzept zählt nur mit.
 
-## Entscheidungen (Vorschläge zu den offenen Fragen)
+## Entscheidungen
 
-Die vier offenen Fragen des Issues mit dem Vorschlag, nach dem der Kern gebaut ist. Jede lässt sich im Review
-anders entscheiden; was sich dann ändert, steht jeweils dabei.
+Die vier offenen Fragen des Issues, im Review von #945 entschieden (Sven, 21.11.2026). Kurz:
+
+| Frage | Entscheidung |
+| --- | --- |
+| F1: Zählt „Datum entfernen“ als Aufschieben? | Nein. |
+| F2: Aufzeichnen immer oder nur bei eingeschalteter Einstellung? | Nur, solange `postpone_stats` an ist. |
+| F3: Eigener Schalter, damit Agenten die Statistik lesen? | Nein, die Rechte an den Aufgaben genügen. |
+| F4: Aufbewahrung fest oder einstellbar? | Einstellbar, `postpone_retention`: 30 bis 1095 Tage, Standard 365. |
+| F5: Oberfläche? | Kommt als eigenes Issue mit dem Designer. |
 
 ### 1. Wo liegen die Daten? Nur lokal im Dienst
 
@@ -48,7 +55,7 @@ Fälligkeitstag** bekommt, gleich auf welchem Weg:
 | andere Uhrzeit am selben Tag, Reihenfolge innerhalb des Tages | nein |
 | früherer Tag | nein |
 | erstes Datum für eine Aufgabe ohne Datum | nein |
-| Datum entfernt | nein (offene Frage, siehe unten) |
+| Datum entfernt | nein (F1: eher „irgendwann“ als „später“) |
 | erledigte Aufgabe, Teilaufgabe | erledigte nein; Teilaufgaben ja, wenn sie über `save_todo` später fällig werden |
 | Änderung in anderen Apps (Nextcloud Web, Handy), die per Sync ankommt | nein |
 | Abhaken einer GitHub-Filterliste (eigener Weg, kein Fälligkeitstag in Torro) | nein |
@@ -76,8 +83,16 @@ erneuten Senden ohnehin gezählt.
   soll. Wieder eingeschaltet, zählt der alte Verlauf weiter, sofern er nicht abgelaufen ist.
 - **Löschen:** `tasks.clear_postponements` löscht den Verlauf, ein Client nur den der Listen, die er sehen darf.
   Wartet ein Agent dafür auf Freigabe, liest der Mensch „Delete the history of postponed tasks“.
-- **Aufbewahrung: 365 Tage.** Ältere Ereignisse fallen beim Schreiben und Lesen weg. Ein Jahr reicht für Muster
-  über Wochentage und Jahreszeiten, ohne ein Leben lang Buch zu führen.
+- **Aufbewahrung: einstellbar** (F4), Einstellung `postpone_retention` in Tagen, **Standard 365**, Spanne **30 bis
+  1095**. Ein Jahr reicht für Muster über Wochentage und Jahreszeiten. Unter einem Monat zeigt sich kein Muster,
+  über drei Jahre wäre es Buchführung.
+  - Ein Wert außerhalb der Spanne wird **geklemmt**, nicht abgewiesen: 5 wird 30, 5000 wird 1095. Das gilt über
+    die API wie beim Lesen der Datei. Nur was keine ganze Zahl ist, wird abgewiesen.
+  - Ältere Ereignisse fallen beim Schreiben und Lesen weg. Wird die Zahl **gesenkt**, fallen sie sofort weg, auch
+    aus der Datei, nicht erst mit der nächsten Verschiebung. Wird sie erhöht, kommt nichts zurück, was schon
+    gelöscht ist.
+  - Kein Vorbehalt für Menschen: Länger aufbewahren zeichnet nichts Neues auf. Wie jeder Admin-Befehl eines
+    Clients wartet die Änderung durch einen Agenten auf Freigabe.
 - Ereignisse gelöschter Aufgaben bleiben bis zum Ablauf, damit „nach Liste“ und „nach Priorität“ nicht
   schöner aussehen, wenn man aufgeschobene Aufgaben einfach löscht. Sie erscheinen ohne Titel.
 
@@ -102,6 +117,7 @@ sechsmal verschoben; aufteilen?“.
 | Auswertung und Zähler lesen | Zähler an der Aufgabe, Ansicht „Postponed“ | `tasks.postpone_stats` (Read) | `tasks_postpone_stats` |
 | Verlauf löschen | Knopf in der Ansicht und beim Ausschalten | `tasks.clear_postponements` (Delete) | `tasks_clear_postponements` |
 | Ein- und ausschalten | Schalter in den Einstellungen der Aufgaben | `settings.set_setting` `postpone_stats` (Admin; ein nur durch Menschen) | `settings_set_setting` |
+| Aufbewahrung einstellen | Auswahl unter dem Schalter | `settings.set_setting` `postpone_retention` (Admin) | `settings_set_setting` |
 | Verschieben (zählt mit) | wie #596 | `tasks.plan_todo`, `tasks.postpone_focus_plan`, `tasks.save_todo` | wie #596 |
 
 Ein eigener Befehl „Verlauf lesen“ (einzelne Ereignisse) ist nicht vorgesehen: Die Auswertung trägt je Aufgabe
@@ -136,7 +152,7 @@ Eingabe: optional `since` (Tag `YYYY-MM-DD`), dann nur Ereignisse ab diesem Tag.
 
 ## Oberfläche (beschrieben, nicht entworfen)
 
-Das Design entsteht in einem eigenen Schritt mit `torro-design`; hier steht nur, was die Oberfläche können muss.
+Die Oberfläche kommt als eigenes Issue mit dem Designer (F5). Hier steht nur, was sie können muss.
 
 - **Zähler an der Aufgabe** (torrotasks): nur bei eingeschalteter Auswertung, ab zwei Verschiebungen, klein und
   neutral neben dem Datum (z. B. „↷ 3“), keine Warnfarbe. In der Detailansicht ein Satz „Postponed 3 times,
@@ -145,25 +161,19 @@ Das Design entsteht in einem eigenen Schritt mit `torro-design`; hier steht nur,
   verschobenen Aufgaben (Klick öffnet die Aufgabe), darunter die Verteilung nach Priorität, Fokus, Liste und
   Wochentag als einfache Balken, ein Zeitraum (30 Tage, 90 Tage, alles) und „Clear history“.
 - **Einstellung** in den Einstellungen der Aufgaben: Schalter „Count postponed tasks“ mit einem Satz, dass die
-  Daten nur auf diesem Rechner liegen und nach einem Jahr verfallen. Beim Ausschalten die Frage, ob der Verlauf
-  gelöscht werden soll.
+  Daten nur auf diesem Rechner liegen, darunter die Aufbewahrung (z. B. 30 Tage, 90 Tage, ein Jahr, drei Jahre).
+  Beim Ausschalten die Frage, ob der Verlauf gelöscht werden soll. Beim Senken der Aufbewahrung der Hinweis, dass
+  ältere Einträge sofort gelöscht werden.
 - Ton: beschreibend, nie wertend („You postponed this 3 times“, nicht „You keep putting this off“).
 
 ## Umsetzung im Kern (#623)
 
 - `torro-ipc`: Requests `tasks.postpone_stats` und `tasks.clear_postponements`, Antwort `postpone-stats`,
-  Einstellung `postpone_stats`, Katalogeinträge; Einschalten nur durch Menschen (`kept_for_people`).
-- `torro-core`: Feld `postpone_stats` in den Einstellungen (Standard aus).
+  Einstellungen `postpone_stats` und `postpone_retention`, Katalogeinträge; Einschalten nur durch Menschen
+  (`kept_for_people`).
+- `torro-core`: Felder `postpone_stats` (Standard aus) und `postpone_retention` (`PostponeRetention`, geklemmt)
+  in den Einstellungen.
 - `torroworkplace`: Modul `postponements` (Datei, Aufbewahrung, Erkennen, Auswertung); der Kern zeichnet nach
   `tasks.plan_todo`, `tasks.postpone_focus_plan` und `tasks.save_todo` auf und beantwortet die beiden Befehle;
   MCP über den Katalog.
 - Oberfläche (Zähler, Ansicht, Schalter) folgt in einem eigenen Issue nach dem Design.
-
-## Offene Fragen an das Review
-
-1. Soll **Datum entfernen** als Aufschieben zählen? Vorschlag: nein, das ist eher „irgendwann“ als „später“.
-2. Soll die Aufzeichnung **immer laufen** und nur die Anzeige eingeschaltet werden? Dann hätte man beim
-   Einschalten schon Daten; der Vorschlag ist aus Datensparsamkeit „aus heißt aus“.
-3. Sollen Agenten die Auswertung nur mit einem **eigenen Schalter** lesen dürfen (z. B. `postpone_stats_agents`)?
-   Vorschlag: nein, Rechte an den Aufgaben und der Schalter genügen.
-4. Ist **ein Jahr** Aufbewahrung richtig, oder soll sie einstellbar sein?
