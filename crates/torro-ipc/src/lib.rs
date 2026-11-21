@@ -2547,6 +2547,47 @@ pub enum Request {
     /// `error`.
     #[serde(rename = "clients.activity")]
     ClientActivity { id: String },
+    /// Which of the coding agents and apps the core can connect by itself are on this computer
+    /// (issue #538, [`Response::DetectedClients`]): Claude Code, Codex, Gemini CLI, Claude
+    /// Desktop, Cursor and the open clients, each with where its entry would go. Reads nothing but
+    /// the presence of folders, files and commands. `path`: the asking app's `PATH`, searched
+    /// before the core's own, because a service started at login often has a shorter one.
+    #[serde(rename = "clients.detect_clients")]
+    DetectClients {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        path: Vec<String>,
+    },
+    /// Connects the client `target` (a kind of [`Request::DetectClients`], `claude-code`) by
+    /// itself (issue #538): makes a client of that kind with its own key and the template *Read
+    /// only* or *Read and write*, writes the key into the client's configuration, and for coding
+    /// agents with hooks also a hook client and its hooks, the way the control centre's "Connect
+    /// client" does. Answered with [`Response::ClientConnected`], never with a key: it goes from
+    /// the core straight into the client. `path` as in [`Request::DetectClients`].
+    ///
+    /// A target the core does not know is `error`; one not found on this computer is `not-found`;
+    /// one that can only be set up by hand (guided) is `unsupported`; one whose client is still
+    /// connected is `conflict` (disconnect it first); another setup holding the files is `busy`. When the entry cannot be
+    /// written, the new client is removed again and the answer is `error` with the reason. Hooks
+    /// that fail do not undo the connection: the answer says why in `hooks_error`.
+    #[serde(rename = "clients.connect_client")]
+    ConnectClient {
+        target: String,
+        /// The template *Read only* (`true`, also when the field is missing: the safer one) or
+        /// *Read and write* (`false`).
+        #[serde(default = "read_only_default")]
+        read_only: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        path: Vec<String>,
+    },
+    /// Disconnects the MCP client `id` (issue #538): removes the client and its key (it stops
+    /// working at once), then takes out what the suite wrote into the client's configuration (its
+    /// entry, its skill, its hooks with their key file) and removes the hook clients that reported
+    /// for it. Answered with [`Response::Ok`]. An unknown id is `not-found`; a client of another
+    /// kind than an MCP one is `unsupported` (a script's key goes with `clients.remove_client`).
+    /// When the configuration cannot be cleaned up the client is gone all the same and the answer
+    /// is `error` with the reason.
+    #[serde(rename = "clients.disconnect_client")]
+    DisconnectClient { id: String },
 
     // Approvals (`docs/api.md`, "Freigaben: der Mensch entscheidet"). A client command that needs
     // a person's approval is answered with [`Response::Pending`]; the core keeps it in
@@ -6510,6 +6551,23 @@ pub enum Response {
         client: ClientInfo,
         key: IssuedKey,
     },
+    /// The clients [`Request::DetectClients`] found on this computer, in the order a list shows
+    /// them. Never a key.
+    DetectedClients {
+        clients: Vec<DetectedClient>,
+    },
+    /// A client [`Request::ConnectClient`] connected: the new client (never its key, which went
+    /// into the client's configuration), where its entry went (`place`, for people), and for a
+    /// coding agent where its hooks went (`hooks`) or why they could not be written
+    /// (`hooks_error`).
+    ClientConnected {
+        client: ClientInfo,
+        place: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hooks: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hooks_error: Option<String>,
+    },
     /// A new client without a key (#231): the assistant's ([`api::ASSISTANT_CLIENT`]), made by
     /// [`Request::CreateClient`]. The core runs its tools itself, so it never hands out a key for
     /// it.
@@ -8433,6 +8491,27 @@ pub struct ColorSchemeInfo {
     /// core without it reads as `false`.
     #[serde(default)]
     pub vivid: bool,
+}
+
+/// What [`Request::ConnectClient`] assumes without `read_only`: the safer template.
+fn read_only_default() -> bool {
+    true
+}
+
+/// A client the core can connect by itself, as [`Request::DetectClients`] found it (issue #538).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedClient {
+    /// The kind for [`Request::ConnectClient`] and of the client it makes: `claude-code`.
+    pub target: String,
+    /// The product's name, not translated: `Claude Code`.
+    pub name: String,
+    /// Where the entry goes, for people: `~/.cursor/mcp.json`, or the command `claude`.
+    pub place: String,
+    /// It can only be set up by hand: [`Request::ConnectClient`] refuses it, and a key to copy
+    /// (`clients.create_client`) is the way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guided: bool,
 }
 
 /// One client as [`Request::ListClients`] reports it: everything in `clients.json` but the hash

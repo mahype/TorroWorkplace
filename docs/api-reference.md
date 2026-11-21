@@ -69,7 +69,7 @@ als Beschreibung der MCP-Tools lesen.
 | [`extensions`](#extensions) | [`extensions.list_extensions`](#extensionslist_extensions), [`extensions.get_extension`](#extensionsget_extension), [`extensions.list_catalog`](#extensionslist_catalog), [`extensions.list_tools`](#extensionslist_tools), [`extensions.call_tool`](#extensionscall_tool), [`extensions.set_enabled`](#extensionsset_enabled), [`extensions.install_extension`](#extensionsinstall_extension), [`extensions.confirm_tools`](#extensionsconfirm_tools), [`extensions.update_extension`](#extensionsupdate_extension), [`extensions.set_secret`](#extensionsset_secret), [`extensions.set_folder`](#extensionsset_folder), [`extensions.read_logs`](#extensionsread_logs), [`extensions.remove_extension`](#extensionsremove_extension) |
 | [`settings`](#settings) | [`settings.get_settings`](#settingsget_settings), [`settings.set_setting`](#settingsset_setting), [`settings.set_collection_shown`](#settingsset_collection_shown), [`settings.list_designs`](#settingslist_designs), [`settings.list_fonts`](#settingslist_fonts), [`settings.list_color_schemes`](#settingslist_color_schemes), [`settings.voice_status`](#settingsvoice_status), [`settings.voice_timings`](#settingsvoice_timings), [`settings.list_live_engines`](#settingslist_live_engines), [`settings.test_voice`](#settingstest_voice), [`settings.speech_status`](#settingsspeech_status), [`settings.list_voice_models`](#settingslist_voice_models), [`settings.download_voice_model`](#settingsdownload_voice_model), [`settings.cancel_voice_download`](#settingscancel_voice_download), [`settings.remove_voice_model`](#settingsremove_voice_model), [`settings.maps_status`](#settingsmaps_status), [`settings.clear_maps_cache`](#settingsclear_maps_cache), [`settings.update_settings`](#settingsupdate_settings) |
 | [`apps`](#apps) | [`apps.list_apps`](#appslist_apps), [`apps.list_announcements`](#appslist_announcements), [`apps.dismiss_announcement`](#appsdismiss_announcement), [`apps.open_app`](#appsopen_app), [`apps.list_catalog`](#appslist_catalog), [`apps.check_updates`](#appscheck_updates), [`apps.app_job`](#appsapp_job), [`apps.cancel_app_job`](#appscancel_app_job), [`apps.uninstall_app`](#appsuninstall_app), [`apps.install_app`](#appsinstall_app), [`apps.update_apps`](#appsupdate_apps) |
-| [`clients`](#clients) | [`clients.list_clients`](#clientslist_clients), [`clients.create_client`](#clientscreate_client), [`clients.update_client`](#clientsupdate_client), [`clients.new_key`](#clientsnew_key), [`clients.remove_client`](#clientsremove_client), [`clients.activity`](#clientsactivity) |
+| [`clients`](#clients) | [`clients.list_clients`](#clientslist_clients), [`clients.create_client`](#clientscreate_client), [`clients.update_client`](#clientsupdate_client), [`clients.new_key`](#clientsnew_key), [`clients.remove_client`](#clientsremove_client), [`clients.activity`](#clientsactivity), [`clients.detect_clients`](#clientsdetect_clients), [`clients.connect_client`](#clientsconnect_client), [`clients.disconnect_client`](#clientsdisconnect_client) |
 | [`approvals`](#approvals) | [`approvals.list_approvals`](#approvalslist_approvals), [`approvals.approval_status`](#approvalsapproval_status), [`approvals.decide_approval`](#approvalsdecide_approval), [`approvals.ask_permission`](#approvalsask_permission) |
 
 ## `system`
@@ -4683,6 +4683,38 @@ Removes a client and its key from this device. The key stops working at once.
 Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
 
 Lists the latest requests of a client from the audit log, newest first: time, command, the ids it named and the result. The log holds no titles, search terms or texts.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `id` | string | ja |  |
+
+### `clients.detect_clients`
+
+Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
+
+Lists the coding agents and apps on this computer that clients.connect_client can set up by itself, with where each entry would go. Reads only whether folders, files and commands exist; `path` adds the asking app's PATH.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `path` | array<string> | nein |  |
+
+### `clients.connect_client`
+
+Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
+
+Connects a detected client by itself: makes a client with its own key (template Read only or Read and write), writes the key into the client's configuration and, for coding agents, the hooks that report to the inbox. The answer never carries the key. The client must be restarted to use it.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `path` | array<string> | nein |  |
+| `read_only` | boolean | nein, Standard `true` | The template *Read only* (`true`, also when the field is missing: the safer one) or *Read and write* (`false`). |
+| `target` | string | ja |  |
+
+### `clients.disconnect_client`
+
+Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
+
+Disconnects an MCP client: removes it and its key at once, takes out the entry, skill and hooks the suite wrote into its configuration, and removes its hook clients.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|

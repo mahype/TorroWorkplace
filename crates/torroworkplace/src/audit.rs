@@ -224,6 +224,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ListFonts
         | Request::ListColorSchemes
         | Request::ListClients
+        | Request::DetectClients { .. }
+        | Request::ConnectClient { .. }
         | Request::CreateClient { .. }
         | Request::ListApprovals
         | Request::ListItems { .. }
@@ -419,6 +421,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::UpdateClient { id: client, .. }
         | Request::NewClientKey { id: client }
         | Request::RemoveClient { id: client }
+        | Request::DisconnectClient { id: client }
         | Request::ClientActivity { id: client } => vec![random("client", client)],
         Request::ApprovalStatus { id: approval } | Request::DecideApproval { id: approval, .. } => {
             vec![random("approval", approval)]

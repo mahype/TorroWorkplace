@@ -1913,6 +1913,9 @@ impl Request {
             Request::NewClientKey { .. } => &NEW_KEY,
             Request::RemoveClient { .. } => &REMOVE_CLIENT,
             Request::ClientActivity { .. } => &CLIENT_ACTIVITY,
+            Request::DetectClients { .. } => &DETECT_CLIENTS,
+            Request::ConnectClient { .. } => &CONNECT_CLIENT,
+            Request::DisconnectClient { .. } => &DISCONNECT_CLIENT,
             Request::ListApprovals => &LIST_APPROVALS,
             Request::ApprovalStatus { .. } => &APPROVAL_STATUS,
             Request::DecideApproval { .. } => &DECIDE_APPROVAL,
@@ -2406,6 +2409,9 @@ pub static CATALOGUE: &[&Command] = &[
     &NEW_KEY,
     &REMOVE_CLIENT,
     &CLIENT_ACTIVITY,
+    &DETECT_CLIENTS,
+    &CONNECT_CLIENT,
+    &DISCONNECT_CLIENT,
     &LIST_APPROVALS,
     &APPROVAL_STATUS,
     &DECIDE_APPROVAL,
@@ -4791,6 +4797,38 @@ static CLIENT_ACTIVITY: Command = Command {
     mcp: Mcp::Never,
     description: "Lists the latest requests of a client from the audit log, newest first: time, command, the ids it \
                   named and the result. The log holds no titles, search terms or texts.",
+};
+
+// Connecting a client by itself (issue #538): an app without the main application connects coding
+// agents through the core, so the key goes from the core straight into the client's configuration.
+
+static DETECT_CLIENTS: Command = Command {
+    name: "clients.detect_clients",
+    area: Area::Clients,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Lists the coding agents and apps on this computer that clients.connect_client can set up by \
+                  itself, with where each entry would go. Reads only whether folders, files and commands exist; \
+                  `path` adds the asking app's PATH.",
+};
+
+static CONNECT_CLIENT: Command = Command {
+    name: "clients.connect_client",
+    area: Area::Clients,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Connects a detected client by itself: makes a client with its own key (template Read only or Read \
+                  and write), writes the key into the client's configuration and, for coding agents, the hooks that \
+                  report to the inbox. The answer never carries the key. The client must be restarted to use it.",
+};
+
+static DISCONNECT_CLIENT: Command = Command {
+    name: "clients.disconnect_client",
+    area: Area::Clients,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Disconnects an MCP client: removes it and its key at once, takes out the entry, skill and hooks \
+                  the suite wrote into its configuration, and removes its hook clients.",
 };
 
 // Approvals (`docs/api.md`, "Freigaben: der Mensch entscheidet"). Every key reads its own; deciding
@@ -7289,6 +7327,9 @@ mod tests {
             Request::NewClientKey { id: "3fa9c1d2".into() },
             Request::RemoveClient { id: "3fa9c1d2".into() },
             Request::ClientActivity { id: "3fa9c1d2".into() },
+            Request::DetectClients { path: vec!["/opt/homebrew/bin".into()] },
+            Request::ConnectClient { target: "claude-code".into(), read_only: true, path: Vec::new() },
+            Request::DisconnectClient { id: "3fa9c1d2".into() },
             Request::ListApprovals,
             Request::ApprovalStatus { id: "9c1f0a7e3b2d4c58".into() },
             Request::DecideApproval { id: "9c1f0a7e3b2d4c58".into(), allow: true, scope: None },

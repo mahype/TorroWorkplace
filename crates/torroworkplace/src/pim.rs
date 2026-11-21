@@ -1376,6 +1376,9 @@ impl PimService {
             | Request::NewClientKey { .. }
             | Request::RemoveClient { .. }
             | Request::ClientActivity { .. }
+            | Request::DetectClients { .. }
+            | Request::ConnectClient { .. }
+            | Request::DisconnectClient { .. }
             | Request::ListApprovals
             | Request::ApprovalStatus { .. }
             | Request::DecideApproval { .. }

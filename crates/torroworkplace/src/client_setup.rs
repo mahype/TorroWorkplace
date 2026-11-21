@@ -51,6 +51,10 @@
 //! Why the control centre writes these files and not the core: the key leaves the core once, in
 //! the answer to `clients.create_client`, and the files belong to the person's other programs, not
 //! to the suite. The core receives protected path reservations, never these configuration contents or keys.
+//! Since issue #538 the core also writes them itself, for an app without the main application
+//! (`clients.connect_client`, [`Service`]): there the key never leaves the core at all, it goes from
+//! the new client straight into the client's configuration, and the record is the same
+//! `client_setup.json`, so a control centre installed later knows every client set up this way.
 //!
 //! The key is never logged and never part of an error. The command line of `claude mcp add` and
 //! `codex mcp add` (also OpenCode's V2 global add) carries it for the moment the command runs; the
@@ -66,6 +70,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -226,6 +231,12 @@ impl Target {
         Target::CherryStudio,
         Target::Librechat,
     ];
+
+    /// The target of the client kind `kind` ([`Target::kind`]), as `clients.connect_client` names it
+    /// (issue #538). `None` for any other word.
+    pub fn from_kind(kind: &str) -> Option<Target> {
+        Target::ALL.into_iter().find(|target| target.kind() == kind)
+    }
 
     /// The client kind for `clients.create_client` (`ClientInfo::kind`).
     pub fn kind(self) -> &'static str {
@@ -479,6 +490,15 @@ pub enum SetupError {
 impl SetupError {
     fn io(path: &Path) -> impl FnOnce(io::Error) -> SetupError + '_ {
         move |err| SetupError::Io { path: path.to_path_buf(), err }
+    }
+
+    /// The core's answer for this error (issue #538): a protection error keeps its own code
+    /// (`busy` when another setup holds the files), every other one is `error` with [`Self::message`].
+    pub fn response(&self) -> torro_ipc::Response {
+        match self {
+            SetupError::Protection(err) => err.response(),
+            other => torro_ipc::Response::Error { code: "error".into(), message: other.message() },
+        }
     }
 
     /// The error for people, translated.
@@ -1154,6 +1174,13 @@ fn save_records(env: &Env, records: &Records) -> Result<(), SetupError> {
         .map_err(|_| SetupError::Io { path: file.clone(), err: io::Error::other("the record could not be written") })
 }
 
+/// The client whose entry is in `target` now, as `client_setup.json` notes it (issue #538); `None`
+/// when nothing is noted there. For an open client the first note of that target.
+pub fn connected_client(env: &Env, target: Target) -> Result<Option<String>, SetupError> {
+    let records = load_records(env)?;
+    Ok(records.written.into_iter().find(|record| record.target == target).map(|record| record.client))
+}
+
 /// The records of every client the wizard set up (for the tests; the wizard only adds and removes).
 #[cfg(test)]
 pub fn records(env: &Env) -> Result<Vec<Record>, SetupError> {
@@ -1370,6 +1397,72 @@ pub fn disconnect(env: &Env, client: &str, runner: &dyn Runner) -> Result<Option
     Ok(Some(record.target))
 }
 
+// ----- The core's own setup (issue #538) ---------------------------------------------------------
+
+/// How [`Service`] finds the [`Env`] for an app that searches the given `PATH` first.
+type EnvFor = dyn Fn(&[PathBuf]) -> Option<Env> + Send + Sync;
+
+/// Where the core sets clients up when it does so itself (`clients.detect_clients`,
+/// `clients.connect_client`, `clients.disconnect_client`, issue #538): how it finds its [`Env`]
+/// for an app's `PATH`, and the [`Runner`] for the clients' own commands. The service's is
+/// [`Service::system`]; tests bring a temporary home and a fake runner.
+#[derive(Clone)]
+pub struct Service {
+    env: Arc<EnvFor>,
+    runner: Arc<dyn Runner + Send + Sync>,
+}
+
+impl Service {
+    /// The service's view ([`Env::current`]) with the app's `PATH` searched first, and the real
+    /// commands ([`System`]). In tests nothing: they never reach the user's home.
+    pub fn system() -> Service {
+        Service::new(
+            |path| {
+                if cfg!(test) {
+                    return None;
+                }
+                Env::current().map(|env| env.searching_first(path))
+            },
+            Arc::new(System),
+        )
+    }
+
+    /// A setup with `env` and `runner` (for tests and [`Service::system`]).
+    pub fn new(
+        env: impl Fn(&[PathBuf]) -> Option<Env> + Send + Sync + 'static,
+        runner: Arc<dyn Runner + Send + Sync>,
+    ) -> Service {
+        Service { env: Arc::new(env), runner }
+    }
+
+    /// The [`Env`] for an app that searches `path` first; `None` without a home directory.
+    pub fn env(&self, path: &[PathBuf]) -> Option<Env> {
+        (self.env)(path)
+    }
+
+    /// The runner for the clients' own commands.
+    pub fn runner(&self) -> Arc<dyn Runner + Send + Sync> {
+        self.runner.clone()
+    }
+}
+
+impl std::fmt::Debug for Service {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("client_setup::Service")
+    }
+}
+
+impl Env {
+    /// This view with `path` searched before its own `PATH` (issue #538): a service started at
+    /// login often has a shorter one than the app that asks, and would miss `claude` or `codex`.
+    pub fn searching_first(mut self, path: &[PathBuf]) -> Env {
+        let mut joined = path.to_vec();
+        joined.extend(self.path.into_iter().filter(|dir| !path.contains(dir)));
+        self.path = joined;
+        self
+    }
+}
+
 // ----- Jobs of the control centre ---------------------------------------------------------------
 
 /// What the control centre asks for (`ui::Action::Setup`); it runs on a blocking thread
@@ -1444,7 +1537,7 @@ pub fn run(job: Job, env: Option<&Env>, runner: &dyn Runner) -> Outcome {
 
 /// [`disconnect`] and [`unhook`] for `client`. Both are tried, so a failing MCP entry does not
 /// leave the hooks behind; the first error is the answer.
-fn release(env: &Env, client: &str, runner: &dyn Runner) -> Result<Released, SetupError> {
+pub fn release(env: &Env, client: &str, runner: &dyn Runner) -> Result<Released, SetupError> {
     let target = disconnect(env, client, runner);
     let hook_clients = unhook(env, client);
     Ok(Released { target: target?, hook_clients: hook_clients? })
@@ -1542,6 +1635,22 @@ mod tests {
 
     fn key() -> IssuedKey {
         IssuedKey::new(Key::new(KEY))
+    }
+
+    /// Issue #538: the app's `PATH` comes first, the service's own after it without repeats, and
+    /// every target is found again by its kind.
+    #[test]
+    fn an_apps_path_is_searched_first_and_targets_go_by_kind() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let env = env(&dir);
+        let own = env.path[0].clone();
+        let app = vec![PathBuf::from("/opt/homebrew/bin"), own.clone()];
+        assert_eq!(env.clone().searching_first(&app).path, app);
+        assert_eq!(env.clone().searching_first(&[]).path, vec![own]);
+        for target in Target::ALL {
+            assert_eq!(Target::from_kind(target.kind()), Some(target));
+        }
+        assert_eq!(Target::from_kind("script"), None);
     }
 
     fn server(env: &Env) -> Server<'_> {
