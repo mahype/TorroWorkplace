@@ -1969,6 +1969,9 @@ impl Request {
             Request::ImportTorroMailAccount { .. } => &IMPORT_TORROMAIL_ACCOUNT,
             Request::ConnectAi { .. } => &CONNECT_AI,
             Request::ConnectLocalAi { .. } => &CONNECT_LOCAL_AI,
+            Request::StartAiSignIn { .. } => &START_AI_SIGN_IN,
+            Request::CheckAiSignIn { .. } => &CHECK_AI_SIGN_IN,
+            Request::CancelAiSignIn { .. } => &CANCEL_AI_SIGN_IN,
             Request::ConnectNtfy { .. } => &CONNECT_NTFY,
             Request::SetNtfyLogin { .. } => &SET_NTFY_LOGIN,
             Request::SetNtfyTopic { .. } => &SET_NTFY_TOPIC,
@@ -2356,6 +2359,9 @@ pub static CATALOGUE: &[&Command] = &[
     &IMPORT_TORROMAIL_ACCOUNT,
     &CONNECT_AI,
     &CONNECT_LOCAL_AI,
+    &START_AI_SIGN_IN,
+    &CHECK_AI_SIGN_IN,
+    &CANCEL_AI_SIGN_IN,
     &CONNECT_NTFY,
     &SET_NTFY_LOGIN,
     &SET_NTFY_TOPIC,
@@ -3927,6 +3933,38 @@ static CONNECT_LOCAL_AI: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Never,
     description: "Connects a named local AI program (jan, gpt4all, koboldcpp, llama_cpp), checking its address and optional key before storing it. Only the app key may choose a data destination, even without a key. Jan may relay to cloud providers; its models count as elsewhere. Unknown programs return unsupported. Never fall back to accounts.connect_ai on an older daemon.",
+};
+
+// Never MCP tools, and for the app key only (issue #324): signing in brings tokens into the core (`docs/api.md`,
+// "Was nie nach außen geht", 5). The person's consent is the click in the control centre and the browser; an agent
+// could otherwise connect an account the suite then sends data to, or watch a sign-in it did not start.
+static START_AI_SIGN_IN: Command = Command {
+    name: "accounts.start_ai_sign_in",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Starts signing in to an AI account with a browser instead of an API key (chatgpt: Sign in with \
+                  ChatGPT, OAuth with PKCE and a callback on 127.0.0.1). Returns the flow and the address to open in \
+                  the browser; the tokens stay in the core's keychain and are renewed there. Only the app key may use it.",
+};
+
+static CHECK_AI_SIGN_IN: Command = Command {
+    name: "accounts.check_ai_sign_in",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Asks how a sign-in with a browser stands: pending, the connected AI account (never its tokens), or \
+                  the error that ended it (auth, offline, error; not-found for a flow that is over or unknown). Only \
+                  the app key may use it.",
+};
+
+static CANCEL_AI_SIGN_IN: Command = Command {
+    name: "accounts.cancel_ai_sign_in",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Ends a sign-in with a browser: the core stops listening for the callback and stores nothing. Only \
+                  the app key may use it.",
 };
 
 static CONNECT_AI: Command = Command {
@@ -7157,6 +7195,9 @@ mod tests {
                 key: crate::Secret::new("sk-or-v1-example"),
             },
             Request::ConnectLocalAi { program: "jan".into(), server: None, key: crate::Secret::default() },
+            Request::StartAiSignIn { provider: torro_core::ai::AiProvider::ChatGpt },
+            Request::CheckAiSignIn { flow: "f1".into() },
+            Request::CancelAiSignIn { flow: "f1".into() },
             Request::AiModels { account: "ai:openrouter@openrouter.ai".into(), all: true },
             Request::SetModelEnabled {
                 account: "ai:ollama@localhost:11434".into(),
@@ -8425,6 +8466,10 @@ mod tests {
                         | "accounts.import_torromail_account"
                         | "accounts.connect_ai"
                         | "accounts.connect_local_ai"
+                        // Issue #324: signing in with a browser brings tokens into the core.
+                        | "accounts.start_ai_sign_in"
+                        | "accounts.check_ai_sign_in"
+                        | "accounts.cancel_ai_sign_in"
                         | "accounts.set_ntfy_login"
                         | "approvals.decide_approval"
                         // Point 6: the microphone. Switching voice on through settings.set_setting
@@ -9371,6 +9416,7 @@ mod tests {
                 "anthropic",
                 "openai_compatible",
                 "openai",
+                "chatgpt",
                 "gemini",
                 "xai",
                 "mistral",
