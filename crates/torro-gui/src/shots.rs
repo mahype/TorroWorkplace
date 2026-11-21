@@ -12,6 +12,11 @@
 //! dark appearance (pass `--appearance`). Every app wires it in its `main` through [`Shots::from_args`]
 //! and [`run`]; `.claude/skills/torro-design/shots.sh` builds an app and calls it for several states.
 //!
+//! Pictures given as bytes or a path (the senders' logos, #453) are decoded and uploaded by iced_wgpu
+//! on a thread of its own; a window draws again when one is in, the emulator does not (#519). [`run`]
+//! therefore lays a marker picture out after the view and lays the window out again until the marker
+//! has arrived: the thread works in order, so every picture asked for before it is in, too.
+//!
 //! Files: `<dir>/<prefix>-<size>-<W>x<H>.png` for the [`SIZES`] (W×H in logical pixels, the picture
 //! at [`SCALE`] times that), `<dir>/<prefix>-<W>x<H>.png` for sizes of `--shot-size WxH`. The prefix
 //! is the program's name and the values of the flags that pick a view ([`Shots::from_args`]).
@@ -21,10 +26,15 @@ use std::fmt;
 use std::fs::File;
 use std::io::{self, BufWriter};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use iced::Size;
+use iced::advanced::image as raster;
+use iced::advanced::layout::{self, Layout};
+use iced::advanced::widget::{Operation, Tree, tree};
+use iced::advanced::{Clipboard, Shell, Widget, mouse, overlay, renderer};
 use iced_test::emulator::{self, Emulator};
 use iced_test::futures::futures::channel::mpsc::{self, TryRecvError};
 use iced_test::instruction::{self, Instruction, Interaction};
@@ -87,6 +97,17 @@ const QUIET: Duration = Duration::from_millis(300);
 
 /// How long the program gets at most; a view that never settles is taken as it is then.
 const LIMIT: Duration = Duration::from_secs(10);
+
+/// How long to wait between two layouts for the pictures still being uploaded ([`wait_for_pictures`]).
+const PICTURE_PAUSE: Duration = Duration::from_millis(10);
+
+/// How many layouts the pictures get at most (with [`PICTURE_PAUSE`] between them, a few seconds); a
+/// picture still missing then is left out and a note goes to stderr.
+const PICTURE_PASSES: usize = 300;
+
+/// Layouts with a pause for [`write`] without the marker of [`run`]: time for small pictures, no
+/// guarantee.
+const UNMARKED_PASSES: usize = 3;
 
 /// What `--shots` asked for: where the pictures go, how they are named and at which sizes.
 #[derive(Debug, Clone, PartialEq)]
@@ -290,6 +311,9 @@ impl Shots {
 /// With more than one size each size gets a process of its own: this program again, with the same
 /// words and `--shot-index <n>`. A demo source lives in the process, and what one boot changes in it
 /// (a mail marked read when it opens) would otherwise show in the pictures of the next sizes.
+///
+/// The pictures wait for the raster pictures of the view (#519): the application is wrapped in a
+/// [`Marked`] program, see [`wait_for_pictures`].
 pub fn run<P>(application: iced::Application<P>, shots: Option<&Shots>) -> Result<(), RunError>
 where
     P: iced::Program<Theme = iced::Theme> + 'static,
@@ -298,7 +322,11 @@ where
     match shots {
         None => Ok(application.run()?),
         Some(shots) if shots.index.is_none() && shots.sizes.len() > 1 => Ok(each_size(shots.sizes.len())?),
-        Some(shots) => write(&application, shots).map(|_| ()).map_err(RunError::from),
+        Some(shots) => {
+            let marked = Marked::new(application);
+            let arrived = Arc::clone(&marked.arrived);
+            shoot(&marked, shots, Some(&arrived)).map(|_| ()).map_err(RunError::from)
+        }
     }
 }
 
@@ -339,7 +367,19 @@ static FONTS_LOADED: AtomicBool = AtomicBool::new(false);
 /// Each size boots the program afresh, runs its tasks and subscriptions until it has been quiet for
 /// `QUIET` (300 ms) after booting (at most `LIMIT`, 10 s; then a note goes to stderr and the picture is taken
 /// anyway) and draws it in the theme it asks for (dark if it names none).
+///
+/// Raster pictures the renderer loads on a thread of its own get a few layouts' time
+/// (`UNMARKED_PASSES`) but no guarantee; [`run`] waits for them ([`wait_for_pictures`]).
 pub fn write<P>(program: &P, shots: &Shots) -> Result<Vec<PathBuf>, ShotError>
+where
+    P: iced::Program<Theme = iced::Theme> + 'static,
+{
+    shoot(program, shots, None)
+}
+
+/// [`write`], waiting for the raster pictures until `arrived` is set by the [`Marked`] program, or for
+/// `UNMARKED_PASSES` layouts without it.
+fn shoot<P>(program: &P, shots: &Shots, arrived: Option<&AtomicBool>) -> Result<Vec<PathBuf>, ShotError>
 where
     P: iced::Program<Theme = iced::Theme> + 'static,
 {
@@ -367,9 +407,25 @@ where
         // of the pointer; the picture shows what it shows then.
         // One pass per level of a cascading menu and the menu itself: each level hangs at the one
         // above it (`widgets::CASCADE_DEPTH`).
-        for _ in 0..=crate::widgets::CASCADE_DEPTH {
+        let mut pass = || {
             let outside = instruction::Target::Point(iced::Point::new(-1.0, -1.0));
             emulator.run(program, Instruction::Interact(Interaction::Mouse(instruction::Mouse::Move(outside))));
+        };
+        for _ in 0..=crate::widgets::CASCADE_DEPTH {
+            pass();
+        }
+        // Each size has a renderer of its own, which has not met the marker yet.
+        let pause = || std::thread::sleep(PICTURE_PAUSE);
+        match arrived {
+            Some(arrived) => {
+                arrived.store(false, Ordering::SeqCst);
+                if !wait_for_pictures(pass, || arrived.load(Ordering::SeqCst), pause, PICTURE_PASSES) {
+                    eprintln!("{}: pictures still loading after {PICTURE_PASSES} layouts", path.display());
+                }
+            }
+            None => {
+                wait_for_pictures(pass, || false, pause, UNMARKED_PASSES);
+            }
         }
         let theme = emulator.theme(program).unwrap_or(iced::Theme::Dark);
         let screenshot = emulator.screenshot(program, &theme, SCALE);
@@ -378,6 +434,242 @@ where
         written.push(path);
     }
     Ok(written)
+}
+
+/// Lays the window out (`pass`) until the raster pictures are in (`arrived`), with a `pause` between
+/// two layouts, at most `passes` times; `false` if they were not in by then (#519).
+///
+/// iced_wgpu decodes and uploads a picture given as bytes or a path on a thread of its own when a
+/// layout first measures it, and takes it in at a later layout; the draw before leaves its place empty.
+/// In a window the finished upload asks for another draw, but the emulator's renderer has a headless
+/// shell that drops the request, and the emulator offers no other way to learn of it. What it does
+/// offer is the order: the thread works through its jobs one after another, so once the marker
+/// picture of [`Marked`], measured after the whole view, has arrived, every picture of the view has.
+/// The picture's own layout then takes them all in. tiny-skia loads pictures at once: the marker is
+/// there at the first layout.
+fn wait_for_pictures(
+    mut pass: impl FnMut(),
+    arrived: impl Fn() -> bool,
+    mut pause: impl FnMut(),
+    passes: usize,
+) -> bool {
+    for done in 1..=passes {
+        pass();
+        if arrived() {
+            return true;
+        }
+        if done < passes {
+            pause();
+        }
+    }
+    false
+}
+
+/// A 1×1 PNG, the marker picture of [`Marked`]: bytes, so the renderer loads it on its thread like the
+/// logos.
+fn marker_png() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, 1, 1);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    // Writing four bytes into memory cannot fail; if it did, the marker would be no picture and arrive
+    // as an error, which counts as arrived as well.
+    if let Ok(mut writer) = encoder.write_header() {
+        let _ = writer.write_image_data(&[0, 0, 0, 0]);
+        let _ = writer.finish();
+    }
+    bytes
+}
+
+/// The program `P` for the pictures, its view wrapped in [`Marker`] (#519): everything as `P` does,
+/// and `arrived` set once the renderer holds the marker picture.
+struct Marked<P> {
+    program: P,
+    marker: raster::Handle,
+    arrived: Arc<AtomicBool>,
+}
+
+impl<P> Marked<P> {
+    fn new(program: P) -> Self {
+        Marked { program, marker: raster::Handle::from_bytes(marker_png()), arrived: Arc::new(AtomicBool::new(false)) }
+    }
+}
+
+impl<P> iced::Program for Marked<P>
+where
+    P: iced::Program,
+    P::Theme: 'static,
+    P::Renderer: 'static,
+{
+    type State = P::State;
+    type Message = P::Message;
+    type Theme = P::Theme;
+    type Renderer = P::Renderer;
+    type Executor = P::Executor;
+
+    fn name() -> &'static str {
+        P::name()
+    }
+
+    fn settings(&self) -> iced::Settings {
+        self.program.settings()
+    }
+
+    fn window(&self) -> Option<iced::window::Settings> {
+        self.program.window()
+    }
+
+    fn boot(&self) -> (Self::State, iced::Task<Self::Message>) {
+        self.program.boot()
+    }
+
+    fn update(&self, state: &mut Self::State, message: Self::Message) -> iced::Task<Self::Message> {
+        self.program.update(state, message)
+    }
+
+    fn view<'a>(
+        &self,
+        state: &'a Self::State,
+        window: iced::window::Id,
+    ) -> iced::Element<'a, Self::Message, Self::Theme, Self::Renderer> {
+        let content = self.program.view(state, window);
+        iced::Element::new(Marker { content, marker: self.marker.clone(), arrived: Arc::clone(&self.arrived) })
+    }
+
+    fn title(&self, state: &Self::State, window: iced::window::Id) -> String {
+        self.program.title(state, window)
+    }
+
+    fn subscription(&self, state: &Self::State) -> iced::Subscription<Self::Message> {
+        self.program.subscription(state)
+    }
+
+    fn theme(&self, state: &Self::State, window: iced::window::Id) -> Option<Self::Theme> {
+        self.program.theme(state, window)
+    }
+
+    fn style(&self, state: &Self::State, theme: &Self::Theme) -> iced::theme::Style {
+        self.program.style(state, theme)
+    }
+
+    fn scale_factor(&self, state: &Self::State, window: iced::window::Id) -> f32 {
+        self.program.scale_factor(state, window)
+    }
+
+    fn presets(&self) -> &[iced::Preset<Self::State, Self::Message>] {
+        self.program.presets()
+    }
+}
+
+/// Whether `renderer` holds the picture `marker`; asking makes it load the picture. The programs of
+/// `iced::application` do not name their renderer, so it is asked as the one the apps draw with,
+/// `iced::Renderer`; another renderer cannot be asked and counts as holding it (no waiting).
+fn marker_arrived<Renderer: 'static>(renderer: &Renderer, marker: &raster::Handle) -> bool {
+    use raster::Renderer as _;
+    let renderer: &dyn std::any::Any = renderer;
+    let Some(renderer) = renderer.downcast_ref::<iced::Renderer>() else { return true };
+    #[cfg(test)]
+    tests::drawn_by(renderer);
+    renderer.measure_image(marker).is_some()
+}
+
+/// The view of [`Marked`]: `content` as it is – same size, layout, state and tree, every call passed
+/// on – and after its layout the question whether the renderer holds the `marker` picture yet. The
+/// first question asks the renderer to load it, after the pictures the content's layout asked for.
+struct Marker<'a, Message, Theme, Renderer> {
+    content: iced::Element<'a, Message, Theme, Renderer>,
+    marker: raster::Handle,
+    arrived: Arc<AtomicBool>,
+}
+
+impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer> for Marker<'_, Message, Theme, Renderer>
+where
+    Renderer: iced::advanced::Renderer + 'static,
+{
+    fn size(&self) -> Size<iced::Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<iced::Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn layout(&mut self, tree: &mut Tree, renderer: &Renderer, limits: &layout::Limits) -> layout::Node {
+        let node = self.content.as_widget_mut().layout(tree, renderer, limits);
+        if marker_arrived(renderer, &self.marker) {
+            self.arrived.store(true, Ordering::SeqCst);
+        }
+        node
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &iced::Rectangle,
+    ) {
+        self.content.as_widget().draw(tree, renderer, theme, style, layout, cursor, viewport);
+    }
+
+    fn tag(&self) -> tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.content.as_widget().children()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        self.content.as_widget().diff(tree);
+    }
+
+    fn operate(&mut self, tree: &mut Tree, layout: Layout<'_>, renderer: &Renderer, operation: &mut dyn Operation) {
+        self.content.as_widget_mut().operate(tree, layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &iced::Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &iced::Rectangle,
+    ) {
+        self.content.as_widget_mut().update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &iced::Rectangle,
+        renderer: &Renderer,
+    ) -> mouse::Interaction {
+        self.content.as_widget().mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &Renderer,
+        viewport: &iced::Rectangle,
+        translation: iced::Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+        self.content.as_widget_mut().overlay(tree, layout, renderer, viewport, translation)
+    }
 }
 
 /// Runs the emulator's events until the program has been quiet for `QUIET` (300 ms) after booting, or
@@ -584,37 +876,100 @@ mod tests {
     #[derive(Debug, Clone)]
     enum Never {}
 
-    /// A program that is one colour, rendered without a window: one picture at twice the size, the
-    /// colour in its middle.
+    /// #519: the layouts stop once the pictures are in, with a pause between two, and give up after
+    /// the limit.
+    #[test]
+    fn the_layouts_wait_for_the_pictures_and_give_up_at_the_limit() {
+        use std::cell::Cell;
+        let (passes, pauses) = (Cell::new(0), Cell::new(0));
+        let arrived = wait_for_pictures(
+            || passes.set(passes.get() + 1),
+            || passes.get() >= 3,
+            || pauses.set(pauses.get() + 1),
+            10,
+        );
+        assert!(arrived);
+        assert_eq!((passes.get(), pauses.get()), (3, 2));
+
+        let (passes, pauses) = (Cell::new(0), Cell::new(0));
+        let arrived = wait_for_pictures(|| passes.set(passes.get() + 1), || false, || pauses.set(pauses.get() + 1), 4);
+        assert!(!arrived);
+        assert_eq!((passes.get(), pauses.get()), (4, 3), "no pause after the last layout");
+    }
+
+    /// #519: the marker is a picture the renderer can load, so it arrives instead of failing.
+    #[test]
+    fn the_marker_is_a_picture_of_one_pixel() {
+        let decoder = png::Decoder::new(io::Cursor::new(marker_png()));
+        let reader = decoder.read_info().expect("a png");
+        assert_eq!((reader.info().width, reader.info().height), (1, 1));
+    }
+
+    /// The renderer the last [`Marked`] view was laid out with, by its name (`wgpu`, `tiny-skia`).
+    static DRAWN_BY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+    /// Notes the renderer for [`DRAWN_BY`]; called by [`marker_arrived`], so the test needs no
+    /// renderer – and no GPU set up – of its own.
+    pub(super) fn drawn_by(renderer: &iced::Renderer) {
+        use iced::advanced::renderer::Headless as _;
+        let mut name = DRAWN_BY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if name.is_none() {
+            *name = Some(renderer.name());
+        }
+    }
+
+    /// A program rendered without a window (#492): one picture at twice the size. #519: a picture given
+    /// as bytes – loaded by iced_wgpu on a thread of its own, like the senders' logos – is in it, and
+    /// cut round with wgpu (tiny-skia, without a GPU, ignores `border_radius` on pictures). One test,
+    /// so the test binary sets up no more GPUs than before: the Vulkan loader can crash when threads
+    /// set them up at the same moment.
     #[test]
     fn a_program_is_rendered_to_a_picture_without_a_window() {
-        use iced::widget::container;
+        use iced::widget::{container, image};
 
         const FILL: iced::Color = iced::Color::from_rgb8(0x33, 0x99, 0xcc);
-        fn view(_: &()) -> iced::Element<'_, Never> {
-            container(iced::widget::Space::new())
-                .width(iced::Fill)
-                .height(iced::Fill)
+        const DOT: [u8; 3] = [0xe0, 0x40, 0x30];
+        // Large enough that decoding takes a moment: without waiting, the picture is missed.
+        let edge = 600;
+        let mut png_bytes = Vec::new();
+        ::image::RgbImage::from_pixel(edge, edge, ::image::Rgb(DOT))
+            .write_to(&mut io::Cursor::new(&mut png_bytes), ::image::ImageFormat::Png)
+            .expect("a png");
+        let picture = image::Handle::from_bytes(png_bytes);
+        fn view(picture: &image::Handle) -> iced::Element<'_, Never> {
+            container(image(picture.clone()).width(40).height(40).border_radius(20))
+                .center(iced::Fill)
                 .style(|_| container::Style::default().background(FILL))
                 .into()
         }
-        let application = iced::application(|| (), |_: &mut (), _: Never| iced::Task::none(), view);
+        let application =
+            iced::application(move || picture.clone(), |_: &mut image::Handle, _: Never| iced::Task::none(), view);
         let dir = std::env::temp_dir().join(format!("torro-gui-shots-{}", std::process::id()));
-        let line = args(&["--demo", "--shots", dir.to_str().expect("utf-8 temp dir"), "--shot-size", "40x30"]);
+        let line = args(&["--demo", "--shots", dir.to_str().expect("utf-8 temp dir"), "--shot-size", "60x60"]);
         let shots = Shots::from_args("test", &line).expect("valid").expect("asked for");
 
-        let written = write(&application, &shots).expect("written");
+        run(application, Some(&shots)).expect("written");
 
-        assert_eq!(written, [dir.join("test-40x30.png")]);
-        let decoder = png::Decoder::new(io::BufReader::new(File::open(&written[0]).expect("open")));
+        let decoder = png::Decoder::new(io::BufReader::new(File::open(dir.join("test-60x60.png")).expect("open")));
         let mut reader = decoder.read_info().expect("a png");
         let mut pixels = vec![0; reader.output_buffer_size().expect("a size")];
         let info = reader.next_frame(&mut pixels).expect("a frame");
-        assert_eq!((info.width, info.height, info.color_type), (80, 60, png::ColorType::Rgba));
-        let middle = ((30 * 80 + 40) * 4) as usize;
-        let want = [0x33, 0x99, 0xcc, 0xff];
-        for (channel, (&got, &want)) in pixels[middle..middle + 4].iter().zip(&want).enumerate() {
-            assert!(got.abs_diff(want) <= 2, "channel {channel}: {got} instead of {want}");
+        assert_eq!((info.width, info.height, info.color_type), (120, 120, png::ColorType::Rgba));
+        let at = |x: usize, y: usize| {
+            let start = (y * 120 + x) * 4;
+            [pixels[start], pixels[start + 1], pixels[start + 2], pixels[start + 3]]
+        };
+        let near = |got: [u8; 4], want: [u8; 3]| {
+            got.iter().zip(want.iter().chain(&[0xff])).all(|(got, want)| got.abs_diff(*want) <= 3)
+        };
+        let back = [0x33, 0x99, 0xcc];
+        assert!(near(at(5, 5), back), "the background: {:?}", at(5, 5));
+        assert!(near(at(60, 60), DOT), "the picture is in the middle: {:?}", at(60, 60));
+        let renderer = DRAWN_BY.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        if renderer.as_deref().is_some_and(|name| name.starts_with("wgpu")) {
+            // The picture spans 20..100; its corner lies outside the circle, the middle of its edge not.
+            assert!(near(at(23, 23), back), "the corner is cut away: {:?}", at(23, 23));
+            assert!(near(at(60, 22), DOT), "the edge's middle stays: {:?}", at(60, 22));
         }
         std::fs::remove_dir_all(&dir).expect("clean up");
     }
