@@ -3746,11 +3746,11 @@ mod tests {
         assert!(value(serde_json::json!("a year")).is_err());
         // The file clamps as well, and a value that does not read is the default.
         let read = |text: &str| serde_json::from_str::<Settings>(text).expect("settings").postpone_retention.days();
-        assert_eq!(read(r#"{"postpone_retention": 4000}"#), 1095);
-        assert_eq!(read(r#"{"postpone_retention": "long"}"#), 365);
+        assert_eq!(read(r#"{"postponeRetention": 4000}"#), 1095);
+        assert_eq!(read(r#"{"postponeRetention": "long"}"#), 365);
         assert_eq!(read("{}"), 365);
         let written = serde_json::to_value(Settings::default()).expect("written");
-        assert!(written.get("postpone_retention").is_none(), "the default is not written");
+        assert!(written.get("postponeRetention").is_none(), "the default is not written");
     }
 
     #[test]
