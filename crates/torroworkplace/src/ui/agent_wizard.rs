@@ -19,7 +19,8 @@
 //!    message shows after the first "Create key", `torro-design` 5) and by the core. For Claude
 //!    Code, Codex and Gemini CLI a check box "Report to the Notification Hub when waiting or
 //!    done", ticked at first (task E2.3). "Create key" starts here and has no "Back".
-//! 3. **Connecting:** `clients.create_client`, then for an agent the shell writes its MCP entry with
+//! 3. **Connecting:** `clients.create_client` with the template and every visible address book
+//!    ticked (hidden ones are ticked one by one on the client's page), then for an agent the shell writes its MCP entry with
 //!    the key ([`client_setup::Job::Connect`]). With the check box ticked a second client follows,
 //!    of the kind `hook` for this agent ("Claude Code hooks", `clients.create_client` with the
 //!    template "Full access", which the core narrows to `Rights::hook`: report to the inbox, see
@@ -56,7 +57,7 @@ use torro_gui::{dialog, layout, style, typo, widgets};
 use torro_inbox::AgentKind;
 #[cfg(doc)]
 use torro_ipc::api::Outbound;
-use torro_ipc::api::{HOOK_CLIENT, MCP_CLIENT, RightsTemplate, SCRIPT_CLIENT};
+use torro_ipc::api::{HOOK_CLIENT, MCP_CLIENT, Rights, RightsTemplate, SCRIPT_CLIENT, Selection};
 use torro_ipc::{IssuedKey, Request, Response};
 
 use super::{Action, Data, chevron, one_line, pressable, row_frame};
@@ -550,9 +551,25 @@ fn connect(state: &mut State, data: &Data) -> Action {
             kind: choice.kind().to_string(),
             template: state.template,
             agent: None,
-            rights: None,
+            rights: with_visible_books(state.template, data),
         },
     )
+}
+
+/// The rights of `template` with every visible address book ticked (decision 5 in
+/// `docs/kontakte.md`, issue #689): no template opens a book, so a client connected here would see
+/// no contact until a person ticks books on its page. Hidden books (the system address book,
+/// "Recently contacted") stay out; they are ticked one by one. `None` – the template alone – when
+/// there is no visible book, so the core keeps choosing as before.
+fn with_visible_books(template: RightsTemplate, data: &Data) -> Option<Rights> {
+    let visible: Vec<String> =
+        data.address_books.iter().filter(|book| !book.hidden_by_default).map(|book| book.id.clone()).collect();
+    if visible.is_empty() {
+        return None;
+    }
+    let mut rights = template.rights();
+    rights.address_books = Selection::Only(visible);
+    Some(rights)
 }
 
 /// What is wrong with `name` for a new client of `kind` (`script` or `mcp`): empty, the name of
@@ -1551,6 +1568,43 @@ mod tests {
         assert!(state.key.is_some(), "the key stays available until the wizard closes");
         assert!(closable(&state) && dismissable(&state));
         drop(view(&state, &data));
+    }
+
+    /// Issue #689: connecting with a template ticks every visible address book and no hidden one;
+    /// the rest of the rights stay the template's.
+    #[test]
+    fn connecting_ticks_the_visible_address_books() {
+        let book = |id: &str, hidden: bool| torro_contacts::AddressBook {
+            id: id.into(),
+            account: "nextcloud:anna@cloud.example.org".into(),
+            name: id.rsplit('/').next().unwrap_or(id).into(),
+            display_name: id.into(),
+            count: 3,
+            writable: !hidden,
+            hidden_by_default: hidden,
+            untrusted: true,
+        };
+        let data = Data {
+            address_books: vec![
+                book("nextcloud:anna@cloud.example.org/contacts", false),
+                book("nextcloud:anna@cloud.example.org/z-server-generated--system", true),
+                book("nextcloud:anna@cloud.example.org/family", false),
+            ],
+            ..Data::default()
+        };
+        let mut state = detected();
+        let _ = update(&mut state, Message::Choose(Choice::Agent(Target::ClaudeCode)), &data);
+        let _ = update(&mut state, Message::Template(RightsTemplate::ReadOnly), &data);
+        let Action::AskWizard(_, Request::CreateClient { template, rights: Some(rights), .. }) =
+            update(&mut state, Message::Connect, &data)
+        else {
+            panic!("expected the client to be created with its books");
+        };
+        assert_eq!(template, RightsTemplate::ReadOnly);
+        let visible = ["nextcloud:anna@cloud.example.org/contacts", "nextcloud:anna@cloud.example.org/family"];
+        assert_eq!(rights.address_books, Selection::Only(visible.map(String::from).to_vec()));
+        assert!(rights.hidden_address_books.is_empty(), "no hidden book is ticked");
+        assert_eq!(rights.template(), Some(RightsTemplate::ReadOnly), "otherwise the template's rights");
     }
 
     /// Claude Code chosen with the defaults, its client created and its MCP entry written.
