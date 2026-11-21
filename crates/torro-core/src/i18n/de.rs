@@ -2,6 +2,112 @@
 //! within a group; the test in `mod.rs` checks for duplicates and matching placeholders.
 
 pub(super) static TABLE: &[(&str, &str)] = &[
+    // Sign in with ChatGPT, signing in to AI accounts with a browser (#324).
+    ("Cancel sign-in", "Anmeldung abbrechen"),
+    (
+        "ChatGPT cannot be used through your plan right now. Try again later.",
+        "ChatGPT lässt sich gerade nicht über deinen Plan nutzen. Versuch es später noch einmal.",
+    ),
+    (
+        "ChatGPT does not offer this through your plan yet: {what}",
+        "Das bietet ChatGPT über deinen Plan noch nicht an: {what}",
+    ),
+    ("Continue with {provider}", "Weiter mit {provider}"),
+    (
+        "Finish the sign-in in your browser. This page continues by itself.",
+        "Schließ die Anmeldung im Browser ab. Diese Seite macht dann von selbst weiter.",
+    ),
+    ("Manage usage", "Nutzung verwalten"),
+    (
+        "No port is free on this computer for the sign-in. Try again.",
+        "Auf diesem Rechner ist kein Port für die Anmeldung frei. Versuch es noch einmal.",
+    ),
+    (
+        "Sign in again: no sign-in is stored on this device",
+        "Melde dich erneut an: Auf diesem Gerät ist keine Anmeldung gespeichert",
+    ),
+    (
+        "Sign in again: the sign-in on this device cannot be read",
+        "Melde dich erneut an: Die Anmeldung auf diesem Gerät lässt sich nicht lesen",
+    ),
+    ("Sign in again: {provider} ended the sign-in", "Melde dich erneut an: {provider} hat die Anmeldung beendet"),
+    (
+        "Signing in is not available in this version of Torro Workplace yet: it has no client ID from the provider.",
+        "Anmelden geht in dieser Version von Torro Workplace noch nicht: Ihr fehlt die Client-ID des Anbieters.",
+    ),
+    ("Signing in to {provider}", "Anmeldung bei {provider}"),
+    ("The AI server sent no model list.", "Der KI-Server hat keine Modell-Liste geschickt."),
+    ("The provider could not be asked.", "Der Anbieter ließ sich nicht fragen."),
+    (
+        "The provider did not finish registering Torro Workplace. Try again.",
+        "Der Anbieter hat Torro Workplace nicht fertig registriert. Versuch es noch einmal.",
+    ),
+    (
+        "The provider does not accept the client ID of Torro Workplace. Remove the account and sign in again.",
+        "Der Anbieter nimmt die Client-ID von Torro Workplace nicht an. Entferne das Konto und melde dich erneut an.",
+    ),
+    ("The provider ended the sign-in. Try again.", "Der Anbieter hat die Anmeldung beendet. Versuch es noch einmal."),
+    (
+        "The provider gave no lasting sign-in. Try again.",
+        "Der Anbieter hat keine dauerhafte Anmeldung gegeben. Versuch es noch einmal.",
+    ),
+    (
+        "The provider limits sign-ins right now. Try again later.",
+        "Der Anbieter begrenzt Anmeldungen gerade. Versuch es später noch einmal.",
+    ),
+    (
+        "The provider's sign-in answer could not be read.",
+        "Die Antwort des Anbieters zur Anmeldung ließ sich nicht lesen.",
+    ),
+    ("The sign-in address is not valid.", "Die Adresse der Anmeldung ist ungültig."),
+    (
+        "The sign-in answer does not belong to this sign-in. Try again.",
+        "Die Antwort gehört nicht zu dieser Anmeldung. Versuch es noch einmal.",
+    ),
+    (
+        "The sign-in came back for another registration. Try again.",
+        "Die Anmeldung kam für eine andere Registrierung zurück. Versuch es noch einmal.",
+    ),
+    ("The sign-in came back without a code.", "Die Anmeldung kam ohne Code zurück."),
+    ("The sign-in could not be stored.", "Die Anmeldung ließ sich nicht speichern."),
+    (
+        "The sign-in did not allow Torro Workplace to use your plan. Sign in again and allow it.",
+        "Die Anmeldung hat Torro Workplace nicht erlaubt, deinen Plan zu nutzen. Melde dich erneut an und erlaube es.",
+    ),
+    ("The sign-in did not work", "Die Anmeldung hat nicht geklappt"),
+    ("The sign-in took too long. Try again.", "Die Anmeldung hat zu lange gedauert. Versuch es noch einmal."),
+    ("The sign-in was declined in the browser.", "Die Anmeldung wurde im Browser abgelehnt."),
+    (
+        "The usage limit for Torro Workplace in your ChatGPT plan is reached. Raise it in ChatGPT or wait.",
+        "Die Obergrenze für Torro Workplace in deinem ChatGPT-Plan ist erreicht. Heb sie in ChatGPT an oder warte.",
+    ),
+    ("This sign-in is over. Start it again.", "Diese Anmeldung ist vorbei. Starte sie neu."),
+    (
+        "The provider did not accept the sign-in. Try again.",
+        "Der Anbieter hat die Anmeldung nicht angenommen. Versuch es noch einmal.",
+    ),
+    ("Use your {provider} plan, no API key", "Deinen {provider}-Plan nutzen, ohne API-Schlüssel"),
+    (
+        "Uses your {provider} plan. Set how much Torro Workplace may use in {provider}.",
+        "Nutzt deinen {provider}-Plan. Wie viel Torro Workplace davon nutzen darf, stellst du in {provider} ein.",
+    ),
+    ("Waiting for the sign-in in your browser…", "Warte auf die Anmeldung im Browser…"),
+    ("You are signed in", "Du bist angemeldet"),
+    (
+        "You can close this window and go back to Torro Workplace.",
+        "Du kannst dieses Fenster schließen und zu Torro Workplace zurückkehren.",
+    ),
+    (
+        "You signed in as someone else. Remove the account first to change who is signed in.",
+        "Du hast dich als jemand anderes angemeldet. Entferne zuerst das Konto, um zu wechseln, wer angemeldet ist.",
+    ),
+    ("Your ChatGPT plan cannot be used in other apps.", "Dein ChatGPT-Plan lässt sich nicht in anderen Apps nutzen."),
+    ("{error} You can close this window.", "{error} Du kannst dieses Fenster schließen."),
+    ("{provider} is not signed in to with a browser.", "Bei {provider} meldet man sich nicht im Browser an."),
+    (
+        "{provider} is signed in to with a browser. Choose \"Continue with {provider}\".",
+        "{provider} meldet man im Browser an. Wähle „Weiter mit {provider}“.",
+    ),
     // First-run setup with five points (#326).
     ("Enter the address of your server first.", "Gib zuerst die Adresse deines Servers ein."),
     ("Connect an AI first, or skip this step.", "Verbinde zuerst eine KI oder überspring diesen Schritt."),
