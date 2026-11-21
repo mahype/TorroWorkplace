@@ -91,7 +91,7 @@ Hyprland-Konfiguration. Wer so arbeitet, setzt `TORRO_MAIN_APP=1` dort, wo der D
 | Aussehen, Sprache, Start beim Anmelden | Steuerzentrale › Appearance bzw. General | in jeder App, Zahnrad › Appearance bzw. General |
 | Hintergrunddienst beenden | Tray › Quit | in jeder App, Zahnrad › General › Background service › „Quit…“ |
 | Rechte von API-Schlüsseln und MCP-Clients im Bereich einer App | in der App, Zahnrad › API and MCP; die Steuerzentrale zeigt alle Rechte gesammelt (#531) | in der App, Zahnrad › API and MCP |
-| API-Schlüssel anlegen, MCP-Clients verbinden | nur Steuerzentrale › API clients bzw. MCP clients | in jeder App, Zahnrad › Connections (entschieden, noch nicht umgesetzt: #538); bis dahin nur `torroworkplace ctl clients add` bzw. `new-key` |
+| API-Schlüssel anlegen, MCP-Clients verbinden | nur Steuerzentrale › API clients bzw. MCP clients | in jeder App, Zahnrad › Connections (#538; der Dienst kann es, der Abschnitt fehlt noch); bis dahin nur `torroworkplace ctl clients add` bzw. `new-key` |
 | Freigaben, Workspaces | nur Steuerzentrale | gibt es nicht ohne Hauptanwendung |
 
 Die Seiten Appearance und General stehen einmal in `torro-settings-ui` (`suite.rs`); Steuerzentrale und Apps
@@ -99,8 +99,9 @@ nutzen dieselben Seiten.
 
 ## API-Schlüssel und MCP-Clients ohne Hauptanwendung (#538)
 
-**Stand: entschieden von Sven am 2026-11-21**, die technische Umsetzung (Punkt 5) ist noch offen. Bis zur Umsetzung
-gilt der heutige Stand.
+**Stand:** entschieden von Sven am 2026-11-21 (Punkte 1–4, Weg und Einzelheiten unter 5). Der Dienst kann es
+(`clients.detect_clients`, `clients.connect_client`, `clients.disconnect_client`); der Abschnitt „Connections“ in den
+Apps fehlt noch, sein Design kommt vom Designer. Bis dahin gilt „Heute“.
 
 ### Heute
 
@@ -152,67 +153,74 @@ einen Client an oder gibt sich Rechte ([api.md](api.md), „Was nie nach außen 
 Client ist wie heute lokal (Socket bzw. Named Pipe nur für den Benutzer, `torroworkplace mcp` über stdio); einen
 Netz-Port gibt es nicht (Raycast bindet dafür an 127.0.0.1).
 
-### 5. Offen: wo die Konfiguration geschrieben wird
+### 5. Der Dienst schreibt die Konfiguration (entschieden 2026-11-21)
 
-Das Eintragen (`client_setup.rs`, rund 2500 Zeilen, mit `open_clients` und `protection` rund 3700) liegt heute in der Crate
-`torroworkplace` und läuft im Prozess der Steuerzentrale. Die Apps können es so nicht aufrufen. Zwei Wege:
+Das Eintragen (`client_setup.rs`, rund 2500 Zeilen, mit `open_clients` und `protection` rund 3700) liegt in der
+Crate `torroworkplace`. Es lief bisher nur im Prozess der Steuerzentrale; die Apps können es nicht aufrufen. Der
+**Dienst** (dasselbe Programm) übernimmt es für die Apps, über drei Requests, alle `Area::Clients`,
+`Access::Admin` wie jeder `clients.*`-Befehl im Katalog, nur App-Schlüssel, `Mcp::Never`:
 
-- **A, Vorschlag: der Dienst schreibt.** `client_setup` läuft schon im Programm `torroworkplace`, also auch im
-  Dienst. Neue Requests, alle `Area::Clients`, `Access::Admin` wie jeder `clients.*`-Befehl im Katalog, nur
-  App-Schlüssel, `Mcp::Never`:
-  - `clients.detect_clients`: welche bekannten Clients installiert sind und wie sie erreicht werden.
-  - `clients.connect_client { target, read_only }`: legt den Client an, schreibt Eintrag, Hooks und Skill,
-    merkt es in `client_setup.json` und antwortet **ohne Schlüssel** (Name, Kennung, geänderte Dateien, Hinweis
-    „Restart … to use Torro Workplace.“).
-  - `clients.disconnect_client { id }`: nimmt heraus, was eingetragen wurde, und entfernt den Client samt seinem
-    Hook-Client (Art `hook`) und dessen Schlüsseldatei, damit kein gültiger Schlüssel liegen bleibt.
+- `clients.detect_clients { path }`: welche bekannten Clients installiert sind, je mit Ort des Eintrags
+  (`~/.claude.json` oder der Befehl `claude`) und ob er nur von Hand geht (`guided`). Antwort `detected-clients`.
+- `clients.connect_client { target, read_only, path }`: legt einen Client der Art `target` mit eigenem Schlüssel
+  an (Vorlage *Read only* bzw. *Read and write*; ohne `read_only` *Read only*), schreibt Eintrag und Skill wie
+  „Connect client“, merkt es in
+  `client_setup.json` und trägt bei Claude Code, Codex, Gemini CLI und OpenCode **immer** die Hooks mit einem
+  eigenen Hook-Client ein (kein Schalter). Antwort `client-connected` **ohne Schlüssel**: der neue Client, wohin der
+  Eintrag ging (`place`), wohin die Hooks gingen (`hooks`) oder warum nicht (`hooks_error`; das Verbinden bleibt).
+  Fehler: unbekanntes Ziel `error`, nicht gefunden `not-found`, nur von Hand (`guided`) `unsupported`, schon mit
+  einem bestehenden Client verbunden `conflict` (erst trennen, sonst bliebe der alte Schlüssel gültig), eine
+  andere Einrichtung hält die Dateien `busy`; lässt sich der Eintrag nicht schreiben, entfernt der Dienst den
+  neuen Client wieder (`error` mit Grund), damit kein gültiger Schlüssel liegen bleibt.
+- `clients.disconnect_client { id }`: nur für MCP-Arten (ein Skript geht mit `clients.remove_client`, sonst
+  `unsupported`). Entfernt zuerst den Client und die Hook-Clients, die für ihn melden, so dass ihre Schlüssel
+  sofort nicht mehr gelten, dann Eintrag, Skill, Hooks und Schlüsseldatei. Scheitert das Aufräumen, sind die
+  Clients trotzdem weg (`error` mit Grund).
 
-  Zu prüfen: `client_setup::Env::current` erkennt Clients über den `PATH` und das eigene Programm des Prozesses.
-  Unter der systemd-Einheit bzw. dem LaunchAgent ist der `PATH` oft kürzer als in der Anmelde-Shell, und das
-  Programm liegt im Dienst-Bündel. Erkennen und eingetragene Befehlszeile können dann anders ausfallen als aus der
-  Steuerzentrale; die App müsste ihren `PATH` mitgeben, oder der Dienst sucht zusätzlich an den bekannten Orten.
+**`path`** (Punkt 4 der Antworten): Die App gibt ihren `PATH` mit. Der Dienst sucht dort zuerst, danach im
+eigenen; ein beim Anmelden gestarteter Dienst hat oft einen kürzeren und fände `claude` oder `codex` sonst nicht.
+Nur absolute Einträge zählen, ein relativer hinge vom Arbeitsverzeichnis des Dienstes ab.
+Das darf nur der App-Schlüssel, und es ist derselbe Benutzer: Wer den `PATH` bestimmt, bestimmt, welches `claude`
+der Dienst für `claude mcp add` startet, so wie heute die Steuerzentrale mit ihrem eigenen `PATH`. Die
+eingetragene Befehlszeile ist immer das Programm des laufenden Dienstes (`<torroworkplace> mcp`).
 
-  Der Schlüssel eines gelisteten Clients verlässt den Dienst dann nie, auch nicht an die App. Nur die Notlösung
-  (Punkt 3) gibt ihn einmal heraus, über `clients.create_client` wie heute. Die Steuerzentrale kann später dieselben
-  Requests nutzen; dann gibt es einen Weg statt zwei. Neue Befehle sind verträglich (`v: 1` bleibt).
-- **B: die App schreibt.** `client_setup` wandert in eine gemeinsame Crate, die Apps rufen es wie die
-  Steuerzentrale nach `clients.create_client` selbst auf. Kein neuer Request, aber der Schlüssel jedes Clients geht
-  durch den App-Prozess, und das Schreiben fremder Dateien steckt danach in jeder App.
-
-In beiden Fällen weitet sich die Ausnahme in „Was nie nach außen geht“, Punkt 1: Die Notlösung zeigt den Schlüssel
-in einer App, nicht mehr nur in der Steuerzentrale. Bei A schreibt außerdem der Dienst selbst Schlüssel in die
-Konfiguration des Clients und in die Schlüsseldatei der Hooks; bei B geht zusätzlich jeder Schlüssel eines
-gelisteten Clients durch den App-Prozess. Sie bleibt eine Regel des Codes, keine technische Grenze: Die
+Der Schlüssel eines gelisteten Clients verlässt den Dienst so nie, auch nicht an die App: Er geht vom neuen
+Client direkt in die Konfiguration bzw. die Schlüsseldatei der Hooks. Nur die Notlösung (Punkt 3) gibt ihn einmal
+heraus, über `clients.create_client` wie heute. Damit weitet sich die Ausnahme in „Was nie nach außen geht“,
+Punkt 1: Der Dienst schreibt selbst Schlüssel in fremde Konfigurationen, und die Notlösung zeigt einen Schlüssel in
+einer App. Dass kein anderer Teil einer App ihn sieht, bleibt eine Regel des Codes, keine technische Grenze: Die
 Apps haben den App-Schlüssel selbst ([api.md](api.md), „Was der Schlüssel schützt und was nicht“).
+
+Verworfen: `client_setup` in eine gemeinsame Crate verschieben und die App selbst schreiben lassen. Jeder
+Schlüssel ginge dann durch den App-Prozess, und das Schreiben fremder Dateien steckte in jeder App.
+
+**Skript-Schlüssel** (Punkt 2 der Antworten): Im Abschnitt „Connections“ lassen sich auch Schlüssel für Skripte
+anlegen und widerrufen, mit „Create new key“ und „Revoke…“. Dafür braucht es keinen neuen Befehl:
+`clients.create_client` (Art `script`), `clients.new_key`, `clients.remove_client`.
 
 ### Oberfläche, API, MCP
 
 | Funktion | Oberfläche | API | MCP |
 |---|---|---|---|
-| Installierte Clients erkennen | App › Connections (ohne Hauptanwendung), Steuerzentrale › MCP clients › Connect client | Weg A: `clients.detect_clients` (neu); heute lokal in der Steuerzentrale | keins, „Was nie nach außen geht“, Punkt 2 |
-| Gelisteten Client verbinden, eigenes Token | ebenso | Weg A: `clients.connect_client` (neu); Weg B: `clients.create_client` und Schreiben in der App | keins, ebenso |
-| Client trennen | App › Connections › „Disconnect…“, Steuerzentrale | Weg A: `clients.disconnect_client` (neu); sonst `clients.remove_client` | keins, ebenso |
-| Schlüssel zum Kopieren (Notlösung, „Read only“) | App › Connections, Steuerzentrale › API clients bzw. „Other MCP client“ | `clients.create_client` (Vorlage `read_only` oder `read_and_write`), `clients.new_key` | keins, Punkte 1 und 2 |
+| Installierte Clients erkennen | App › Connections (ohne Hauptanwendung); Steuerzentrale › MCP clients › Connect client erkennt weiter lokal | `clients.detect_clients` | keins, „Was nie nach außen geht“, Punkt 2 |
+| Gelisteten Client verbinden, eigenes Token, Hooks immer | App › Connections | `clients.connect_client` | keins, ebenso |
+| Client trennen | App › Connections › „Disconnect…“; Steuerzentrale › MCP clients | `clients.disconnect_client` | keins, ebenso |
+| Schlüssel zum Kopieren (Notlösung, „Read only“), Skript-Schlüssel anlegen, „Create new key“, „Revoke…“ | App › Connections; Steuerzentrale › API clients bzw. „Other MCP client“ | `clients.create_client` (Vorlage `read_only` oder `read_and_write`), `clients.new_key`, `clients.remove_client` | keins, Punkte 1 und 2 |
 | Rechte im Bereich einer App | App › Zahnrad › API and MCP (#531) | `clients.update_client` | keins, Punkt 2 |
 
-### Umsetzung (nach Freigabe des Wegs)
+### Umsetzung
 
-1. Requests und Katalogeinträge (Weg A) mit Handler-Tests im Kern, API-Referenz neu erzeugen.
-2. Abschnitt „Connections“ in `torro-settings-ui`, nur wenn `main_app` falsch ist, in allen Apps; Texte englisch
-   mit Übersetzung.
-3. Fuß von „API and MCP“ ohne Hauptanwendung auf den neuen Abschnitt umstellen.
-4. Prüfung mit `torro-api-review` und `torro-design-review`.
+1. Erledigt: Requests und Katalogeinträge mit Handler-Tests im Kern (`core.rs`, `client_setup::Service`), API-Referenz.
+2. Offen: Abschnitt „Connections“ in `torro-settings-ui`, nur wenn `main_app` falsch ist, in allen Apps; die App
+   schickt ihren `PATH` mit. Texte englisch mit Übersetzung. Wartet auf das Design.
+3. Offen: Fuß von „API and MCP“ ohne Hauptanwendung auf den neuen Abschnitt umstellen.
+4. Prüfung mit `torro-api-review`, nach der Oberfläche auch `torro-design-review`.
 
-### Offene Fragen
+### Offen für den Designer
 
-1. **Weg A oder B** (Punkt 5)? Vorschlag A: Der Schlüssel eines gelisteten Clients bleibt im Dienst.
-2. **Was der Abschnitt außer Verbinden zeigt:** nur die Liste zum Verbinden und „Disconnect…“, oder auch die
-   verbundenen Skript-Schlüssel mit „Create new key“ und „Revoke…“? Die Rechte selbst stehen schon unter
-   „API and MCP“.
-3. **Hooks** („Report when waiting or done“): beim Verbinden immer mit eintragen wie heute, oder ein eigener
-   Schalter im Abschnitt?
-4. **Gestaltung** (nur beschrieben, nicht entworfen): Name und Ort des Abschnitts in der Liste, Aufbau der
-   Client-Liste, Anzeige der Notlösung und des Schalters „Read only“ klärt der Designer.
+Name und Ort des Abschnitts in der Liste, Aufbau der Client-Liste (erkannt, nicht gefunden, nur von Hand),
+Anzeige der Notlösung mit Befehlszeile und des Schalters „Read only“, die Liste der Skript-Schlüssel, die Meldung
+nach dem Verbinden („Restart … to use Torro Workplace.“) und wie fehlgeschlagene Hooks erscheinen.
 
 ## Pakete je App (#411)
 
