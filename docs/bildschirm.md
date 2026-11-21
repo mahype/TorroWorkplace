@@ -1,13 +1,15 @@
 # Bildschirm-Werkzeug für den Assistenten (Computer-Use)
 
-Stand: 2026-11-21, Issue #755 (aus #754 ausgeklammert). **Konzept, nicht entschieden.** Der Assistent sieht Fenster
+Stand: 2026-11-21, Issue #755 (aus #754 ausgeklammert). **Konzept; die Grundsatzfragen sind entschieden** (Sven und,
+delegiert, der Projekt-Bot), es wartet auf die Freigabe. Der Assistent sieht Fenster
 fremder Programme und bedient sie: klicken, tippen, Tasten drücken, scrollen. Er tut das über den offenen Treiber
 `cua-driver` (github.com/trycua/cua), den auch Hermes Agent nutzt. Gebaut wird in diesem Issue nichts.
 
 **Wichtig vorab:** Der Treiber ist auf dem Rechner mit Hyprland installiert und meldet sich gesund, **er hat dort aber
-noch kein Programm bedient.** Das Issue verlangt diesen Test vor dem Konzept; er steht aus (Abschnitt „Test unter
-Hyprland“). Alles über das Bedienen unter Hyprland ist deshalb aus der Doku des Herstellers abgeleitet, nicht
-beobachtet.
+noch kein Programm bedient.** Das Issue sah diesen Test vor dem Konzept vor; Sven hat entschieden, **ohne vorherigen
+Bedien-Test zu bauen** (Frage 2). Dafür ist robuste Bedienung über den Bedienhilfen-Baum mit sauber gemeldeten Fehlern
+eine Anforderung (eigener Abschnitt), und der Test wird zum Abnahmetest der Bau-Issues. Alles über das Bedienen unter
+Hyprland ist bis dahin aus der Doku des Herstellers abgeleitet, nicht beobachtet.
 
 ## Ausgangslage
 
@@ -93,13 +95,14 @@ nicht und verlinkt es nicht.
 - **Die Seite in der Steuerzentrale** nennt Version, Herkunft, Ergebnis der Prüfungen, Bedienhilfen-Bus und den
   Stand der Netzsperre. Ein Treiber, den die Person selbst anders installiert hat, wird nicht benutzt.
 
-**Release oder Fork:** Das Release des Herstellers enthält den Sendecode weiter (fest eingebaut, kein Cargo-Feature,
-Abschnitt „Kein Netzverkehr“); es meldet beim ersten Start `cua_driver_installation_registered`. **Die Netzsperre
-muss darum schon beim allerersten Start greifen**, auch für `--version`, `list-tools` und `telemetry status`. Die
-Alternative ist ein Fork (MIT) mit einem Patch, der `telemetry.rs`, die Update-Abfrage, die Installationsmeldung und
-die Downloads (Erweiterungen, ffmpeg, Skills) herausnimmt, möglichst samt `ureq`; dann lädt Torro den eigenen Build
-mit eigener Signatur, und der Patch muss bei jeder Version nachgezogen werden (0.34.0 bis 0.56.5 in wenigen Wochen).
-Was davon, ist offene Frage 17.
+**Release mit Netzsperre, Fork nur als Ausweg** (Frage 17, von Sven entschieden, 21. November 2026): Torro nimmt das geprüfte Release des
+Herstellers und sperrt das Netz. Das Release enthält den Sendecode weiter (fest eingebaut, kein Cargo-Feature,
+Abschnitt „Kein Netzverkehr“) und meldet beim ersten Start `cua_driver_installation_registered`. **Die Netzsperre muss
+darum schon beim allerersten Start greifen**, auch für `--version`, `list-tools` und `telemetry status`. **Einen
+eigenen Fork gibt es nur, wenn sich die Sperre auf einer Plattform nicht verlässlich prüfen lässt** (Abschnitt
+„Netzsperre unter macOS und Windows“): dann ein MIT-Fork mit einem Patch, der `telemetry.rs`, die Update-Abfrage, die
+Installationsmeldung und die Downloads herausnimmt, möglichst samt `ureq`, von Torro gebaut und signiert und bei jeder
+festgelegten Version nachgezogen.
 
 ### Wie er angebunden wird
 
@@ -111,19 +114,20 @@ Minuten ohne Aufruf, stderr nur im Speicher. Dazu kommt:
   aufbauen kann; geht das nicht, startet er gar nicht;
 - zusätzlich `CUA_DRIVER_RS_TELEMETRY_ENABLED=false`, `DO_NOT_TRACK=1`, `CUA_TELEMETRY=0` und
   `CUA_DRIVER_RS_UPDATE_CHECK=false`, damit der Treiber gar nicht erst versucht zu senden;
-- der Rechte-Modus des Treibers: `bounded` mit einem Manifest des Kerns als zweite Sicherung, sobald der Test zeigt,
+- der Rechte-Modus des Treibers: `bounded` mit einem Manifest des Kerns als zweite Sicherung, sobald der Abnahmetest zeigt,
   dass es trägt; bis dahin `standard` mit allen Prüfungen im Kern (Abschnitt „Zweite Sicherung: Modus `bounded`“).
 
 Unter Linux und Windows ist `cua-driver mcp` selbst der Treiber und endet mit seiner Standardeingabe. Unter macOS
-leitet er an den Dienst in `CuaDriver.app` weiter, weil nur diese App die Rechte für Bedienhilfen und Bildschirmaufnahme
-hat; diesen Dienst startet macOS, nicht Torro (Folgen im Abschnitt „Kein Netzverkehr“). Den HTTP-Weg des Treibers
+leitet er von sich aus an den Dienst in `CuaDriver.app` weiter, den macOS außerhalb von Torro startet; Torro startet ihn
+darum mit `--direct --embedded` als eigenes Kind, damit die Netzsperre greift (Abschnitt „Netzsperre unter macOS und
+Windows“). Den HTTP-Weg des Treibers
 (`CUA_DRIVER_RS_MCP_HTTP_PORT`) nutzt Torro nicht.
 
 ### Zweite Sicherung: Modus `bounded`
 
 **Entschieden von Sven am 21. November 2026:** Zusätzlich zu den Prüfungen im Kern läuft der Treiber im Rechte-Modus
 `bounded` mit einem Manifest, das Torro schreibt. Die Prüfungen im Kern bleiben die erste Sicherung und gelten
-unverändert; das Manifest fängt ab, was an ihnen vorbeikäme. Geplant ist `bounded`, sobald der Test unter Hyprland
+unverändert; das Manifest fängt ab, was an ihnen vorbeikäme. Geplant ist `bounded`, sobald der Abnahmetest unter Hyprland
 zeigt, dass es trägt; bis dahin `standard` mit allen Prüfungen im Kern.
 
 **Belegt** (Doku des Herstellers, lokale Ausgabe von `cua-driver manifest` für 0.34.0):
@@ -148,14 +152,14 @@ zeigt, dass es trägt; bis dahin `standard` mit allen Prüfungen im Kern.
 - `allow.tools`: genau die Werkzeuge hinter Torros Befehlen (`list_apps`, `list_windows`, `get_window_state`, `zoom`,
   `click`, `double_click`, `right_click`, `type_text`, `set_value`, `press_key`, `hotkey`, `scroll`, `drag`,
   `invoke_menu`, dazu `start_session`, `end_session`, `set_agent_cursor_enabled`, `health_report`,
-  `check_permissions`). `bring_to_front` nur in einem Manifest für eine laufende Vorführung. Alles andere fehlt, also
+  `check_permissions`, `verify_state`). `bring_to_front` nur in einem Manifest für eine laufende Vorführung. Alles andere fehlt, also
   auch `kill_app`, `launch_app`, Zwischenablage, `set_config`, Downloads, Aufzeichnung und `browser_*`.
 - Ressourcen: keine Browser-Ursprünge; Programme nur, wenn sich damit die gesperrten Programme ausschließen bzw. die
   freigegebenen Programme einer Unterhaltung festlegen lassen.
 - `idle_timeout` passend zu Torros 10 Minuten ohne Aufruf, `expires_after` kurz (etwa eine Stunde), danach neues
   Manifest beim nächsten Start.
 
-**Unbelegt, klärt der Test** (Folge-Issue 0):
+**Unbelegt, klärt der Abnahmetest** (Bau-Issues 1 und 3):
 
 - Ob `cua-driver mcp` den Modus über die Variablen annimmt, oder ob Torro `serve` mit eigenem Pfad-Socket startet und
   `mcp --socket` daran hängt, beides hinter der Netzsperre.
@@ -241,7 +245,7 @@ kann die Person den Rechner nicht nebenher benutzen; darum ist der Vordergrund n
 - **Ende:** wenn das Modell `tools.screen_show_end` ruft, bei der Zeit- oder Aktionsgrenze, bei „Stop“ im Chat, über
   den Tray („Stop screen control“), mit zweimal Esc oder einem eigenen Kürzel in Hyprland, wenn das Fenster zugeht,
   und **bei jeder eigenen Maus- oder Tastatureingabe der Person**, soweit Torro sie erkennt (Frage 15, entschieden durch Projekt-Bot, delegiert von Sven, 21. November 2026). Grund: Wer selbst eingreift, will die Kontrolle zurück; im Zweifel endet die Vorführung lieber zu früh. Ob
-  Torro eigene Eingaben unter Hyprland erkennt, klärt der Test. Danach ist wieder alles Hintergrund, und der Kern gibt
+  Torro eigene Eingaben unter Hyprland erkennt, klärt der Abnahmetest. Danach ist wieder alles Hintergrund, und der Kern gibt
   den Fokus an das Fenster zurück, das ihn vorher hatte.
 - **Sichtbar:** solange die Vorführung läuft, ein deutlicher Hinweis im Tray und am Chat („Showing in LibreOffice –
   Stop“).
@@ -271,9 +275,45 @@ an, Programme unter XWayland neu zu starten (Frage 13, entschieden durch Projekt
 Arbeit verlieren, und Programme starten (`launch_app`) bietet Torro ohnehin nicht an. Wer mehr will, startet das
 Programm selbst so.
 
-## Test unter Hyprland
+## Robust über den Bedienhilfen-Baum (Anforderung)
 
-**Ergebnis: noch kein Bedien-Test.** Geprüft am 21. November 2026 auf dem Rechner mit Hyprland, nur lesend und mit
+**Entschieden von Sven (Frage 2):** Gebaut wird ohne vorherigen Bedien-Test unter Hyprland. Darum muss das Werkzeug
+mit allem rechnen, was dort ungeprüft ist, und darf nie still etwas Falsches tun.
+
+- **Bedienen über den Baum** ist der Weg: Element mit `element_token` (Knopf, Wert, Menü). Bildpunkte nur, wenn ein Bild
+  da und für das Modell erlaubt ist; sonst gibt es sie nicht. Kein Ausweichen auf Vordergrund oder Bildpunkte, wenn
+  der Baum versagt.
+- **Frischer Baum:** Vor einer Aktion liest der Kern den Baum neu, wenn der letzte älter als einige Sekunden ist oder
+  der Treiber `stale_element_token` meldet. Dann sucht er das Element einmal nach Rolle, Name und Pfad wieder; findet
+  er es nicht eindeutig, bricht er ab. Kein Raten, kein zweiter Versuch.
+- **Wirkung prüfen:** Nach einer Aktion liest der Kern den betroffenen Teil des Baums bzw. nutzt `verify_state` (nur
+  der Kern, nur lesend) und meldet, ob die Wirkung zu sehen ist (Wert gesetzt, Häkchen gesetzt, Dialog offen). „Done“
+  sagt die Werkzeugzeile nur dann; sonst „Sent to {app}, no visible change“.
+- **Jeder Fehler wird abgefangen** und als eigene Fehlerart mit klarem Text gemeldet, an das Modell und in der
+  Werkzeugzeile für die Person. Kein Absturz des Dienstes, kein stilles Weitermachen, keine Folgeaktion nach einem
+  Fehler ohne neuen Aufruf des Modells.
+- **Zeitgrenzen** je Aufruf; ein Absturz des Treibers wird wie bei MCP-Servern behandelt (Neustart beim nächsten
+  Bedarf, höchstens drei in fünf Minuten, dann aus bis zum Einschalten).
+
+| Lage | Fehlerart (Vorschlag) | Text für die Person (englisch, über `tr()`) |
+|---|---|---|
+| Bedienhilfen-Bus fehlt oder antwortet nicht | `unavailable` | „Screen control needs the accessibility service (at-spi2-core). It isn't running.“ |
+| Programm liefert keinen oder einen leeren Baum | `unsupported` | „{app} doesn't share its controls. Torro can't operate it in the background.“ |
+| `background_unavailable` | `unsupported` | „This action can't run in the background in {app}.“ |
+| Element auch nach neuem Lesen nicht eindeutig (`stale_element_token`) | `conflict` | „The window changed. Nothing was done.“ |
+| `capture_expired`, `capture_not_found` | `conflict` | „The screenshot is out of date. Nothing was done.“ |
+| `permission_denied`, `bounded_resource_outside_manifest`, gesperrtes Programm | `forbidden` | „Torro doesn't allow this action.“ |
+| Fenster geschlossen | `not-found` | „The window was closed.“ |
+| Zeitgrenze | `timeout` | „{app} didn't respond in time. The action may not have happened.“ |
+| Treiber stürzt während einer Aktion ab | `error` | „The screen driver stopped. The last action may or may not have happened.“ |
+| Netzsperre greift nicht | `unavailable` | „Network not blocked: screen control is off.“ |
+
+Bei Zeitgrenze und Absturz sagt der Text ehrlich, dass offen ist, ob die Aktion ankam; das Modell bekommt die Anweisung,
+erst neu zu sehen, bevor es weitermacht.
+
+## Stand unter Hyprland und Abnahmetest
+
+**Stand: noch kein Bedien-Test**, gebaut wird ohne ihn (Frage 2). Geprüft am 21. November 2026 auf dem Rechner mit Hyprland, nur lesend und mit
 abgeschalteten Nutzungsdaten (`DO_NOT_TRACK=1`, `CUA_DRIVER_RS_TELEMETRY_ENABLED=false`):
 
 | Prüfung | Ergebnis |
@@ -291,7 +331,8 @@ und Bedienen über den Bedienhilfen-Baum (Knöpfe, Menüs, Textfelder mit AT-SPI
 auf Bildpunkte und Tasten an native Wayland-Fenster vermutlich nicht oder nur im Vordergrund. Ein Programm, das man
 mit `GDK_BACKEND=x11` bzw. `QT_QPA_PLATFORM=xcb` unter XWayland startet, sollte mehr können.
 
-**Testplan** (Folge-Issue 0, von Hand, Ergebnis kommt in diese Tabelle):
+**Abnahmetest** (Teil der Bau-Issues 2 und 3, von Hand mit einem Menschen am Rechner, Ergebnis kommt in diese
+Tabelle). Er ist keine Bedingung für den Baubeginn, aber für die Abnahme:
 
 | Programm | Toolkit | Schritte | Ergebnis |
 |---|---|---|---|
@@ -302,6 +343,11 @@ mit `GDK_BACKEND=x11` bzw. `QT_QPA_PLATFORM=xcb` unter XWayland startet, sollte 
 Je Zeile festhalten: kommt der Baum, kommt ein Bild, kommt die Eingabe im Hintergrund an, bewegt sich Maus oder Fokus
 der Person, was lehnt der Treiber mit welchem Fehler ab. **Der Test läuft ohne Netz** für den Treiber, mit dem
 Treiber aus einem Weg ohne Meldung, und misst nach, dass keine Verbindung versucht wird.
+
+**Fehlerfälle** (je Programm mindestens einmal, gemeldet wie in der Tabelle oben): Fenster während einer Aktion
+schließen; die Oberfläche zwischen Sehen und Klicken ändern (Element weg); den Treiber während einer Aktion beenden;
+den Bedienhilfen-Bus abschalten; ein Programm ohne Baum (etwa eine Zeichenfläche) bedienen lassen. Abgenommen ist,
+wenn jeder Fall die richtige Meldung zeigt und nichts im falschen Fenster passiert.
 
 **Was der Test für den Hintergrund-Modus klären muss** (je Programm):
 
@@ -532,15 +578,57 @@ zusätzlich ein eigener Netzwerk-Namespace. **Die Grenze bleibt:** Unix-Sockets 
 auch Torros `core.sock`. Dass der Treiber als derselbe Nutzer Dateien und Sockets der Suite erreicht, ist die bekannte
 Grenze des Modells (Abschnitt „Ausgangslage“), nicht Teil dieser Anforderung.
 
-### Netzsperre unter Windows und macOS
+### Netzsperre unter macOS und Windows
 
-- **Windows:** eine ausgehende Sperrregel der Windows-Firewall für genau die Programmdatei des Treibers. Sie anzulegen
-  braucht einmal Administratorrechte der Person; Torro prüft vor jedem Start, dass die Regel da und aktiv ist.
-  Alternative: der Treiber in einem AppContainer ohne Netz-Fähigkeit, wenn UI Automation dort geht.
-- **macOS:** Der Dienst in `CuaDriver.app` läuft nicht als Kind von Torro, eine Sperre je Prozess gibt es ohne Hilfe
-  von außen nicht. Möglich wäre ein eigener Build, der die Rechte unter Torros Namen bekommt und als Kind in einer
-  Sandbox (`sandbox-exec` mit `deny network-outbound`) läuft, oder eine Firewall wie Little Snitch bzw. LuLu, deren
-  Regel Torro nicht prüfen kann. **Offen, ob macOS die Anforderung erfüllen kann** (offene Frage 18).
+**Das Werkzeug kommt auf alle Systeme**, Linux, macOS und Windows (Frage 18, von Sven entschieden, 21. November 2026). Je Plattform gilt:
+erreicht und geprüft, oder das Werkzeug bleibt dort aus und der Fork (Frage 17) kommt.
+
+**macOS**
+
+- **Erreichen:** Torro startet den Treiber selbst als Kind über das Startprogramm, mit `cua-driver mcp --direct
+  --embedded` statt über den Dienst in `CuaDriver.app`. Belegt für 0.34.0 (`cua-driver manifest`): `--direct` lässt
+  die Laufzeit im MCP-Prozess laufen und „accepts host TCC attribution“, `--embedded` startet die App nicht von
+  selbst. Die Rechte für Bedienhilfen und Bildschirmaufnahme gehören dann Torro; die Person erteilt sie Torro einmal
+  in den Systemeinstellungen. Das Startprogramm legt sich und damit den Treiber in ein Seatbelt-Profil
+  (`sandbox-exec` mit Profil „alles erlauben, außer Netz über IP“; Unix-Sockets bleiben erlaubt). Das Profil erbt
+  jeder Prozess, den der Treiber startet.
+- **Prüfen:** Selbsttest im Profil vor dem `exec` (ein Socket für IPv4 und IPv6 lässt sich nicht verbinden); dazu prüft
+  Torro während des Laufs regelmäßig die offenen Sockets des Prozessbaums (wie `lsof -a -i -p <pid>`) und beendet den
+  Treiber bei jedem Internet-Socket.
+- **Risiken:** Der Hersteller nennt einen Treiber außerhalb seiner App „unsupported“ (`serve` ohne `CuaDriver.app`);
+  ob `--direct` alle Werkzeuge mit Torros Rechten kann, ist unbelegt. `sandbox-exec` ist von Apple als veraltet
+  markiert, aber vorhanden; der Aufruf über die C-Schnittstelle (`sandbox_init`) bräuchte `unsafe` und gehörte nach
+  `torro-appkit` (vorher nachfragen). Ob ScreenCaptureKit unter dem Profil läuft, ist unbelegt.
+- **Alternativen**, wenn das nicht trägt: (1) der Fork als eigene, von Torro signierte App ohne Sendecode, deren Dienst
+  Torro im Profil startet; (2) bleibt nur `CuaDriver.app` des Herstellers: deren Dienst startet macOS außerhalb von
+  Torro, eine Sperre lässt sich dann nicht prüfen. **Damit gälte die Anforderung als nicht erfüllt**, und das Werkzeug
+  bliebe auf macOS aus, bis der Fork da ist. Eine Firewall eines Drittanbieters (LuLu, Little Snitch) hilft der
+  Person, ersetzt die Prüfung aber nicht.
+
+**Windows**
+
+- **Erreichen:** je eine Sperrregel der Windows-Firewall für eingehend und ausgehend, für genau die Programmdatei des
+  Treibers im Ordner der Suite, alle Profile (`New-NetFirewallRule -Direction Outbound -Program <pfad> -Action Block
+  -Profile Any`). Sperrregeln gehen in der Windows-Firewall vor Erlaubnisregeln. Anlegen braucht einmal
+  Administratorrechte: Knopf „Block network for the driver“ auf der Seite „Screen“, danach die Abfrage der
+  Benutzerkontensteuerung; nur ein Mensch löst das aus (Punkt 16).
+- **Prüfen vor jedem Start:** Regeln vorhanden, aktiv, Aktion „Block“, Pfad exakt, alle Profile
+  (`Get-NetFirewallRule`, `Get-NetFirewallApplicationFilter`); der Dienst der Firewall läuft und alle Profile sind an
+  (`Get-NetFirewallProfile`); Gruppenrichtlinien lassen lokale Regeln zu (`AllowLocalPolicyMerge`). Fehlt etwas,
+  bleibt das Werkzeug aus. Während des Laufs prüft Torro die Verbindungen des Prozessbaums (TCP und UDP je Prozess,
+  wie `Get-NetTCPConnection -OwningProcess`) und beendet den Treiber bei jedem Treffer.
+- **Risiken:** Anders als unter Linux gibt es keinen Selbsttest in derselben Sperre: Die Regel hängt an der
+  Programmdatei des Treibers, und Torro kann den Treiber nicht dazu bringen, gezielt zu senden. Die Wirkung ist also
+  nur indirekt geprüft (Regel und Profile richtig, keine Verbindung beobachtet). Ersetzt eine fremde Firewall die
+  Windows-Firewall, sind deren Profile aus, und das Werkzeug bleibt aus.
+- **Alternativen**, wenn das nicht als verlässlich gilt: (1) der Treiber in einem AppContainer ohne die Fähigkeit
+  `internetClient`; dort ginge ein Selbsttest, es braucht aber Win32-Aufrufe mit `unsafe` in einem eigenen
+  Plattform-Crate (vorher nachfragen), und ob UI Automation aus einem AppContainer fremde Fenster bedienen darf, ist
+  unbelegt; (2) der Fork ohne Sendecode, dann ist die Firewall-Regel nur zweite Sicherung.
+
+**Bewertung:** Linux erfüllt die Anforderung prüfbar (seccomp mit Selbsttest). macOS und Windows sind erreichbar, aber
+nur mit den genannten Risiken prüfbar; beide sind im Bau-Issue der Plattform als Abnahme festzuhalten, und je nach
+Ergebnis kommt dort der Fork (Frage 17).
 
 ### Wie es prüfbar wird
 
@@ -552,7 +640,7 @@ Grenze des Modells (Abschnitt „Ausgangslage“), nicht Teil dieser Anforderung
 - **Die Seite in der Steuerzentrale** zeigt „Network: blocked“ mit dem Weg (Namespace, seccomp, Firewall-Regel) und
   das Ergebnis des Selbsttests. Fehlt die Sperre, steht dort „Network not blocked: screen control is off“.
 - **Der Treiber startet nie ohne Sperre**, auch nicht für die Anzeige der Version auf dieser Seite.
-- **Im Test unter Hyprland** (Folge-Issue 0) wird einmal nachgemessen: mit und ohne Sperre unter `strace -f -e
+- **Im Abnahmetest** (Bau-Issue 1, je Plattform) wird nachgemessen: mit und ohne Sperre unter `strace -f -e
   trace=network` bzw. mit einem Netzmitschnitt, ob der Treiber trotz abgeschalteter Schalter Verbindungen versucht.
   Bei den lesenden Aufrufen für dieses Konzept (`doctor`, `list-tools`, `telemetry status`, mit allen Schaltern aus)
   ist das **nicht nachgeprüft** worden.
@@ -582,15 +670,17 @@ ihre Anmeldungen.
 
 ## Plattformen
 
-- **Linux:** zuerst, denn die Suite lebt auf Hyprland. Gerade dort ist der Treiber am schwächsten und ungetestet;
-  bestätigt der Test das, kommt Linux trotzdem zuerst, beschränkt auf Bedienen über den Bedienhilfen-Baum, und die
-  Seite nennt die Grenzen offen. Voraussetzung ist `at-spi2-core`; manche Programme brauchen einen Schalter für
-  Bedienhilfen (Chromium, Electron).
-- **macOS:** zweite Stufe. Der Treiber braucht `CuaDriver.app` mit den Rechten für Bedienhilfen und Bildschirmaufnahme
-  (erteilt mit `cua-driver permissions grant`); die Rechte gehören der App des Herstellers, nicht Torro. Torro prüft
-  vor dem Start die Signatur der App.
-- **Windows:** dritte Stufe. Der Treiber muss in der angemeldeten Sitzung laufen; Fenster mit Admin-Rechten sind nicht
-  bedienbar, was hier ein Vorteil ist.
+**Alle drei Systeme bekommen das Werkzeug** (Frage 18, von Sven entschieden, 21. November 2026). Gebaut wird in der Reihenfolge Linux, macOS,
+Windows; auf jeder Plattform ist es nur an, wenn dort die Netzsperre geprüft greift.
+
+- **Linux:** zuerst, denn die Suite lebt auf Hyprland. Bedienen über den Bedienhilfen-Baum, robust wie im Abschnitt
+  „Robust über den Bedienhilfen-Baum“; die Seite nennt die Grenzen offen. Voraussetzung ist `at-spi2-core`; manche
+  Programme brauchen einen Schalter für Bedienhilfen (Chromium, Electron). Netzsperre über seccomp.
+- **macOS:** Treiber als Kind von Torro (`--direct --embedded`), Rechte für Bedienhilfen und Bildschirmaufnahme bei
+  Torro, Netzsperre über ein Seatbelt-Profil; Signatur der App bzw. des Treibers wird geprüft. Risiken und
+  Alternativen im Abschnitt „Netzsperre unter macOS und Windows“.
+- **Windows:** Der Treiber muss in der angemeldeten Sitzung laufen; Fenster mit Admin-Rechten sind nicht bedienbar,
+  was hier ein Vorteil ist. Netzsperre über Firewall-Regeln mit einmaligen Administratorrechten.
 
 ## Rechte
 
@@ -641,12 +731,14 @@ Nicht Teil der ersten Stufe:
 
 ## Reihenfolge der Bau-Issues
 
-0. **Test unter Hyprland** (`task`, von Hand): der Testplan oben, Ergebnis in dieses Dokument. **Vor allem anderen**;
-   fällt er schlecht aus, wird die Reihenfolge neu entschieden.
+Kein Vorab-Test (Frage 2): Der Abnahmetest aus „Stand unter Hyprland und Abnahmetest“ gehört in die Bau-Issues 2
+und 3.
+
 1. **Anbindung ohne Netz und Stand:** Requests und Katalog (`tools.screen_*`, `settings.set_setting screen`,
    `ai.set_model_screen`, Punkt 16 in [api.md](api.md)), Download der festgelegten Version mit Sigstore-Prüfung (Release oder
    Fork), Startprogramm mit Netzsperre und Selbsttest, Kindprozess mit Umgebung, Prüfung der Werkzeugliste, Seite
-   „Screen“ mit Schalter (aus) und Stand der Sperre. Ohne Sperre kein Werkzeug.
+   „Screen“ mit Schalter (aus) und Stand der Sperre. Ohne Sperre kein Werkzeug. Fehlerarten und Meldungen aus
+   „Robust über den Bedienhilfen-Baum“.
 2. **Sehen:** Fenster auflisten, Baum und Bild, Ausschnitt; gesperrte Programme; `untrusted` und
    `may_have_read_untrusted`; Frage einmal je Unterhaltung und Programm; keine Bilder im Verlauf; Schalter „May see
    the screen“ je Modell.
@@ -656,7 +748,8 @@ Nicht Teil der ersten Stufe:
 4. **Stopp und Anzeige:** Tray-Eintrag, Zeiger oder Rahmen am bedienten Fenster.
 5. **Vordergrund-Modus:** `tools.screen_show` mit Karte „Show on screen“, Grenzen, Ende und Rückgabe des Fokus,
    Tastenkürzel zum Zurückholen.
-6. **macOS**, 7. **Windows** (je ein Issue).
+6. **macOS**, 7. **Windows** (je ein Issue, Teil der ersten Version): Netzsperre und ihre Prüfung als Abnahme; trägt
+   sie nicht, vorher der Fork (Frage 17).
 8. **Browser-Werkzeug** über CDP: eigenes Konzept-Issue.
 
 ## Empfehlung
@@ -665,7 +758,8 @@ Nicht Teil der ersten Stufe:
 fremden MCP-Server. **Der Treiber hat nie Netz:** Torro startet ihn nur über ein eigenes Startprogramm mit
 Netzsperre (unter Linux seccomp), prüft die Sperre vor jedem Start und lässt das Werkzeug sonst aus; das
 Installationsskript des Herstellers fällt weg, weil es meldet; Torro lädt eine festgelegte Version selbst und prüft
-die Signatur, der Download ist die einzige bewusste Verbindung. Ob dazu ein Fork ohne Sendecode kommt, ist offen.
+die Signatur, der Download ist die einzige bewusste Verbindung. Einen Fork ohne Sendecode gibt es nur, wo sich die
+Sperre nicht verlässlich prüfen lässt.
 Bildschirmfotos bekommt ein Modell nur, wenn die Person es an der Modellwahl erlaubt, ab Werk nur lokale. Torro bietet
 dem Modell nur zwölf Befehle an und hält alle Sperren im Kern: keine Fenster der Suite, keine Passwort-Manager,
 Rechte-Dialoge und Terminals, keine Passwortfelder, keine Super-Tasten. **Standardarbeit ist der Hintergrund-Modus:**
@@ -674,8 +768,9 @@ Hintergrund nicht geht, statt still den Rechner zu übernehmen. **Der Vordergrun
 eine Aktion, die im Hintergrund nicht geht: nur als Vorführung mit eigener Karte „Show on screen“, begrenzt auf ein
 Fenster und wenige Minuten, jederzeit abzubrechen. Ab Werk aus, nur für den Assistenten, jede Aktion mit
 Karte; Bildschirminhalt ist fremder Inhalt. Webseiten bekommen später einen eigenen Browser-Weg.
-**Gebaut wird erst nach dem Test unter Hyprland**: Er entscheidet, ob Linux im Hintergrund mit dem Bedienhilfen-Baum
-allein genug kann, oder ob macOS zuerst kommt.
+Das Werkzeug kommt auf Linux, macOS und Windows. **Gebaut wird ohne vorherigen Bedien-Test:** Bedienen läuft robust
+über den Bedienhilfen-Baum, jeder Fehler wird abgefangen und klar gemeldet, und der Test unter Hyprland ist Abnahme
+der Bau-Issues.
 
 ## Entscheidungen für Menschen
 
@@ -689,13 +784,16 @@ allein genug kann, oder ob macOS zuerst kommt.
 - **Installation und Updates:** Torro legt eine feste Version fest und lädt sie selbst, mit Sigstore-Prüfung (unter
   macOS zusätzlich `com.trycua.driver`); kein Installationsskript, keine Update-Abfrage des Treibers. Der Download ist
   die einzige bewusste Verbindung.
-**Entschieden durch Projekt-Bot (delegiert von Sven, 21. November 2026):** Fragen 1, 3, 4, 5, 6, 7, 8, 13, 14, 15, 16
-(siehe „Offene Fragen“, Begründungen an den Stellen im Text).
+- **Grundsatzfragen 2, 17, 18** (Sven): ohne Vorab-Test bauen, robust über den Baum; Release mit Netzsperre, Fork
+  nur als Ausweg; das Werkzeug kommt auf alle Systeme.
 
-- **Modus `bounded`** des Treibers mit Torros Manifest als zweite Sicherung, sobald der Test zeigt, dass er trägt;
+**Entschieden durch Projekt-Bot (delegiert von Sven, 21. November 2026):** Fragen 1, 3, 4, 5, 6, 7, 8, 13, 14, 15, 16
+(siehe „Fragen“, Begründungen an den Stellen im Text).
+
+- **Modus `bounded`** des Treibers mit Torros Manifest als zweite Sicherung, sobald der Abnahmetest zeigt, dass er trägt;
   bis dahin `standard` mit allen Prüfungen im Kern.
 
-**Grundsatzfragen für Sven** (noch zu entscheiden, nicht delegiert):
+**Von Sven entschieden** (21. November 2026: die Linie des Konzepts ist bestätigt):
 
 1. Treiber übernehmen statt selbst bauen?
 2. Eingebautes Werkzeug statt nur eigener MCP-Server über #302?
@@ -710,21 +808,21 @@ allein genug kann, oder ob macOS zuerst kommt.
 8. Die Liste der gesperrten Programme, Tasten und Tippmuster wie oben?
 9. Nach fremden Inhalten fragt jede Aktion (statt das Bedienen ganz zu sperren)?
 10. In der ersten Stufe nur der Assistent, kein Client über API oder MCP; Schalter nur für Menschen (Punkt 16)?
-11. Reihenfolge der Bau-Issues, mit dem Test als Bedingung?
+11. Reihenfolge der Bau-Issues; der Test ist nach Frage 2 keine Bedingung mehr, sondern Abnahme.
 12. Netzsperre unter Linux über seccomp in einem Startprogramm der Suite, und das Werkzeug bleibt aus, wo keine
     Sperre greift?
-13. Voreinstellung „May see the screen“: an nur für lokale Modelle? (Vom Projekt-Bot als Frage 7 so gesetzt, zur
-    Bestätigung.)
+13. Voreinstellung „May see the screen“: an nur für lokale Modelle (wie Frage 7).
 
-## Offene Fragen
+## Fragen (alle entschieden)
 
-Stand: Sven hat 9 bis 12 entschieden, der Projekt-Bot (delegiert von Sven) 1, 3 bis 8 und 13 bis 16. **Offen sind nur
-noch die Grundsatzfragen 2, 17 und 18 für Sven**, dazu die Punkte unter „Grundsatzfragen für Sven“ oben.
+Stand: **alle 18 Fragen sind entschieden**, 2, 9 bis 12, 17 und 18 von Sven, 1, 3 bis 8 und 13 bis 16 vom Projekt-Bot
+(delegiert von Sven). Offen bleiben nur die Risiken für macOS und Windows (Abschnitt „Netzsperre unter macOS und
+Windows“) und alles, was der Abnahmetest klärt.
 
 1. **Namen** – Projekt-Bot: Befehle `tools.screen_*` im Bereich `tools`, ohne eigenen Bereich, in der Oberfläche
    „Screen“. Grund: wie das Terminal, kein neuer Bereich in Rechten und Vorlagen.
-2. **Test unter Hyprland** – **Grundsatzfrage für Sven, offen:** Wer führt ihn aus und wann? Er braucht einen Menschen
-   am Rechner; bis dahin ist offen, ob unter Hyprland mehr als der Bedienhilfen-Baum geht.
+2. **Test unter Hyprland** – Sven: gebaut wird ohne vorherigen Bedien-Test; Bedienen robust über den Baum, Fehler
+   sauber abgefangen und gemeldet, der Test ist Abnahme der Bau-Issues.
 3. **„Always“ je Programm** – Projekt-Bot: nein, „In this conversation“ genügt. Grund: Was ein Klick bewirkt, hängt
    vom Fensterinhalt ab.
 4. **Wechsel in den Vordergrund** – Projekt-Bot: nur über die Karte „Show on screen“, jede Vorführung neu, kein
@@ -751,12 +849,10 @@ noch die Grundsatzfragen 2, 17 und 18 für Sven**, dazu die Punkte unter „Grun
     Eingabe der Person beendet sie, soweit erkennbar. Grund: Im Zweifel lieber zu früh enden.
 16. **Grenzen der Vorführung** – Projekt-Bot: ein Fenster, 5 Minuten, 50 Aktionen; ein Dialog oder zweites Fenster
     braucht eine neue Karte. Grund: Ein Dialog kann der Schritt sein, der löscht oder sendet.
-17. **Fork oder Netzsperre** – **Grundsatzfrage für Sven, offen:** Genügt das geprüfte Release von `cua-driver` mit
-    Netzsperre, oder braucht es zusätzlich einen MIT-Fork ohne Sendecode (ohne `telemetry.rs`, Update-Abfrage und
-    `ureq`), den Torro bei jeder Version nachzieht?
-18. **macOS und Windows** – **Grundsatzfrage für Sven, offen:** Lässt sich „kein Netzverkehr“ dort überhaupt prüfbar
-    erreichen (macOS: Dienst in `CuaDriver.app` außerhalb von Torro; Windows: Firewall-Regel mit
-    Administratorrechten), oder gibt es das Werkzeug dort erst mit eigenem Build?
+17. **Fork oder Netzsperre** – Sven: das geprüfte Release mit Netzsperre; ein Fork nur, wenn sich die Sperre nicht
+    verlässlich prüfen lässt.
+18. **macOS und Windows** – Sven: das Werkzeug kommt auf alle Systeme; Weg, Prüfung, Risiken und Alternativen im
+    Abschnitt „Netzsperre unter macOS und Windows“.
 
 ## Quellen
 
