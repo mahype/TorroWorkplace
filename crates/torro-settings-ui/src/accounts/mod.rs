@@ -862,7 +862,11 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
             if let Some(group) = Group::ALL.into_iter().find(|group| group.provider() == provider) {
                 state.provider = Some(group.kinds()[0].to_string());
             }
-            let (wizard, ask) = wizard::State::at(provider, data);
+            let (mut wizard, ask) = wizard::State::at(provider, data);
+            // The mail window has no chat (issue #591): its setup suggests and sets only Sorting.
+            if state.in_mail() {
+                ai_setup::without_chat(&mut wizard.setup);
+            }
             state.wizard = Some(wizard);
             ask
         }
@@ -4944,6 +4948,26 @@ mod tests {
                 }
             }
             drop(list(&state, &data, Utc::now(), None, true, false));
+        }
+    }
+
+    /// Issue #591: "Add AI account…" in the mail window suggests and sets only Sorting; the control
+    /// centre and the assistant keep the Chat suggestion.
+    #[test]
+    fn the_mail_windows_ai_setup_suggests_no_chat_model() {
+        let mut data = demo_data();
+        data.settings.ai_slots.chat = None;
+        for window in [None, Some(AppId::INBOX_MAIL), Some(AppId::ASSISTANT)] {
+            let mut state = match window {
+                Some(app) => State::default().in_window(app),
+                None => State::default(),
+            };
+            drop(update(&mut state, Message::Add(wizard::Provider::Ai), &data));
+            let wizard = state.wizard.as_mut().expect("wizard");
+            ai_setup::demo(&mut wizard.setup, "cloud-connected", &data);
+            let chat = ai_setup::can_use_suggestion(&wizard.setup, &data, false, Some(AiSlot::Chat));
+            assert_eq!(chat, window != Some(AppId::INBOX_MAIL), "{window:?}");
+            assert!(ai_setup::can_use_suggestion(&wizard.setup, &data, true, Some(AiSlot::Decide)), "{window:?}");
         }
     }
 
