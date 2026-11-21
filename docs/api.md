@@ -1233,7 +1233,14 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Ausnahme: Der Schlüssel eines **neuen Clients** geht einmal an die Steuerzentrale (Antwort auf
    `clients.create_client` bzw. `clients.new_key`, nur App-Schlüssel), die ihn in die Konfiguration
    des Agenten oder in eine Schlüsseldatei (0600, unter `<config>/hooks/`) schreibt oder bei
-   „Script“ einmal zum Kopieren zeigt. Danach kennt ihn nur noch der Client.
+   „Script“ einmal zum Kopieren zeigt. Ebenso druckt `torroworkplace ctl clients add` bzw. `new-key` ihn
+   einmal ins Terminal. Danach kennt ihn nur noch der Client. **Ohne Hauptanwendung** (entschieden mit #538,
+   noch nicht umgesetzt) übernimmt der Abschnitt „Connections“ jeder App diese Rolle: Gelistete Clients trägt
+   die Suite selbst ein, den Schlüssel zum Kopieren zeigt die App nur als Notlösung für andere Clients und
+   Skripte. Beim offenen Weg A schreibt dafür der Dienst selbst den Schlüssel in die Konfiguration des Clients
+   bzw. in die Schlüsseldatei unter `<config>/hooks/`, ohne ihn in einer Antwort herauszugeben; beim Weg B geht er
+   durch den App-Prozess ([einzelne-apps.md](einzelne-apps.md), „API-Schlüssel und MCP-Clients ohne
+   Hauptanwendung“).
 2. **Agenten und ihre Rechte verwalten** (`clients.*`): nur mit dem App-Schlüssel. Sonst könnte
    sich ein Agent selbst mehr Rechte geben.
 3. **Freigaben entscheiden** (`approvals.decide_approval`): nur mit dem App-Schlüssel, also nur
@@ -1504,7 +1511,8 @@ ihrem eigenen Bereich (Kalender `calendar`, Aufgaben `tasks` und `github`, Notif
 Mail `mail` und mit #556 `workflows`, Assistent `assistant` und `bots`) und ändert sie dort. Es sind dieselben Rechte desselben Clients,
 einmal im Dienst gespeichert; die Steuerzentrale zeigt sie gesammelt. Die App sendet nur `clients.update_client`
 (App-Schlüssel, `Mcp::Never`), nur für die Arten `script` und die MCP-Arten, nie für Assistent, Bots oder Hooks.
-Schlüssel anlegen und Clients verbinden bleibt in der Steuerzentrale (in einer einzelnen App: #538). Es gibt kein
+Schlüssel anlegen und Clients verbinden bleibt mit Hauptanwendung in der Steuerzentrale; ohne sie kommt mit #538
+der Abschnitt „Connections“ in jede App ([einzelne-apps.md](einzelne-apps.md)). Es gibt kein
 MCP-Tool dafür: Agenten ändern nie Rechte („Was nie nach außen geht“, Punkt 2).
 
 ### Je Client
@@ -1774,6 +1782,13 @@ clients“ nur „API“, und beide Abschnitte hatten einen Schalter („Allow A
   bestätigt; entfernt den Schlüssel aus dem Client, wenn möglich). Unter MCP zusätzlich die Gruppe „Notification
   Hub“: Schalter „Report when waiting or done“ legt den Hook-Client an und schreibt die Hooks bzw. nimmt beides
   heraus.
+- **Ohne Hauptanwendung** (entschieden mit #538, noch nicht umgesetzt): Jede App zeigt hinter dem Zahnrad den
+  Abschnitt „Connections“: Client aus der Liste wählen, die Suite trägt ihn mit eigenem Token ein; der Schlüssel
+  zum Kopieren mit Schalter „Read only“ nur als Notlösung. Die Clients landen in derselben Ablage (`clients.json`,
+  `client_setup.json`), so dass eine später installierte Steuerzentrale sie übernimmt. Vorschlag für den Weg:
+  neue Requests `clients.detect_clients`, `clients.connect_client`, `clients.disconnect_client` (nur App-Schlüssel,
+  `Mcp::Never`), mit denen der Dienst selbst einträgt. Einzelheiten und offene Fragen:
+  [einzelne-apps.md](einzelne-apps.md), „API-Schlüssel und MCP-Clients ohne Hauptanwendung (#538)“.
 - **Abschnitt „Approvals“** (oder Gruppe in Overview, solange es wenige sind): offene Freigaben mit
   „Allow“/„Deny“, darunter die zuletzt entschiedenen.
 
