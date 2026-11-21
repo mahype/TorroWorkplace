@@ -492,6 +492,8 @@ Issues lesen: Classic-Token mit `repo` (privat) bzw. ohne Rechte (öffentlich) o
 Token mit „Issues: Read“. Projekte (Projects v2, GraphQL): `read:project` beim Classic-Token bzw.
 „Projects: Read“ beim Fine-grained Token (für Projekte einer Organisation). Die Detailseite zeigt,
 welche Rechte das Token hat, und was ohne sie fehlt („Projects need the read:project permission“).
+Für die Mitteilungszentrale gilt dasselbe `repo`: ohne es fehlen dort womöglich die Benachrichtigungen privater
+Repos ([github-mitteilungen.md](github-mitteilungen.md), #433).
 
 ## Accounts, API und MCP (#231)
 

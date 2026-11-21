@@ -146,6 +146,8 @@ Meilensteine als ganztägige Termine je Filterliste.
 - **Anmeldung** wie in [settings.md](settings.md): Token der GitHub CLI übernehmen (`gh auth token`)
   oder Token einfügen. Für den Haken braucht das Token Schreibrecht auf Issues (Classic `repo`,
   Fine-grained „Issues: Read and write“, „Pull requests: Read“). Die Kontoseite zeigt, was fehlt.
+  Benachrichtigungen in der Mitteilungszentrale und die Auswahl ihrer Repos:
+  [github-mitteilungen.md](github-mitteilungen.md) (#433).
 - **Abfrage über GraphQL** (`search(type: ISSUE)`, `nodes` für Angeheftete und Verweise), weil
   PR-Angaben und Sub-Issues dort in einem Aufruf kommen. Jede Filterliste wird **ganz** neu
   abgefragt (alle 5 Minuten, beim Öffnen, „Sync now“): Eine Abfrage nur nach Änderungen merkt
