@@ -223,17 +223,25 @@ Wer ChatGPT Plus oder Pro hat, aber keinen API-Schlüssel, verbindet ein Konto *
 stellt man **in ChatGPT** ein (Settings › Usage › App limits, Link „Manage usage“ in der Oberfläche). Bei Claude gibt es
 das nicht: Anthropic erlaubt die Anmeldung über Pro oder Max nur in eigenen Programmen.
 
+**Nur mit eigener Client-ID** (Entscheidung zu #324, 21.11.2026): Torro bietet ChatGPT nur an, wenn eine Client-ID
+von OpenAI für Torro eingestellt ist, `TORRO_CHATGPT_CLIENT_ID` beim Bauen (`option_env!`) oder in der Umgebung des
+Dienstes und der Steuerzentrale. Ohne sie fehlt die Zeile „ChatGPT · Continue with ChatGPT“ in der Liste der Anbieter
+(`oauth::SignIn::offered`), und der Dienst lehnt `accounts.start_ai_sign_in` mit dem Satz „Signing in is not available
+in this version of Torro Workplace yet: it has no client ID from the provider.“ ab, ohne etwas zu schreiben. Eine
+früher vergebene Client-ID zählt dann nicht. Die Selbstregistrierung, die OpenAI Open-Source-Apps erlaubt, nutzt Torro
+bewusst nicht; das Gerüst kennt sie weiter (`Registration::Dynamic`) für Anbieter, bei denen sie gewollt ist.
+
 **Der offizielle Weg** (OpenAI, „Sign in with ChatGPT“, Vorschau seit dem DevDay am 29.09.2026; geprüft am 21.11.2026
 an <https://developers.openai.com/siwc/token-sharing-open-source> und
 <https://auth.openai.com/.well-known/openid-configuration>):
 
-- **Client-ID:** Eine Open-Source-App, die auf dem Rechner der Person läuft, braucht keinen Antrag. Sie registriert
-  sich bei der ersten Anmeldung eines Kontos selbst (`client_id=dynamic_agent_client`, `agent_name_hint=Torro
-  Workplace`, `ext_agent_host_id` = Kennung dieses Rechners `urn:uuid:…`); die Rückleitung bringt die vergebene
-  Client-ID (`oaiapp_…`), die der Dienst behält und danach sendet. Kommerzielle oder gehostete Apps beantragen eine
-  Client-ID über eine Warteliste. Eine eigene Client-ID setzt `TORRO_CHATGPT_CLIENT_ID` (beim Bauen oder zur Laufzeit);
-  sie geht vor. **Die Client-ID eines anderen Programms (Codex) benutzt Torro nie**: Die Bedingungen verbieten, sich
-  als ein anderes Programm auszugeben.
+- **Client-ID:** Eine Open-Source-App, die auf dem Rechner der Person läuft, dürfte sich laut OpenAI bei der ersten
+  Anmeldung selbst registrieren (`client_id=dynamic_agent_client`, `agent_name_hint`; die Rückleitung bringt eine
+  Client-ID `oaiapp_…`). Kommerzielle oder gehostete Apps beantragen eine Client-ID über eine Warteliste
+  (<https://openai.com/form/sign-in-with-chatgpt-interest/>). Torro nimmt nur die eingestellte Client-ID (oben) und
+  schickt mit jeder Anmeldung die Kennung dieses Rechners mit (`ext_agent_host_id`, `urn:uuid:…`). **Die Client-ID
+  eines anderen Programms (Codex) benutzt Torro nie**: Die Bedingungen verbieten, sich als ein anderes Programm
+  auszugeben.
 - **Ablauf:** OAuth 2.0 Authorization Code mit PKCE (S256), Rückleitung auf `http://127.0.0.1:<port>/auth/callback`
   (zuerst Port 1455, sonst ein freier; nie `localhost`). Kein Device Code. Scopes `openid profile email offline_access
   resource.invoke chatgpt.tokens.use.direct`, `resource=https://api.openai.com/v1`. Endpunkte unter
@@ -260,7 +268,8 @@ an <https://developers.openai.com/siwc/token-sharing-open-source> und
   (Aussteller, Empfänger = Client-ID, `nonce`, Ablauf, `sub`) und listet die Modelle des Plans zur Probe. Erst dann
   kommt der Token-Satz (Access, Refresh, Ablauf, Client-ID, Kennung des Rechners) als **das eine Secret des Kontos**
   in den Schlüsselbund; `accounts.json` hat nur Konto, Adresse und die angemeldete Mail-Adresse. Kennung des Rechners
-  und vergebene Client-ID stehen zusätzlich in `<config>/ai-sign-in.json` (0600), weil sie das Abmelden überdauern.
+  und zuletzt benutzte Client-ID stehen zusätzlich in `<config>/ai-sign-in.json` (0600), weil sie das Abmelden
+  überdauern; die Client-ID dort öffnet keine Anmeldung, wenn keine eingestellt ist.
 - **Erneuern:** Vor jeder Anfrage, wenn das Access-Token in zwei Minuten endet, eine Erneuerung zur Zeit (ein
   Refresh-Token gilt nur einmal), die neuen Tokens zuerst in den Schlüsselbund. Nimmt OpenAI das Refresh-Token nicht
   mehr (abgemeldet in ChatGPT, abgelaufen, schon benutzt), verwirft der Dienst die Tokens; das Konto zeigt „Sign in
@@ -290,6 +299,10 @@ eine Anmeldung im Browser an, kommt sie so dazu.
    Folgepunkt.
 5. Das Aussehen des Knopfs (schwarz mit ChatGPT-Logo nach den Richtlinien von OpenAI) ist noch der gewöhnliche Knopf
    der Suite.
+6. Torro braucht eine eigene Client-ID von OpenAI (Formular, Warteliste); wann und ob es sie gibt, ist offen. Bis dahin
+   ist ChatGPT nicht im Angebot.
+7. Ob OpenAI `ext_agent_host_id` auch mit einer beantragten Client-ID erwartet, sagt die Doku nur für den
+   Open-Source-Weg. Torro schickt die Kennung immer mit (`SignIn::sends_host_id`); mit der echten Client-ID prüfen.
 
 ## Empfehlung je Rechner
 
