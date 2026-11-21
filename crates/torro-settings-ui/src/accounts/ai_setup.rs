@@ -1468,9 +1468,16 @@ fn hosted_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message>
     parts.into()
 }
 
-/// The providers signed in to with a browser (issue #324): one row each, "Continue with ChatGPT".
+/// The providers signed in to with a browser that can be offered (issue #324): those with a client id configured
+/// in this build or the environment ([`torro_core::ai::oauth::SignIn::offered`]). ChatGPT without one is left out
+/// (decision on #324); the core refuses it as well.
+pub(crate) fn offered_sign_ins() -> Vec<AiProvider> {
+    AiProvider::SIGN_IN.into_iter().filter(|provider| provider.sign_in().is_some_and(|s| s.offered())).collect()
+}
+
+/// The offered providers signed in to with a browser ([`offered_sign_ins`]): one row each, "Continue with ChatGPT".
 fn sign_in_rows<'a>(state: &'a State, narrow: bool) -> Vec<Element<'a, Message>> {
-    AiProvider::SIGN_IN
+    offered_sign_ins()
         .into_iter()
         .map(|provider| {
             let ready = may_change_account(state) && state.signing.is_none();
@@ -1809,6 +1816,15 @@ mod tests {
         let Action::AskAi(mut asks) = action else { panic!("owned request") };
         let (Asked::Setup { owner, run, .. }, request) = asks.remove(0) else { panic!("setup tag") };
         (owner, run, request)
+    }
+
+    /// Decision on #324: ChatGPT is offered exactly when a client id is configured; without one it has no row.
+    #[test]
+    fn chatgpt_is_offered_only_with_a_configured_client_id() {
+        let configured = torro_core::ai::oauth::CHATGPT.configured_client_id().is_some();
+        assert_eq!(offered_sign_ins().contains(&AiProvider::ChatGpt), configured);
+        let state = State { active: true, ..State::default() };
+        assert_eq!(sign_in_rows(&state, false).len(), usize::from(configured));
     }
 
     /// Issue #324: "Continue with ChatGPT" starts a sign-in in the core, opens its address, asks on every tick until the

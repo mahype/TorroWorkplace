@@ -275,8 +275,9 @@ pub fn demo_answer(request: &Request, data: &dyn Seen) -> Option<Response> {
             })
         }
         Request::DiscoverServices { address } => Some(demo_discovery(address)),
-        // Signing in with a browser (issue #324): no browser in the demo; the next check is signed in.
-        Request::StartAiSignIn { provider } if provider.sign_in().is_some() => {
+        // Signing in with a browser (issue #324): no browser in the demo; the next check is signed in. Only what the
+        // core would offer, so ChatGPT needs a configured client id here as well.
+        Request::StartAiSignIn { provider } if provider.sign_in().is_some_and(|s| s.offered()) => {
             Some(Response::AiSignIn { flow: format!("demo-{}", provider.id()), url: String::new() })
         }
         Request::CheckAiSignIn { flow } => {
