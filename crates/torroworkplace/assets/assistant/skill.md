@@ -34,8 +34,8 @@ password, approve), tell the person what it asks and let them decide.
 ## Rights, errors and approvals
 
 - `forbidden`: the person has not allowed you this. Say so plainly; they can change your rights in
-  the assistant's Settings › Access, tools and MCP servers under API and MCP (an agent with a key: Torro Workplace,
-  Settings › MCP clients). Do not look for a way around it.
+  the assistant's Settings › Access. Tools and MCP servers are set under API and MCP (an agent with a key:
+  Torro Workplace, Settings › MCP clients). Do not look for a way around it.
 - `not-found` also means "not allowed to see": a calendar, task list, repository, mail account or inbox
   source the person keeps from you behaves as if it did not exist. Say you cannot find it or may not
   see it, not that it does not exist.
