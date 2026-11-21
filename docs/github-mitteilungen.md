@@ -73,7 +73,7 @@ Die ersten beiden Gründe sehen für die Mitteilungszentrale gleich aus: Die Que
   Fußzeile, etwa „Only public repositories: the token has no repo scope.“, mit Verweis auf die Kontoseite;
 - in `inbox.list_sources` als Hinweis an der Quelle, damit Agenten (MCP `inbox_list_sources`) dasselbe sehen.
 
-Dafür bräuchte `SourceHealth` einen weiteren Wert (etwa `public_only`) oder `SourceInfo` ein eigenes Feld. Das
+Dafür bekommt `SourceInfo` ein eigenes neues Feld (entschieden, siehe unten), kein neuer `SourceHealth`-Wert. Das
 ist eine Änderung an einer festen Schnittstelle (`torro-ipc`) und gehört deshalb in ein eigenes, geplantes Issue.
 Die Gründe 2–4 kann Torro nicht verlässlich erkennen; dort hilft nur der Text auf der Kontoseite.
 
@@ -144,7 +144,9 @@ Stand: 2026-11-21.
   Issue [#946](https://github.com/mahype/TorroWorkplace/issues/946). Die Gestaltung klärt der Designer.
 - **F3, abgewählte Repos:** bleiben auf GitHub unberührt, kein „done“ dort.
 - **F4, Hinweis „nur öffentliche Repos“:** Folge-Issue [#947](https://github.com/mahype/TorroWorkplace/issues/947).
-  Ob ein neuer `SourceHealth`-Wert oder ein eigenes Feld, bleibt dort offen.
+  Die Schnittstelle bekommt ein **eigenes neues Feld an `SourceInfo`**, keinen neuen `SourceHealth`-Wert: Ein
+  neues Feld verändert keinen bestehenden Wert.
+- **Zugriff von `inbox.set_source_repos`:** Admin, wie `inbox.mute_source` (#946).
 
 ## Offene Fragen
 
