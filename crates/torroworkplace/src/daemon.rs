@@ -1141,6 +1141,8 @@ fn describe(request: &Request) -> String {
         Request::SetFocus { .. } => "set focus of a todo".into(),
         Request::PlanTodo { .. } => "plan todo".into(),
         Request::PostponeFocusPlan => "postpone focus plan".into(),
+        Request::PostponeStats { .. } => "postponed tasks".into(),
+        Request::ClearPostponements => "clear postponed tasks".into(),
         // The list only: never the mail account, the mail's id or its Message-ID (task E8.7a).
         Request::CreateTodoFromMail { collection, .. } => format!("make a task in {collection} of a mail"),
         // The calendar only (issue #603).

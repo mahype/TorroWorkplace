@@ -50,6 +50,7 @@ use crate::mail::backup::{ApplyRequest, BackupJobs, BackupRunError, BackupSelect
 use crate::mail::service::{MailService, Service, SignInError};
 use crate::mail::store::DraftAuthor;
 use crate::pim::{Definition, PimService, Reach};
+use crate::postponements::Postponements;
 use crate::presence::PresenceService;
 use crate::reminders::Reminders;
 use crate::settings_service::SettingsStore;
@@ -3220,6 +3221,9 @@ pub struct Core {
     /// Client commands that wait for a person (task A.3): the user's `approvals.json`
     /// ([`Approvals::system`]); tests keep theirs in a temporary directory.
     approvals: Arc<Approvals>,
+    /// What the person postponed (issue #623): the user's `postponements.json`
+    /// ([`Postponements::system`]); tests keep theirs in memory.
+    postponements: Arc<Postponements>,
     /// The inbox (task E1.2): the user's `inbox.sqlite` ([`Inbox::system`]); tests keep theirs
     /// in a temporary directory. Shared with the routine of the source `suite` (task E2.1).
     inbox: Arc<Inbox>,
@@ -3481,6 +3485,7 @@ impl Core {
             clearing_categories: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             clear_worker: Arc::new(std::sync::Mutex::new(None)),
             approvals: Arc::new(Approvals::system()),
+            postponements: Arc::new(Postponements::system()),
             inbox: Arc::new(Inbox::system()),
             audit: Arc::new(Audit::system()),
             github,
@@ -4008,6 +4013,58 @@ impl Core {
         };
         let (calendars, mail) = tokio::join!(calendars, mail);
         with_mail(calendars, mail, &address)
+    }
+
+    /// The tasks `reach` sees as cached before a write that may postpone some (issue #623); `None` while the
+    /// setting `postpone_stats` is off, so nothing is read or recorded then.
+    async fn postpone_snapshot(&self, reach: Reach<'_>) -> Option<Vec<torro_pim::Todo>> {
+        if !self.settings.current().postpone_stats {
+            return None;
+        }
+        Some(self.pim.todos_within(reach).await)
+    }
+
+    /// Records the postponements among `written` against `before` ([`crate::postponements::found`]). A
+    /// history that cannot be written does not fail the write that was done: it is only told on stderr.
+    async fn note_postponements(&self, before: &[torro_pim::Todo], written: &[torro_pim::Todo]) {
+        let now = Utc::now();
+        let found = crate::postponements::found(before, written, &chrono::Local, now);
+        if let Err(err) = self.postponements.record(found, now).await {
+            eprintln!("torroworkplace: cannot note postponed tasks: {err}");
+        }
+    }
+
+    /// The task lists whose postponements `reach` may see or clear: all for the suite (also of lists that
+    /// are gone or hidden), for a client the ones it sees now.
+    async fn postpone_lists(&self, reach: Reach<'_>) -> Option<std::collections::HashSet<String>> {
+        match reach {
+            Reach::Suite => None,
+            Reach::Client(_) => Some(self.pim.task_lists_within(reach).await.into_iter().map(|c| c.id).collect()),
+        }
+    }
+
+    /// `tasks.postpone_stats` (issue #623): nothing but `enabled: false` while the setting is off.
+    async fn postpone_stats(&self, since: Option<chrono::NaiveDate>, reach: Reach<'_>) -> Response {
+        if !self.settings.current().postpone_stats {
+            return Response::PostponeStats { stats: torro_ipc::PostponeStats::default() };
+        }
+        let entries = match self.postponements.list(Utc::now()).await {
+            Ok(entries) => entries,
+            Err(err) => return postponements_failed(&err),
+        };
+        let lists = self.postpone_lists(reach).await;
+        let cached = self.pim.todos_within(reach).await;
+        let stats = crate::postponements::stats(&entries, since, lists.as_ref(), &cached);
+        Response::PostponeStats { stats }
+    }
+
+    /// `tasks.clear_postponements` (issue #623): what `reach` may see, whether counting is on or off.
+    async fn clear_postponements(&self, reach: Reach<'_>) -> Response {
+        let lists = self.postpone_lists(reach).await;
+        match self.postponements.clear(lists.as_ref()).await {
+            Ok(_) => Response::Ok,
+            Err(err) => postponements_failed(&err),
+        }
     }
 
     /// The core with `approvals` instead of the user's, for tests in other modules.
@@ -7598,8 +7655,13 @@ impl Core {
                 if let Some(refused) = self.pim.focus_refusal(reach, &todo, slots, today).await {
                     return refused;
                 }
+                let before = self.postpone_snapshot(reach).await;
                 let api = link_api(&self.github).await;
-                self.pim.save_link_todo(todo, api.as_ref(), reach).await
+                let saved = self.pim.save_link_todo(todo, api.as_ref(), reach).await;
+                if let (Some(before), Response::Todo { todo }) = (before, &saved) {
+                    self.note_postponements(&before, std::slice::from_ref(todo)).await;
+                }
+                saved
             }
             // A client never reaches `connect_caldav`: `Rights::allows` refuses every command kept
             // from agents (`docs/api.md`, "Was nie nach außen geht", 5).
@@ -7652,8 +7714,16 @@ impl Core {
             plan @ (Request::SetFocus { .. } | Request::PlanTodo { .. } | Request::PostponeFocusPlan) => {
                 let slots = usize::from(self.settings.current().focus_slots.get());
                 let today = chrono::Local::now().date_naive();
-                Box::pin(self.pim.plan_request(plan, reach, slots, today)).await
+                let before = self.postpone_snapshot(reach).await;
+                let planned = Box::pin(self.pim.plan_request(plan, reach, slots, today)).await;
+                if let (Some(before), Response::Todos { todos }) = (before, &planned) {
+                    self.note_postponements(&before, todos).await;
+                }
+                planned
             }
+            // What the person postponed (issue #623), of the lists the caller sees.
+            Request::PostponeStats { since } => self.postpone_stats(since, reach).await,
+            Request::ClearPostponements => self.clear_postponements(reach).await,
             // Reminders (task ER1.3); a client's preview comes through `handle_client` with its name.
             request @ (Request::ListReminders { .. }
             | Request::SnoozeReminder { .. }
@@ -14537,8 +14607,8 @@ impl Core {
     /// settings, and is refused like `settings.set_setting` with `true`
     /// ([`torro_ipc::api::Rights::allows_request`], which judges by the value alone):
     ///
-    /// - `settings.update_settings` that switches on what is off: the microphone (point 6) or the
-    ///   heartbeat of the presence; or that sets the PDF folder or a template's logo to a path
+    /// - `settings.update_settings` that switches on what is off: the microphone (point 6), the
+    ///   heartbeat of the presence or counting postponed tasks (issue #623); or that sets the PDF folder or a template's logo to a path
     ///   other than the stored one (`torro_core::settings::Tools::needs_a_person`); or that turns maps on
     ///   or names another search or tile service than the stored one (task TE.1,
     ///   `torro_core::settings::Maps::needs_a_person`; without `maps` the stored ones stay); or that
@@ -14562,6 +14632,8 @@ impl Core {
                 on(settings.voice.enabled, now.voice.enabled)
                     // The heartbeat of the presence (`docs/chat.md`, decision 10).
                     || on(settings.presence_heartbeat, now.presence_heartbeat)
+                    // Counting the person's postponed tasks (issue #623).
+                    || on(settings.postpone_stats, now.postpone_stats)
                     || now.tools.needs_a_person(&settings.tools)
                     // Maps on, or another search or tile service (task TE.1).
                     || now.maps.needs_a_person(&settings.maps)
@@ -16607,6 +16679,16 @@ fn error(err: &SetupsError) -> Response {
 }
 
 mod live;
+
+/// The answer when the history of postponed tasks cannot be read or written (issue #623): the path names
+/// the person's home, so it goes to stderr only.
+fn postponements_failed(err: &crate::postponements::PostponementsError) -> Response {
+    eprintln!("torroworkplace: {err}");
+    Response::Error {
+        code: "error".into(),
+        message: "The history of postponed tasks cannot be read or written.".into(),
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -25435,6 +25517,99 @@ done"#,
         )
         .with_approvals(crate::approvals::tests::quiet_in(dir))
         .with_inbox(crate::inbox::tests::inbox_in(dir))
+    }
+
+    // ----- Counting postponed tasks (issue #623) ----------------------------------------------
+
+    /// The evaluation `key` (none: the suite) reads.
+    async fn postpone_stats_of(core: &Core, key: Option<&Key>) -> torro_ipc::PostponeStats {
+        let request = Request::PostponeStats { since: None };
+        let answer = match key {
+            Some(key) => ask(core, Some(key), request).await,
+            None => core.handle(request).await,
+        };
+        let Response::PostponeStats { stats } = answer else { panic!("an evaluation, got {answer:?}") };
+        stats
+    }
+
+    /// The task `uid` of the list `list` as the suite reads it.
+    async fn cached_task(core: &Core, list: &str, uid: &str) -> torro_pim::Todo {
+        todos_in(core, None, list).await.into_iter().find(|t| t.uid == uid).expect("the task")
+    }
+
+    #[tokio::test]
+    async fn moves_to_a_later_day_count_only_while_a_person_turned_counting_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let today = chrono::Local::now().date_naive();
+        let days = |n: u64| today + chrono::Days::new(n);
+        // Each task is written once: the fake server answers every write with a new version.
+        let tasks = [("off", today), ("planned", today), ("saved", today), ("earlier", days(3))];
+        let fake =
+            crate::pim::tests::fake_caldav_with_tasks(SettingsStore::at(settings_file(dir.path())), &tasks).await;
+        let core = core_on(dir.path(), &fake);
+        let on_day = |day: chrono::NaiveDate| Some(torro_pim::EventTime::Date(day));
+        let save = |todo: torro_pim::Todo, day: chrono::NaiveDate| Request::SaveTodo {
+            todo: torro_pim::Todo { due: on_day(day), ..todo },
+        };
+        let saved = |answer: Response| assert!(matches!(answer, Response::Todo { .. }), "a saved task, got {answer:?}");
+
+        // Off (the default): nothing is noted, nothing is shown.
+        saved(core.handle(save(cached_task(&core, &fake.work, "off").await, days(1))).await);
+        assert_eq!(postpone_stats_of(&core, None).await, torro_ipc::PostponeStats::default());
+
+        // Only a person turns it on, also not by sending all settings.
+        // A client with full and admin rights for tasks and settings: what keeps it out is the value alone.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Settings, torro_ipc::api::AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, rights).await;
+        let turn = |on: bool| Request::SetSetting { key: SettingKey::PostponeStats, value: serde_json::json!(on) };
+        assert_eq!(code(&ask(&core, Some(&key), turn(true)).await), "forbidden");
+        let mut all = core.settings.current();
+        all.postpone_stats = true;
+        let whole = Request::UpdateSettings { settings: all };
+        assert_eq!(code(&ask(&core, Some(&key), whole).await), "forbidden", "not by sending all settings either");
+        assert!(!core.settings.current().postpone_stats);
+        core.handle(turn(true)).await;
+        assert!(core.settings.current().postpone_stats);
+
+        // On: a later day counts, through planning and through saving; an earlier one does not.
+        let planned = cached_task(&core, &fake.work, "planned").await;
+        let plan = Request::PlanTodo {
+            href: planned.href.clone().expect("href"),
+            etag: planned.etag.clone().expect("etag"),
+            day: days(2),
+            before: None,
+        };
+        assert!(matches!(core.handle(plan).await, Response::Todos { .. }));
+        saved(core.handle(save(cached_task(&core, &fake.work, "saved").await, days(7))).await);
+        saved(core.handle(save(cached_task(&core, &fake.work, "earlier").await, today)).await);
+        let stats = postpone_stats_of(&core, Some(&key)).await;
+        assert!(stats.enabled);
+        assert_eq!(stats.total, 2, "{stats:?}");
+        let mut uids: Vec<&str> = stats.tasks.iter().map(|t| t.uid.as_str()).collect();
+        uids.sort_unstable();
+        assert_eq!(uids, ["planned", "saved"]);
+        assert!(stats.tasks.iter().all(|t| t.title.as_deref() == Some(&format!("Task {}", t.uid))));
+        assert_eq!(stats.by_priority, [torro_ipc::PostponeCount { key: "urgent".into(), count: 2 }]);
+
+        // A client sees and clears only what was noted for its lists.
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.task_lists = Selection::Only(vec![fake.home.clone()]);
+        let (_, home_only) = client(&core, rights).await;
+        assert_eq!(postpone_stats_of(&core, Some(&home_only)).await.total, 0);
+        assert_eq!(ask(&core, Some(&home_only), Request::ClearPostponements).await, Response::Ok);
+        assert_eq!(postpone_stats_of(&core, None).await.total, 2);
+
+        // Off again keeps the history; clearing removes it.
+        // A client may ask to turn it off (an admin command: it waits for a person); then it is off.
+        let off = ask(&core, Some(&key), turn(false)).await;
+        assert!(matches!(off, Response::Pending { .. }), "not refused, asked: {off:?}");
+        core.handle(turn(false)).await;
+        assert_eq!(postpone_stats_of(&core, None).await, torro_ipc::PostponeStats::default());
+        core.handle(turn(true)).await;
+        assert_eq!(postpone_stats_of(&core, None).await.total, 2);
+        assert_eq!(core.handle(Request::ClearPostponements).await, Response::Ok);
+        assert_eq!(postpone_stats_of(&core, None).await.total, 0);
     }
 
     /// A notice the app key posts, with a web page and a text; its id.
