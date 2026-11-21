@@ -35,3 +35,10 @@ Sven möglichst selten gefragt wird.
    Abhängigkeiten, gesammelt und einmalig mit Hintergrund.
 10. **Merge und main bleiben bei Sven.** Ohne Svens ausdrückliches OK kein Merge, kein Push auf `main`, kein
     Issue schließen. Die Merge-Reihenfolge freigegebener PRs legt der Bot selbst fest.
+11. **Offensichtliche Kleinigkeiten werden selbstständig erledigt.** Einmal pro Stunde sucht der Projekt-Bot
+    unter den offenen Issues nach Bugs und kleinen Aufgaben, die nach Regel 1 offensichtlich nötig, jetzt
+    umsetzbar und sinnvoll sind. Er setzt sie ohne Rückfrage in einem eigenen T3-Thread mit eigenem Branch und
+    PR um. Ausgeschlossen sind Issues mit offenen Grundsatzfragen (Regel 9), reine UI-Themen (Regel 5) und
+    Issues, zu denen es schon einen PR oder Thread gibt. Pro Lauf startet er höchstens ein Issue; liegen schon
+    drei solcher PRs ungeprüft offen, startet er keines. Mergen, Issues schließen und Pushen auf `main` bleiben
+    nach Regel 10 bei Sven.
