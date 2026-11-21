@@ -173,4 +173,4 @@ Rückfrage: „This conversation has read content from outside. Start a new conv
 
 - Sandbox unter Linux (bubblewrap oder Landlock) und macOS (Seatbelt) als zusätzlicher Schutz; dann wären die harten
   Grenzen Sperren statt Faustregeln.
-- Computer-Use (Bildschirm sehen und bedienen): eigenes Issue #755.
+- Computer-Use (Bildschirm sehen und bedienen): Konzept in [bildschirm.md](bildschirm.md), Issue #755.
