@@ -173,7 +173,8 @@ mod tests {
         assert_eq!(resolved("https://example.org/a", None), Resolved { card: None, picture: None });
         let video = resolved("https://www.youtube.com/watch?v=dQw4w9WgXcQ", None).card.expect("a video card");
         assert!(video.video.is_some() && video.title.is_empty());
-        let reference = torro_nextcloud::Reference { title: "A".into(), description: None, image: Some("p1".into()) };
+        let reference =
+            torro_nextcloud::Reference { title: "A".into(), image: Some("p1".into()), ..Default::default() };
         let page = resolved("https://example.org/a", Some(reference));
         assert_eq!(page.picture, Some(CardPicture::Reference("p1".into())));
         assert!(page.card.is_some_and(|card| card.image && card.domain == "example.org"));

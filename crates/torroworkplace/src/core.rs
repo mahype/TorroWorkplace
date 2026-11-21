@@ -35161,7 +35161,7 @@ done"#,
         {
             let mut state = server.state();
             let reference =
-                torro_nextcloud::Reference { title: "A post".into(), description: None, image: Some("p".into()) };
+                torro_nextcloud::Reference { title: "A post".into(), image: Some("p".into()), ..Default::default() };
             state.references.insert(page.into(), reference);
             let mut png = Vec::new();
             image::DynamicImage::new_rgb8(4, 3)

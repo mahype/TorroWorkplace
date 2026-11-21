@@ -211,7 +211,7 @@ pub struct ShareMeta {
 }
 
 /// A link card as the server resolved it. Everything in it is foreign text.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Reference {
     /// The title (`openGraphObject.name`), one line.
     pub title: String,
@@ -220,6 +220,23 @@ pub struct Reference {
     /// The id of its picture on the account's own server (`/index.php/core/references/preview/<id>`),
     /// only when `thumb` points there; never another address.
     pub image: Option<String>,
+    /// What the server knows of a file the link names (`richObject` of its file provider); `None` for any
+    /// other provider, and for a file link the provider does not resolve (such as a public share).
+    pub file: Option<ReferenceFile>,
+}
+
+/// The file of a link card as the server's file provider describes it (`richObject`, `richObjectType` `file`).
+/// Everything in it is foreign text; each part is optional so a server that leaves one out still gives a card.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReferenceFile {
+    /// The file's id on the server.
+    pub id: Option<u64>,
+    /// Bytes.
+    pub size: Option<u64>,
+    /// Its path in the person's files (`/Projects/Customer/Offer.pdf`), one line.
+    pub path: Option<String>,
+    /// Its media type (`application/pdf`).
+    pub mimetype: Option<String>,
 }
 
 impl Nextcloud {
@@ -509,8 +526,30 @@ impl Nextcloud {
                     .to_string();
                 is_reference_id(&id).then_some(id)
             });
-        Some(Reference { title, description: text("description"), image })
+        Some(Reference { title, description: text("description"), image, file: read_file(reference) })
     }
+}
+
+/// The file of the answer's `richObject` when it is of type `file`.
+fn read_file(reference: &Value) -> Option<ReferenceFile> {
+    if reference.get("richObjectType").and_then(Value::as_str) != Some("file") {
+        return None;
+    }
+    let object = reference.get("richObject")?;
+    let text = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(|text| crate::rich::line(text, &Value::Null))
+            .filter(|text| !text.is_empty())
+    };
+    let number = |key: &str| object.get(key).and_then(Value::as_u64);
+    Some(ReferenceFile {
+        id: number("id").filter(|id| *id > 0),
+        size: number("size"),
+        path: text("path"),
+        mimetype: text("mimetype"),
+    })
 }
 
 /// The method of the bytes `name` (`PROPFIND`, `MKCOL`, `MOVE`).
@@ -952,6 +991,48 @@ mod tests {
         assert_eq!(own.image.as_deref(), Some("0f1e2d3c4b5a69788796a5b4c3d2e1f0"));
         let foreign = nextcloud.resolve_reference("https://example.org/b").await.expect("asked").expect("a card");
         assert_eq!(foreign.image, None, "a picture elsewhere is never taken");
+        assert_eq!(own.file, None, "a page is no file");
+    }
+
+    /// The `richObject` of the server's file provider gives size, path, type and id; without it (or of another type)
+    /// the card has no file.
+    #[tokio::test]
+    async fn a_reference_of_a_file_carries_its_details_when_the_server_names_them() {
+        let server = MockServer::start_async().await;
+        let answer = |extra: &str| {
+            format!(
+                r#"{{"ocs":{{"meta":{{}},"data":{{"references":{{"L":{{"openGraphObject":{{"name":"Offer.pdf","description":"application/pdf"}}{extra}}}}}}}}}}}"#
+            )
+        };
+        let with = answer(
+            r#","richObjectType":"file","richObject":{"id":123,"size":20480,"path":"/Projects/Customer/Offer.pdf","mimetype":"application/pdf"}"#,
+        );
+        let other = answer(r#","richObjectType":"deck-card","richObject":{"id":5,"size":9}"#);
+        for (link, body) in [("with", with), ("other", other), ("without", answer(""))] {
+            server
+                .mock_async(|when, then| {
+                    when.method(GET).path("/ocs/v2.php/references/resolve").query_param("reference", link);
+                    then.status(200).body(body.replace("\"L\"", &format!("\"{link}\"")));
+                })
+                .await;
+        }
+        let nextcloud = account(&server);
+        let ask = |link: &'static str| {
+            let nextcloud = &nextcloud;
+            async move { nextcloud.resolve_reference(link).await.expect("asked").expect("a card") }
+        };
+        let file = ask("with").await.file.expect("its details");
+        assert_eq!(
+            file,
+            ReferenceFile {
+                id: Some(123),
+                size: Some(20480),
+                path: Some("/Projects/Customer/Offer.pdf".into()),
+                mimetype: Some("application/pdf".into()),
+            }
+        );
+        assert_eq!(ask("other").await.file, None, "another provider's object is no file");
+        assert_eq!(ask("without").await.file, None, "no richObject");
     }
 
     #[tokio::test]

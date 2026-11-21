@@ -624,7 +624,7 @@ mod tests {
     async fn a_page_loads_once_and_show_once_fetches_one_that_asks() {
         let (chat, server) = chat(always());
         let reference =
-            torro_nextcloud::Reference { title: "A post".into(), description: None, image: Some("p".into()) };
+            torro_nextcloud::Reference { title: "A post".into(), image: Some("p".into()), ..Default::default() };
         server.state().references.insert(PAGE.into(), reference);
         let drawn = crate::chat::remote::Picture { bytes: png(), content_type: "image/png".into() };
         server.state().card_pictures.insert("p".into(), drawn);
@@ -680,7 +680,7 @@ mod tests {
     #[tokio::test]
     async fn a_clients_look_fetches_no_page() {
         let (chat, server) = chat(always());
-        let reference = torro_nextcloud::Reference { title: "A post".into(), description: None, image: None };
+        let reference = torro_nextcloud::Reference { title: "A post".into(), ..Default::default() };
         server.state().references.insert(PAGE.into(), reference);
         let shown = Shown::default();
         let (github, rights) = (github(), rights());
@@ -803,7 +803,7 @@ mod tests {
     async fn the_own_server_goes_by_the_rights_of_the_conversations_client() {
         let (chat, server) = chat(always());
         let file = "https://cloud.example.org/f/12";
-        let reference = torro_nextcloud::Reference { title: "Plan.pdf".into(), description: None, image: None };
+        let reference = torro_nextcloud::Reference { title: "Plan.pdf".into(), ..Default::default() };
         server.state().references.insert(file.into(), reference);
         let shown = Shown::default();
         let github = github();
