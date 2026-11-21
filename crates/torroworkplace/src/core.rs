@@ -3299,6 +3299,8 @@ pub struct Core {
     /// "calendars on" while the calendar service refused the duplicate. `accounts.connect_ai` holds
     /// it too while it writes `accounts.json` (task KI.1a).
     calendar_sign_ins: Mutex<()>,
+    /// The sign-ins of AI accounts with a browser under way (issue #324, `accounts.start_ai_sign_in`).
+    ai_sign_ins: Arc<crate::account::sign_in::SignIns>,
     /// The separate TorroMail app, read only (task M7.4): the user's ([`TorroMail::system`]);
     /// none in tests unless they bring one ([`Core::with_torromail`]).
     torromail: TorroMail,
@@ -3511,6 +3513,11 @@ impl Core {
             poster: OnceLock::new(),
             searches: Searches::default(),
             calendar_sign_ins: Mutex::new(()),
+            ai_sign_ins: Arc::new(if cfg!(test) {
+                crate::account::sign_in::SignIns::new(None)
+            } else {
+                crate::account::sign_in::SignIns::system()
+            }),
             torromail: if cfg!(test) { TorroMail::none() } else { TorroMail::system() },
             assistant: Arc::new(Assistant::system()),
             voice,
@@ -8093,6 +8100,33 @@ impl Core {
                 }
             }
             request @ Request::ConnectLocalAi { .. } => Box::pin(self.answer_local_ai(request)).await,
+            // A client never reaches these either (`Rights::allows`, rule 5): signing in brings tokens (issue #324).
+            Request::StartAiSignIn { provider } => match Box::pin(self.ai_sign_ins.start(&self.ai, provider)).await {
+                None => Response::Error {
+                    code: "unsupported".into(),
+                    message: trf("{provider} is not signed in to with a browser.", &[("provider", &provider.name())]),
+                },
+                Some(Ok((flow, url))) => Response::AiSignIn { flow, url },
+                Some(Err(err)) => ai_error(&err),
+            },
+            Request::CheckAiSignIn { flow } => match self.ai_sign_ins.check(&flow) {
+                None => Response::Error {
+                    code: "not-found".into(),
+                    message: tr("This sign-in is over. Start it again.").into(),
+                },
+                Some(None) => Response::AiSignInPending { flow },
+                Some(Some(Ok(account))) => Response::Account { account },
+                // No key was involved: say so in the words of a sign-in.
+                Some(Some(Err(torro_core::ai::AiError::Auth))) => Response::Error {
+                    code: "auth".into(),
+                    message: tr("The provider did not accept the sign-in. Try again.").into(),
+                },
+                Some(Some(Err(err))) => ai_error(&err),
+            },
+            Request::CancelAiSignIn { flow } => {
+                self.ai_sign_ins.cancel(&flow);
+                Response::Ok
+            }
             // Boxed and apart, so this match grows by one arm only: its poll frame is deep in the
             // stack already when an approved command or the inbox's quiet runs it again.
             request @ (Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } | Request::SetNtfyTopic { .. }) => {
@@ -34986,6 +35020,33 @@ done"#,
         };
         assert!(models.iter().all(|model| model.remote == Some(true)));
         assert!(audit_lines(dir.path()).iter().all(|line| line.ids.is_empty()));
+    }
+
+    /// Issue #324: the three sign-in commands are the app key's only, and answer with their documented codes.
+    #[tokio::test]
+    async fn ai_sign_ins_are_app_only_and_answer_with_their_codes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        for (request, command) in [
+            (Request::StartAiSignIn { provider: AiProvider::ChatGpt }, "accounts.start_ai_sign_in"),
+            (Request::CheckAiSignIn { flow: "f".into() }, "accounts.check_ai_sign_in"),
+            (Request::CancelAiSignIn { flow: "f".into() }, "accounts.cancel_ai_sign_in"),
+        ] {
+            let Err(refused) = Box::pin(core.handle_from(Some(&key), door_for(&core, Some(&key)), request)).await
+            else {
+                panic!("app only: {command}");
+            };
+            assert_eq!(refused, Refused::Lacks { command, lack: Lack::ForPeople });
+        }
+        let other = Request::StartAiSignIn { provider: AiProvider::OpenRouter };
+        assert_eq!(code(&ask(&core, Some(&app_key), other).await), "unsupported");
+        let unknown = Request::CheckAiSignIn { flow: "unknown".into() };
+        assert_eq!(code(&ask(&core, Some(&app_key), unknown).await), "not-found");
+        let cancel = Request::CancelAiSignIn { flow: "unknown".into() };
+        assert_eq!(ask(&core, Some(&app_key), cancel).await, Response::Ok);
     }
 
     use crate::assistant::tests::{Script, Scripted, calls, says};

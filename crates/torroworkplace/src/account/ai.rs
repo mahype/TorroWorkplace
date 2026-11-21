@@ -41,7 +41,7 @@ use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
 use torro_core::ai::{
     self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, LocalProgram, ModelSwitches, Provider,
-    anthropic, openai, responses, strata, systemone,
+    anthropic, oauth, openai, responses, strata, systemone,
 };
 use torro_core::i18n::{tr, trf};
 use torro_ipc::{AccountInfo, AiObservation, AiObservationStatus, AiServer};
@@ -129,11 +129,14 @@ struct Wire {
     base: String,
     key: Option<Secret>,
     auth: Auth,
+    /// How a failed answer is read: [`openai::error_of`], or for a ChatGPT plan [`oauth::plan_error_of`]
+    /// (issue #324), whose codes say where the limit is set.
+    errors: fn(u16, &[u8]) -> AiError,
 }
 
 impl Wire {
     fn new(http: reqwest::Client, base: &str, key: Option<Secret>, auth: Auth) -> Wire {
-        Wire { http, base: base.trim_end_matches('/').to_string(), key, auth }
+        Wire { http, base: base.trim_end_matches('/').to_string(), key, auth, errors: openai::error_of }
     }
 
     /// A request to `<base>/<path>` with the key, if there is one.
@@ -170,7 +173,7 @@ impl Wire {
         }
         let status = response.status().as_u16();
         let body = response.bytes().await.unwrap_or_default();
-        Err(self.scrubbed(openai::error_of(status, &body)))
+        Err(self.scrubbed((self.errors)(status, &body)))
     }
 
     async fn body(&self, response: reqwest::Response) -> Result<Vec<u8>, AiError> {
@@ -248,7 +251,11 @@ impl OpenAiCompatible {
     /// The server of `provider` at `base` with `key` (none for most local servers). Sends nothing
     /// yet.
     pub fn new(http: reqwest::Client, provider: AiProvider, base: &str, key: Option<Secret>) -> OpenAiCompatible {
-        OpenAiCompatible { wire: Wire::new(http, base, key, Auth::Bearer), provider, program: None }
+        let mut wire = Wire::new(http, base, key, Auth::Bearer);
+        if provider == AiProvider::ChatGpt {
+            wire.errors = oauth::plan_error_of;
+        }
+        OpenAiCompatible { wire, provider, program: None }
     }
 
     /// Whether the server takes this account: OpenRouter's key with `GET <base>/key`; direct
@@ -314,6 +321,10 @@ impl OpenAiCompatible {
         }
         let response = self.wire.send(self.wire.request(reqwest::Method::GET, "models")).await?;
         let body = self.wire.body(response).await?;
+        if self.provider == AiProvider::ChatGpt {
+            // The models of the person's plan (issue #324): `{"models": [{"slug", "display_name", "visibility"}]}`.
+            return oauth::plan_models(&body).map_err(|err| self.wire.scrubbed(err));
+        }
         let mut models = openai::parse_models(&body).map_err(|err| self.wire.scrubbed(err))?;
         // An optional explicit remote signal can only narrow locality. Never accept `false`
         // as proof from a generic relay; known runtimes add that evidence separately.
@@ -492,7 +503,7 @@ impl Provider for OpenAiCompatible {
         })
     }
 
-    /// OpenAI uses `POST <base>/responses`; other providers use `POST <base>/chat/completions`.
+    /// OpenAI and a ChatGPT plan use `POST <base>/responses`; other providers use `POST <base>/chat/completions`.
     /// Both stream when supported and accept a whole JSON answer from a compatible server.
     fn chat<'a>(
         &'a self,
@@ -500,8 +511,12 @@ impl Provider for OpenAiCompatible {
         on_text: &'a mut (dyn FnMut(&str) + Send),
     ) -> BoxFuture<'a, Result<ChatReply, AiError>> {
         Box::pin(async move {
-            if self.provider == AiProvider::OpenAi {
-                let mut body = responses::body(request, true);
+            if matches!(self.provider, AiProvider::OpenAi | AiProvider::ChatGpt) {
+                // A ChatGPT plan takes the same API with stricter rules (issue #324, `responses::plan_body`).
+                let mut body = match self.provider {
+                    AiProvider::ChatGpt => responses::plan_body(request),
+                    _ => responses::body(request, true),
+                };
                 let response =
                     match self.wire.send(self.wire.request(reqwest::Method::POST, "responses").json(&body)).await {
                         Ok(response) => response,
@@ -769,6 +784,11 @@ impl Provider for AiClient {
     }
 }
 
+/// Seconds since 1970, what [`oauth::TokenSet`] counts its end in.
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs())
+}
+
 /// A request that got no answer: unreachable or too slow is [`AiError::Offline`].
 fn transport_error(err: &reqwest::Error) -> AiError {
     if err.is_connect() || err.is_timeout() {
@@ -841,7 +861,8 @@ impl Slot {
             label: label(&self.account),
             state: AccountState::Connected {
                 server: self.account.server.clone(),
-                login_name: String::new(),
+                // Who signed in, for an account signed in with a browser (issue #324); empty for a key.
+                login_name: self.account.login_name.clone(),
                 last_sync: self.checked,
                 problem: self.problem.clone(),
             },
@@ -891,6 +912,12 @@ pub struct AiAccounts {
     /// [`AiAccounts::hold_until_kept`]): until then the readers of the switches wait
     /// ([`AiAccounts::kept`]), so no module counts a model in use as off. `true` otherwise.
     kept: tokio::sync::watch::Sender<bool>,
+    /// Held while the tokens of a signed-in account are renewed (issue #324): a refresh token works once, so two
+    /// renewals at once would end the sign-in.
+    refreshing: tokio::sync::Mutex<()>,
+    /// The sign-ins of providers as tests point them at fake servers; empty in the daemon, which takes
+    /// [`AiProvider::sign_in`].
+    sign_ins: Vec<(AiProvider, oauth::SignIn)>,
 }
 
 /// How long the readers of the switches wait for the models in use to be kept on at the start
@@ -1099,7 +1126,25 @@ impl AiAccounts {
             slots: RwLock::new(Vec::new()),
             switches: tokio::sync::Mutex::new(None),
             kept: tokio::sync::watch::Sender::new(true),
+            refreshing: tokio::sync::Mutex::new(()),
+            sign_ins: Vec::new(),
         }
+    }
+
+    /// The service with the sign-in of `provider` at `sign_in` instead of the provider's own: fake servers in tests.
+    #[cfg(test)]
+    pub(crate) fn with_sign_in(mut self, provider: AiProvider, sign_in: oauth::SignIn) -> AiAccounts {
+        self.sign_ins.push((provider, sign_in));
+        self
+    }
+
+    /// How `provider` is signed in to with a browser (issue #324): its [`AiProvider::sign_in`], or what a test set.
+    pub fn sign_in_of(&self, provider: AiProvider) -> Option<oauth::SignIn> {
+        self.sign_ins
+            .iter()
+            .find(|(held, _)| *held == provider)
+            .map(|(_, sign_in)| *sign_in)
+            .or_else(|| provider.sign_in().copied())
     }
 
     /// Loads the stored AI accounts with their keys, in the background. Asks no server: a local one
@@ -1137,9 +1182,14 @@ impl AiAccounts {
         .await?;
         let mut held = self.slots.write().await;
         for (account, key) in loaded {
-            let needs_key = account.ai.is_some_and(AiProvider::needs_key);
+            let needs_key = account.ai.is_some_and(AiProvider::needs_secret);
+            let signs_in = account.ai.and_then(AiProvider::sign_in).is_some();
             let (key, problem) = match key {
+                Ok(Some(key)) if signs_in && oauth::TokenSet::from_secret(key.expose()).is_none() => {
+                    (None, Some(tr("Sign in again: the sign-in on this device cannot be read").into()))
+                }
                 Ok(Some(key)) => (Some(key), None),
+                Ok(None) if signs_in => (None, Some(tr("Sign in again: no sign-in is stored on this device").into())),
                 Ok(None) if needs_key => (None, Some(tr("Connect again: no API key is stored on this device").into())),
                 Ok(None) => (None, None),
                 Err(err) => (None, Some(format!("{} ({err})", tr("Connect again: the keychain could not be read")))),
@@ -1177,22 +1227,149 @@ impl AiAccounts {
     }
 
     async fn client(&self, id: &str) -> Result<AiClient, AiError> {
+        self.renew_if_due(id).await?;
         let slots = self.slots.read().await;
         let slot = slots.iter().find(|slot| slot.account.id == id).ok_or_else(|| no_account(id))?;
-        if slot.key.is_none() && slot.provider().needs_key() {
+        // A signed-in account (issue #324) keeps its tokens as its secret; only the access token travels.
+        let key = match slot.provider().sign_in() {
+            Some(_) => slot
+                .key
+                .as_ref()
+                .and_then(|key| oauth::TokenSet::from_secret(key.expose()))
+                .map(|tokens| tokens.access_token),
+            None => slot.key.clone(),
+        };
+        if key.is_none() && slot.provider().needs_secret() {
             return Err(AiError::NoKey);
         }
-        let mut client = AiClient::new(
-            self.http()?.clone(),
-            slot.provider(),
-            &slot.account.server,
-            slot.key.clone(),
-            slot.models.as_deref(),
-        );
+        let mut client =
+            AiClient::new(self.http()?.clone(), slot.provider(), &slot.account.server, key, slot.models.as_deref());
         if let AiClient::OpenAi(client) = &mut client {
             client.program = slot.account.ai_program.clone();
         }
         Ok(client)
+    }
+
+    // Accounts signed in with a browser (issue #324, `torro_core::ai::oauth`).
+
+    /// The tokens of the signed-in account `id`, `None` for any other account or one without tokens on this
+    /// device. Never leaves the core.
+    pub(crate) async fn tokens_of(&self, id: &str) -> Option<oauth::TokenSet> {
+        let slots = self.slots.read().await;
+        let slot = slots.iter().find(|slot| slot.account.id == id)?;
+        slot.provider().sign_in()?;
+        slot.key.as_ref().and_then(|key| oauth::TokenSet::from_secret(key.expose()))
+    }
+
+    /// Renews the access token of the signed-in account `id` when it ends soon ([`oauth::TokenSet::needs_refresh`]):
+    /// one renewal at a time ([`AiAccounts::refreshing`]), the new tokens into the keychain before they are used, as
+    /// the provider rotates the refresh token. A refresh token the provider no longer takes ends the sign-in on this
+    /// device: the tokens are dropped and the account says "Sign in again". Nothing for any other account.
+    async fn renew_if_due(&self, id: &str) -> Result<(), AiError> {
+        let due = |tokens: &oauth::TokenSet| tokens.needs_refresh(unix_now());
+        if !self.tokens_of(id).await.is_some_and(|tokens| due(&tokens)) {
+            return Ok(());
+        }
+        let _renewing = self.refreshing.lock().await;
+        // Another request may have renewed them while this one waited.
+        let Some(tokens) = self.tokens_of(id).await.filter(due) else { return Ok(()) };
+        let Some((provider, account)) = ({
+            let slots = self.slots.read().await;
+            slots.iter().find(|slot| slot.account.id == id).map(|slot| (slot.provider(), slot.account.clone()))
+        }) else {
+            return Ok(());
+        };
+        let Some(sign_in) = self.sign_in_of(provider) else { return Ok(()) };
+        let renewed = self.refresh(&sign_in, &tokens).await;
+        match renewed {
+            Ok(renewed) => {
+                let secret = renewed.to_secret()?;
+                let (keys, stored, kept) = (Arc::clone(&self.keys), account.clone(), secret.clone());
+                keychain(move || keys.set(&stored, &kept)).await.map_err(AiError::Format)?;
+                if let Some(slot) = self.slots.write().await.iter_mut().find(|slot| slot.account.id == id) {
+                    slot.key = Some(secret);
+                    slot.problem = None;
+                }
+                Ok(())
+            }
+            Err(AiError::Auth) => {
+                let (keys, stored) = (Arc::clone(&self.keys), account);
+                if let Err(err) = keychain(move || keys.delete(&stored)).await {
+                    eprintln!("torroworkplace: cannot remove an ended sign-in from the keychain: {err}");
+                }
+                if let Some(slot) = self.slots.write().await.iter_mut().find(|slot| slot.account.id == id) {
+                    slot.key = None;
+                    slot.problem =
+                        Some(trf("Sign in again: {provider} ended the sign-in", &[("provider", &provider.name())]));
+                }
+                Err(AiError::Auth)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// `POST <token endpoint>` with `grant_type=refresh_token` ([`oauth::refresh_form`]): the renewed tokens. No error
+    /// repeats a token ([`oauth::token_error`]).
+    async fn refresh(&self, sign_in: &oauth::SignIn, tokens: &oauth::TokenSet) -> Result<oauth::TokenSet, AiError> {
+        let response = self
+            .http()?
+            .post(sign_in.token_url)
+            .form(&oauth::refresh_form(sign_in, tokens))
+            .send()
+            .await
+            .map_err(|err| transport_error(&err))?;
+        let status = response.status().as_u16();
+        let body = response.bytes().await.map_err(|err| transport_error(&err))?;
+        if !(200..300).contains(&status) {
+            return Err(oauth::token_error(status, &body));
+        }
+        oauth::read_tokens(sign_in, &body, unix_now(), &tokens.client_id, Some(tokens), None)
+    }
+
+    /// Connects the account `provider` was just signed in to with `tokens` (issue #324,
+    /// `super::sign_in::SignIns`): checks them with the provider by listing the plan's models, then keeps them in the
+    /// keychain and the account `ai:<provider>@<host>` in `accounts.json`, as [`AiAccounts::connect`] does with a key.
+    /// `base` is the API's address (the provider's usual one; a fake server in tests). Connecting turns on no model.
+    pub(crate) async fn connect_signed_in(
+        &self,
+        provider: AiProvider,
+        base: &str,
+        tokens: oauth::TokenSet,
+    ) -> Result<AccountInfo, AiError> {
+        self.load().await.map_err(AiError::Format)?;
+        if !ai::key_may_travel(base) {
+            return Err(AiError::Invalid(
+                tr("An API key is only sent over https or to this computer. Use an https address.").into(),
+            ));
+        }
+        let client = AiClient::new(self.http()?.clone(), provider, base, Some(tokens.access_token.clone()), None);
+        client.check().await?;
+        let mut account = Account::ai(provider, base);
+        account.login_name = tokens.email.clone();
+        let secret = tokens.to_secret()?;
+        self.store(&account, Some(&secret)).await.map_err(AiError::Format)?;
+        let slot = Slot { account, key: Some(secret), checked: Some(Utc::now()), problem: None, models: None };
+        let info = slot.info();
+        let mut slots = self.slots.write().await;
+        match slots.iter_mut().find(|held| held.account.id == slot.account.id) {
+            Some(held) => *held = slot,
+            None => slots.push(slot),
+        }
+        Ok(info)
+    }
+
+    /// Revokes the refresh token of the signed-in account `id` with its provider (RFC 7009), before it is removed:
+    /// the sign-in then ends there too. `false` when that could not be confirmed (no network, an error): the person
+    /// can still end it in the provider's settings. `true` for an account that signs in with no browser.
+    async fn revoke(&self, id: &str) -> bool {
+        let Some(tokens) = self.tokens_of(id).await else { return true };
+        let Some(provider) = self.server(id).await.map(|(provider, _)| provider) else { return true };
+        let Some(revoke_url) = self.sign_in_of(provider).and_then(|sign_in| sign_in.revoke_url) else { return true };
+        let Ok(http) = self.http() else { return false };
+        match http.post(revoke_url).form(&oauth::revoke_form(&tokens)).send().await {
+            Ok(response) => response.status().is_success(),
+            Err(_) => false,
+        }
     }
 
     /// One call to the decision model of the account `id` (task E12.6, `torro_core::ai::systemone`).
@@ -1283,6 +1460,13 @@ impl AiAccounts {
                 .map(str::to_string)
                 .ok_or_else(|| AiError::Invalid(tr("Enter the address of the server.").into()))?,
         };
+        // Signed in to with a browser (issue #324): its tokens come from `accounts.start_ai_sign_in`, never a key.
+        if provider.sign_in().is_some() {
+            return Err(AiError::Invalid(trf(
+                "{provider} is signed in to with a browser. Choose \"Continue with {provider}\".",
+                &[("provider", &provider.name())],
+            )));
+        }
         let key = Some(Secret::new(key.expose().trim())).filter(|key| !key.is_blank());
         if key.is_none() && provider.needs_key() {
             let needs =
@@ -1573,6 +1757,10 @@ impl AiAccounts {
     pub async fn remove(&self, id: &str) -> Result<(), String> {
         let account = self.slots.read().await.iter().find(|slot| slot.account.id == id).map(|s| s.account.clone());
         let Some(account) = account else { return Err(format!("no account {id:?}")) };
+        // Signed in with a browser (issue #324): end the sign-in at the provider first. The tokens go here either way.
+        if !self.revoke(id).await {
+            eprintln!("torroworkplace: the provider did not confirm the end of the sign-in of {id}");
+        }
         let (keys, path) = (Arc::clone(&self.keys), self.accounts_file.clone());
         keychain(move || {
             keys.delete(&account)?;

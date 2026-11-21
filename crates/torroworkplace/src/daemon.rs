@@ -1247,6 +1247,10 @@ fn describe(request: &Request) -> String {
         Request::ImportTorroMailAccount { .. } => "import torromail account".into(),
         // Never the address or the key (task KI.1a).
         Request::ConnectAi { .. } | Request::ConnectLocalAi { .. } => "connect ai".into(),
+        // Never the flow or a token (issue #324).
+        Request::StartAiSignIn { .. } => "start ai sign-in".into(),
+        Request::CheckAiSignIn { .. } => "check ai sign-in".into(),
+        Request::CancelAiSignIn { .. } => "cancel ai sign-in".into(),
         // Never a topic: on a public server its name is a password (task E5.12).
         Request::ConnectNtfy { .. } => "connect ntfy".into(),
         Request::SetNtfyLogin { .. } => "set ntfy login".into(),

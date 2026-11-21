@@ -1469,6 +1469,9 @@ impl PimService {
             // No collection: AI accounts have none (task KI.1a).
             Request::ConnectAi { .. }
             | Request::ConnectLocalAi { .. }
+            | Request::StartAiSignIn { .. }
+            | Request::CheckAiSignIn { .. }
+            | Request::CancelAiSignIn { .. }
             | Request::AiModels { .. }
             | Request::SetModelEnabled { .. }
             | Request::FindAiServers => return None,

@@ -559,6 +559,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::TorroMailAccounts | Request::ImportTorroMailAccount { .. } => Vec::new(),
         // AI accounts (task KI.1a): never the address typed nor the key; finding names nothing.
         Request::ConnectAi { .. } | Request::ConnectLocalAi { .. } | Request::FindAiServers => Vec::new(),
+        // Signing in with a browser (issue #324): never the flow, the address or a token.
+        Request::StartAiSignIn { .. } | Request::CheckAiSignIn { .. } | Request::CancelAiSignIn { .. } => Vec::new(),
         // ntfy (task E5.12): never the address, a topic or the login; a topic's account only.
         Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } => Vec::new(),
         Request::SetNtfyTopic { account: name, .. } => vec![account(name)],

@@ -20,10 +20,14 @@
 //! server's words that could repeat it ([`openai::error_of`]).
 //!
 //! Issue #325 (task MW.7): [`pull`] is the wire format of downloading a model into Ollama.
+//!
+//! Issue #324: some providers are signed in to with a browser instead of an API key ([`AiProvider::sign_in`],
+//! [`oauth`]); ChatGPT is the first. Their tokens are the account's one secret like a key.
 
 pub mod anthropic;
 pub mod decide_chat;
 pub mod hardware;
+pub mod oauth;
 pub mod openai;
 pub mod pull;
 pub mod responses;
@@ -73,6 +77,12 @@ pub enum AiProvider {
     /// OpenAI's Responses API (task W.3). Written `openai`.
     #[serde(rename = "openai")]
     OpenAi,
+    /// OpenAI through the person's ChatGPT plan (issue #324, "Sign in with ChatGPT"): signed in to with a browser
+    /// ([`oauth::CHATGPT`]) instead of an API key, then the Responses API at `https://api.openai.com/v1` with the
+    /// plan's rules ([`responses::plan_body`]). The usage counts against the plan; the person sets the limit for
+    /// the suite in ChatGPT. Written `chatgpt`.
+    #[serde(rename = "chatgpt")]
+    ChatGpt,
     /// Google Gemini through its OpenAI-compatible endpoint.
     Gemini,
     /// xAI, the Grok models (issue #838): chat over its OpenAI-compatible API and Grok Voice as a live
@@ -181,7 +191,7 @@ impl AiProvider {
     /// Every provider in the order the suite lists them (Open First): this computer, open models in
     /// the cloud, the providers, those run from China, Jev (it only sorts mail, issue #323), and any
     /// other server last.
-    pub const ALL: [AiProvider; 17] = [
+    pub const ALL: [AiProvider; 18] = [
         AiProvider::Ollama,
         AiProvider::LmStudio,
         AiProvider::Strata,
@@ -189,6 +199,7 @@ impl AiProvider {
         AiProvider::OllamaCloud,
         AiProvider::Anthropic,
         AiProvider::OpenAi,
+        AiProvider::ChatGpt,
         AiProvider::Gemini,
         AiProvider::Xai,
         AiProvider::Mistral,
@@ -222,6 +233,26 @@ impl AiProvider {
         AiProvider::Jev,
     ];
 
+    /// The providers signed in to with a browser instead of an API key (issue #324, [`AiProvider::sign_in`]), in
+    /// the order of [`AiProvider::ALL`]. Not in [`AiProvider::CLOUD`]: they take no key.
+    pub const SIGN_IN: [AiProvider; 1] = [AiProvider::ChatGpt];
+
+    /// How the provider is signed in to with a browser (issue #324): its endpoints, scopes and client id
+    /// ([`oauth::SignIn`]); `None` for a provider with an API key or none. The one place a further provider's
+    /// sign-in is added.
+    pub fn sign_in(self) -> Option<&'static oauth::SignIn> {
+        match self {
+            AiProvider::ChatGpt => Some(&oauth::CHATGPT),
+            _ => None,
+        }
+    }
+
+    /// The provider cannot be used without a secret: an API key ([`AiProvider::needs_key`]) or the tokens of a
+    /// sign-in ([`AiProvider::sign_in`]).
+    pub fn needs_secret(self) -> bool {
+        self.needs_key() || self.sign_in().is_some()
+    }
+
     /// The product's name, not translated: `Ollama`, `LM Studio`, `OpenRouter`; the protocol's name
     /// `OpenAI-compatible` for any other server.
     pub fn name(self) -> &'static str {
@@ -234,6 +265,7 @@ impl AiProvider {
             AiProvider::OpenAiCompatible => "OpenAI-compatible",
             AiProvider::Anthropic => "Anthropic",
             AiProvider::OpenAi => "OpenAI",
+            AiProvider::ChatGpt => "ChatGPT",
             AiProvider::Gemini => "Google Gemini",
             AiProvider::Xai => "xAI",
             AiProvider::Mistral => "Mistral",
@@ -258,6 +290,7 @@ impl AiProvider {
             AiProvider::OpenAiCompatible => "openai_compatible",
             AiProvider::Anthropic => "anthropic",
             AiProvider::OpenAi => "openai",
+            AiProvider::ChatGpt => "chatgpt",
             AiProvider::Gemini => "gemini",
             AiProvider::Xai => "xai",
             AiProvider::Mistral => "mistral",
@@ -287,6 +320,8 @@ impl AiProvider {
             // The addresses of the OpenAI-compatible APIs, checked against the providers' own
             // documentation on 2026-10-15 (task W.3). Outside China the international ones.
             AiProvider::OpenAi => Some("https://api.openai.com/v1"),
+            // The same API, reached with the tokens of the plan (issue #324, checked on 2026-11-21).
+            AiProvider::ChatGpt => Some("https://api.openai.com/v1"),
             AiProvider::Gemini => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
             // Checked against xAI's documentation on 2026-11-20 (issue #838).
             AiProvider::Xai => Some("https://api.x.ai/v1"),
@@ -338,7 +373,11 @@ impl AiProvider {
             AiProvider::MiniMax => Some("https://platform.minimax.io/user-center/basic-information/interface-key"),
             // The page "API Keys" of TypeSafe's console (issue #323, confirmed on 2026-10-31).
             AiProvider::Jev => Some("https://console.typesafe.ai/keys"),
-            AiProvider::Ollama | AiProvider::LmStudio | AiProvider::Strata | AiProvider::OpenAiCompatible => None,
+            AiProvider::Ollama
+            | AiProvider::LmStudio
+            | AiProvider::Strata
+            | AiProvider::OpenAiCompatible
+            | AiProvider::ChatGpt => None,
         }
     }
 
@@ -352,6 +391,7 @@ impl AiProvider {
             | AiProvider::OllamaCloud
             | AiProvider::Anthropic
             | AiProvider::OpenAi
+            | AiProvider::ChatGpt
             | AiProvider::Gemini
             | AiProvider::Xai
             | AiProvider::Jev => Seat::Us,
