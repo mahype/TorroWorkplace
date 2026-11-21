@@ -42,6 +42,14 @@ impl Host for FakeHost {
         Box::pin(async { Response::Error { code: "not-found".into(), message: "none".into() } })
     }
 
+    /// A bot has a client of its own; a run for a caller that is not there (a delegation) has none.
+    fn client_of(&self, actor: &Actor) -> Option<ClientInfo> {
+        match actor {
+            Actor::Assistant | Actor::Bot(_) => self.client(),
+            Actor::Delegated(_) => None,
+        }
+    }
+
     fn lend(&self, engine: &str, without: &[Area]) -> Option<crate::clients::LentKey> {
         self.lent.lock().expect("lock").push(without.to_vec());
         let client = self.client()?;
@@ -239,6 +247,40 @@ async fn claude_code_is_an_engine_only_when_installed_and_the_assistant_has_its_
     assert!(!missing.assistant.engines(&ai).await.contains(&claude), "not installed, not offered");
     let refused = missing.assistant.refusal(&ai, &send_to_claude()).await;
     assert!(matches!(refused, Some(Response::Error { ref code, .. }) if code == "not-found"), "{refused:?}");
+}
+
+/// Issue #753: a client's chat with a bot, or its question, runs the bot's agent with the delegation, so a caller
+/// that is not there is refused now with what the run would answer, not only after an approval.
+#[tokio::test]
+async fn a_bots_agent_is_checked_with_the_delegation_for_a_client() {
+    let setup = set_up(&[], "", Duration::from_secs(5), true).await;
+    let ai = super::super::tests::no_ai(setup.dir.path());
+    let save = Request::SaveBot {
+        id: None,
+        name: "Coder".into(),
+        description: String::new(),
+        avatar: None,
+        engine: "claude-code".into(),
+        model: None,
+        personality: String::new(),
+        instructions: String::new(),
+        skills: Vec::new(),
+    };
+    let bot = match crate::bots::answer(&setup.assistant, &setup.host.clients, save, true).await {
+        Response::Bot { bot } => bot,
+        other => panic!("expected a bot, got {other:?}"),
+    };
+    let mut to_bot = send_to_claude();
+    if let Request::SendMessage { bot: named, .. } = &mut to_bot {
+        *named = Some(bot.id.clone());
+    }
+    let ask = Request::AskBot { bot: bot.id.clone(), text: "Hi".into(), conversation: None };
+    for request in [&to_bot, &ask] {
+        assert_eq!(setup.assistant.refusal_from(&ai, request, None).await, None, "the person's own chat: {request:?}");
+        assert_eq!(setup.assistant.refusal(&ai, request).await, None, "{request:?}");
+        let refused = setup.assistant.refusal_from(&ai, request, Some("0a0b0c0d")).await;
+        assert!(matches!(refused, Some(Response::Error { ref code, .. }) if code == "not-found"), "{refused:?}");
+    }
 }
 
 /// Task C.18, issue #219: the product does not offer agents. The command is where `locate` looks

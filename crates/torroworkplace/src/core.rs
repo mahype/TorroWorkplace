@@ -4778,10 +4778,10 @@ impl Core {
     /// What the assistant or the bots would refuse `request` with anyway (tasks C.1 and B.1):
     /// limits, an unknown conversation, engine or bot, a conversation that still answers or is of
     /// another bot, a bot's window, too many bots. `None` for every other request.
-    async fn assistant_refusal(&self, request: &Request) -> Option<Response> {
+    async fn assistant_refusal(&self, request: &Request, from: Option<&str>) -> Option<Response> {
         match (request.operation().area(), request) {
             (Area::Assistant, _) | (Area::Bots, Request::AskBot { .. }) => {
-                match self.assistant.refusal(&self.ai, request).await {
+                match self.assistant.refusal_from(&self.ai, request, from).await {
                     Some(refused) => Some(refused),
                     None => self.models_off_refusal(request).await,
                 }
@@ -5233,7 +5233,7 @@ impl Core {
         // What the assistant would refuse anyway is nothing to approve (task C.1): limits, an
         // unknown conversation or engine, a conversation that still answers, a bot's window; nor
         // what the bots would (task B.1): an unknown bot, too many bots.
-        if let Some(refused) = self.assistant_refusal(&request).await {
+        if let Some(refused) = self.assistant_refusal(&request, Some(&id)).await {
             return Ok(refused);
         }
         // A note the client does not see, or a full memory (task C.10): nothing to approve either.
