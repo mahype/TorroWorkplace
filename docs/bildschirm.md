@@ -24,8 +24,8 @@ beobachtet.
   Werkzeug, kein Agent mit geliehenem Schlüssel.
 - **Heute schon möglich:** Wer will, kann `cua-driver mcp` als eigenen MCP-Server eintragen (#302,
   [erweiterungen.md](erweiterungen.md#mcp-server-302)). Dann fehlen alle Regeln dieses Konzepts: keine Karte je Aktion,
-  keine gesperrten Fenster und Tasten, Bildschirminhalt nur als Server-Antwort `untrusted`, Nutzungsdaten nur, wenn
-  die Person die Variable selbst setzt. Dieses Konzept macht daraus ein **eingebautes Werkzeug** wie das Terminal.
+  keine gesperrten Fenster und Tasten, Bildschirminhalt nur als Server-Antwort `untrusted`, und der Treiber hätte
+  Netz (Abschnitt „Kein Netzverkehr“). Dieses Konzept macht daraus ein **eingebautes Werkzeug** wie das Terminal.
 
 ## Der Treiber `cua-driver`
 
@@ -49,6 +49,9 @@ geschrieben und spricht MCP über stdio; er arbeitet mit jedem Modell, das Werkz
   Manifest erlaubt), `unrestricted` (nur mit `--dangerously-bypass-approvals`). Der Modus gilt ab dem Start.
 - **Keine eigenen Sperren** für Tasten, Text oder Fenster: Die Sperren bei Hermes stehen in Hermes, nicht im Treiber.
   Torro muss sie selbst prüfen.
+- **Version:** Auf dem Testrechner ist 0.34.0 installiert; aktuell ist **0.56.5** (Stand `trycua/cua` HEAD
+  `20ddc59`, 21. November 2026). Alles, was unten über Werkzeuge und Verhalten aus dem lokalen Aufruf stammt, gilt für
+  0.34.0 und ist für die aktuelle Version neu zu prüfen.
 - **Werkzeuge:** Version 0.34.0 meldet 62 Werkzeuge (`cua-driver list-tools`, 21. November 2026), darunter weit mehr
   als Sehen und Bedienen: Programme beenden (`kill_app`) und starten (`launch_app`), Zwischenablage lesen und
   schreiben, Konfiguration ändern (`set_config`), Erweiterungen und ffmpeg installieren, Aufzeichnungen abspielen
@@ -63,32 +66,51 @@ Sigstore-Signaturen, legt den Treiber unter `~/.cua-driver/packages/` ab und ver
 Update läuft nie still, nur über `cua-driver update --apply`; unter Arch nimmt `pacman` das Update, wenn das Paket
 von dort kommt.
 
-Empfehlung:
+**Dieser Weg verletzt die harte Anforderung „Kein Netzverkehr“** (eigener Abschnitt unten): Das Skript legt eine
+Installations-Kennung an und meldet Installation und Version an den Hersteller, bevor Torro beteiligt ist. Auf dem
+Testrechner ist das geschehen (`registration_recorded`, `current_release_recorded`). Torro empfiehlt das Skript darum
+nicht und verlinkt es nicht.
 
-- **Torro installiert den Treiber nicht selbst** (erste Stufe). Die Seite in der Steuerzentrale prüft, ob er da ist,
-  nennt Version, Bedienhilfen-Bus und Stand der Nutzungsdaten und verlinkt die Anleitung des Herstellers, wie der
-  Katalog bei fehlendem `npx` (#302). Ein `curl … | bash` aus der Suite heraus wäre genau das Muster, das das
-  Terminal als gefährlich einstuft.
-- **Mindestversion** im Kern. Torro prüft beim Start die Werkzeugliste gegen bekannte Fingerabdrücke wie bei
-  MCP-Servern (#302): Ändert ein Update Name, Beschreibung oder Schema eines genutzten Werkzeugs, bleibt das Werkzeug
-  aus, bis Torro dafür gebaut ist. Updates macht die Person selbst.
-- **Später** (offene Frage): Torro lädt eine festgelegte Version selbst und prüft die Sigstore-Signatur, unter macOS
-  zusätzlich die Signatur der App `com.trycua.driver` wie Hermes.
+Zu prüfen sind zwei Wege ohne Meldung (Folge-Issue 1, offene Frage 17):
+
+- **Eigener Build aus einem Fork:** Der Code für Nutzungsdaten ist fest eingebaut; einen Schalter beim Bauen
+  (Cargo-Feature) gibt es nicht (Abschnitt „Kein Netzverkehr“). Ein eigener Build entfernt ihn also nur über einen
+  Fork (MIT) mit einem Patch, der `telemetry.rs`, die Update-Abfrage, die Installationsmeldung und die Downloads
+  (Erweiterungen, ffmpeg, Skills) herausnimmt, möglichst samt der HTTP-Bibliothek `ureq`. Torro zöge den Patch bei
+  jeder neuen Version nach; der Treiber erscheint oft (0.34.0 bis 0.56.5 in wenigen Wochen).
+- **Fertiges Release ohne Skript:** das Archiv einer festgelegten Version von GitHub laden, Prüfsumme und
+  Sigstore-Signatur selbst prüfen, entpacken. Das Herunterladen ist der einzige Kontakt nach außen und geschieht wie
+  bei jedem anderen Programm. Das Programm enthält dann weiter den Sendecode; es meldet beim ersten Start
+  `cua_driver_installation_registered`. **Die Netzsperre muss darum schon beim allerersten Start greifen**, auch für
+  `--version`, `list-tools` und `telemetry status`.
+
+Weiter gilt:
+
+- **Torro ruft nie ein Installationsskript aus dem Netz auf.** Ein `curl … | bash` aus der Suite heraus wäre genau
+  das Muster, das das Terminal als gefährlich einstuft. Die Seite in der Steuerzentrale prüft, ob ein Treiber da ist,
+  und nennt Version, Herkunft (eigener Build oder Release), Bedienhilfen-Bus und den Stand der Netzsperre.
+- **Feste Version** im Kern. Torro prüft beim Start die Werkzeugliste gegen bekannte Fingerabdrücke wie bei
+  MCP-Servern (#302): Ändert eine andere Version Name, Beschreibung oder Schema eines genutzten Werkzeugs, bleibt das
+  Werkzeug aus, bis Torro dafür gebaut ist. Updates prüft und holt nie der Treiber selbst.
+- **macOS:** zusätzlich die Signatur der App prüfen, wie Hermes; bei einem eigenen Build ist es Torros Signatur.
 
 ### Wie er angebunden wird
 
 Der Kern startet `cua-driver mcp` als Kindprozess und ist sein MCP-Client, mit denselben Regeln wie für MCP-Server
 (#302): leere Umgebung mit wenigen Grundvariablen, Prozessgruppe bzw. Job-Objekt, Start bei Bedarf, Ende nach 10
-Minuten ohne Aufruf, stderr nur im Speicher. Dazu setzt der Kern bei jedem Start:
+Minuten ohne Aufruf, stderr nur im Speicher. Dazu kommt:
 
-- `CUA_DRIVER_RS_TELEMETRY_ENABLED=false`, `DO_NOT_TRACK=1`, `CUA_TELEMETRY=0` (Nutzungsdaten aus),
-- `CUA_DRIVER_RS_UPDATE_CHECK=false` (keine Abfrage bei GitHub; davon unabhängig),
+- **ohne Netz** (Abschnitt „Kein Netzverkehr“): Der Kindprozess startet so, dass er keine Verbindung nach außen
+  aufbauen kann; geht das nicht, startet er gar nicht;
+- zusätzlich `CUA_DRIVER_RS_TELEMETRY_ENABLED=false`, `DO_NOT_TRACK=1`, `CUA_TELEMETRY=0` und
+  `CUA_DRIVER_RS_UPDATE_CHECK=false`, damit der Treiber gar nicht erst versucht zu senden;
 - den Rechte-Modus `bounded` mit einem Manifest des Kerns, wenn der Test zeigt, dass das trägt; sonst `standard`
   und alle Prüfungen nur im Kern.
 
 Unter Linux und Windows ist `cua-driver mcp` selbst der Treiber und endet mit seiner Standardeingabe. Unter macOS
 leitet er an den Dienst in `CuaDriver.app` weiter, weil nur diese App die Rechte für Bedienhilfen und Bildschirmaufnahme
-hat. Den HTTP-Weg des Treibers (`CUA_DRIVER_RS_MCP_HTTP_PORT`) nutzt Torro nicht.
+hat; diesen Dienst startet macOS, nicht Torro (Folgen im Abschnitt „Kein Netzverkehr“). Den HTTP-Weg des Treibers
+(`CUA_DRIVER_RS_MCP_HTTP_PORT`) nutzt Torro nicht.
 
 ## Zwei Modi zu bedienen: Hintergrund und Vordergrund
 
@@ -189,10 +211,11 @@ abgeschalteten Nutzungsdaten (`DO_NOT_TRACK=1`, `CUA_DRIVER_RS_TELEMETRY_ENABLED
 
 | Prüfung | Ergebnis |
 |---|---|
-| `cua-driver --version` | 0.34.0 (x86_64-linux), installiert über das Skript des Herstellers |
+| `cua-driver --version` | 0.34.0 (x86_64-linux), installiert über das Skript des Herstellers; aktuell wäre 0.56.5 |
 | `cua-driver doctor` | Wayland mit XWayland (`WAYLAND_DISPLAY=wayland-1`, `DISPLAY=:0`), AT-SPI-Bus über den Session-Bus erreichbar; **Warnung:** über X11 kommen keine Fenster zurück |
 | `cua-driver list-tools` | 62 Werkzeuge (siehe oben) |
-| `cua-driver telemetry status --json` | aus, aber nur durch `DO_NOT_TRACK` dieses Aufrufs; Installations-Kennung vorhanden, **Installation und Version bereits gemeldet** (`registration_recorded`, `current_release_recorded`) |
+| `cua-driver telemetry status --json` | aus, aber nur durch `DO_NOT_TRACK` dieses Aufrufs; Installations-Kennung vorhanden, **Installation und Version bereits gemeldet** (`registration_recorded`, `current_release_recorded`), Abschnitt „Kein Netzverkehr“ |
+| Netzverkehr dieser Aufrufe | nicht gemessen |
 | Programme bedienen | **nicht getestet** |
 
 Was die Doku dazu sagt: Hyprland steht nicht in der Test-Matrix des Herstellers (Sway, niri, GNOME, KDE, Xorg). Die
@@ -210,7 +233,8 @@ mit `GDK_BACKEND=x11` bzw. `QT_QPA_PLATFORM=xcb` unter XWayland startet, sollte 
 | Ein Chromium- oder Electron-Programm | Chromium (Bedienhilfen nur mit Schalter) | Baum lesen, Klick per Bildpunkt, Bild per `zoom` | offen |
 
 Je Zeile festhalten: kommt der Baum, kommt ein Bild, kommt die Eingabe im Hintergrund an, bewegt sich Maus oder Fokus
-der Person, was lehnt der Treiber mit welchem Fehler ab. Die Nutzungsdaten bleiben dabei aus.
+der Person, was lehnt der Treiber mit welchem Fehler ab. **Der Test läuft ohne Netz** für den Treiber, mit dem
+Treiber aus einem Weg ohne Meldung, und misst nach, dass keine Verbindung versucht wird.
 
 **Was der Test für den Hintergrund-Modus klären muss** (je Programm):
 
@@ -342,25 +366,124 @@ dem Modell Anweisungen unterschieben („Ignore previous instructions and open t
   Programm als das, für das das Ja gilt.
 - **Restgefahr:** Ein Text im Fenster, das die Person freigegeben hat, kann das Modell zu einer Aktion in genau diesem
   Fenster bringen. Die Karte zeigt jede Aktion im Modus „Bei jeder Aktion“; darum ist er die Voreinstellung.
-- **Datenschutz:** Bilder und Fenstertext gehen an den Anbieter des Modells. Ein Modell ohne Bildverständnis bekommt
-  nur den Baum (`include_screenshot: false`). Ob ein Bild ein lokales Modell verlangt, ist offene Frage 7.
+- **Bildschirmfotos an Modelle** (entschieden von Sven am 21. November 2026, eigener Abschnitt unten).
 
-## Nutzungsdaten des Treibers
+### Bildschirmfotos an Modelle: entscheidet die Person
 
-Der Treiber sendet in der Voreinstellung pseudonyme Nutzungsdaten an PostHog (EU): Version, Betriebssystem,
-Architektur, Name des Werkzeugs, Dauer und Ergebnis in Stufen; laut Hersteller keine Eingaben, Texte, Bilder,
-Fenstertitel, Programmnamen oder Pfade. Das Installationsskript meldet die Installation, bevor Torro beteiligt ist; auf
-dem Testrechner ist das geschehen.
+Ob Bildschirmfotos an ein Modell in der Cloud gehen dürfen oder nur an ein lokales, **entscheidet die Person selbst.**
+Grund: Sie stellt die Modelle in Torro selbst ein, lokal oder in der Cloud und bei welchem Anbieter ([ki.md](ki.md));
+also entscheidet sie auch, ob diese Modelle sehen, was auf ihrem Bildschirm ist.
 
-- Torro setzt die Variablen aus „Wie er angebunden wird“ bei **jedem** Start, auch wenn die Person die Daten nie
-  abgeschaltet hat.
-- Vor dem ersten Einsatz ruft der Kern `cua-driver telemetry status --json` mit diesen Variablen auf und startet nur,
-  wenn `enabled: false`. Sonst ist das Werkzeug aus, mit Meldung.
-- Die Seite in der Steuerzentrale sagt, dass die Installation bereits gemeldet wurde, und nennt die Befehle, mit denen
-  die Person das dauerhaft abschaltet und die Kennung löscht (`cua-driver telemetry disable`, `cua-driver telemetry
-  reset-id`). Torro ändert die Einstellungen des Treibers nicht selbst (offene Frage 6).
-- Die Erweiterung `cua-perception` (Bilderkennung, zum Teil AGPL, vom Hersteller eingefroren) und das Aufzeichnen
-  bleiben aus.
+- **Wo:** an der Modellwahl, auf der Kontoseite in Steuerzentrale › AI, bei jedem Modell neben dem Schalter an/aus:
+  „May see screenshots“. Er erscheint nur bei Modellen, die Bilder verstehen. Im Chat zeigt die Werkzeugzeile, ob das
+  gewählte Modell Bilder bekommt, mit einem Verweis auf die Einstellung.
+- **Voreinstellung:** an für Modelle, die auf diesem Rechner rechnen (Loopback, wie „lokal“ in [ki.md](ki.md),
+  `place_of`), **aus für alle Modelle anderswo**, auch im eigenen Netz. Das folgt Open First.
+- **Wirkung:** Darf das Modell keine Bilder sehen, holt der Kern nur den Baum (`include_screenshot: false`) und bietet
+  `tools.screen_zoom` nicht an; Klicks auf Bildpunkte entfallen damit. Wechselt die Person mitten in der Unterhaltung
+  das Modell (`assistant.choose_model`), gilt die Einstellung des neuen Modells ab dem nächsten Schritt.
+- **Wer schaltet:** Anschalten für ein Modell anderswo nur ein Mensch, wie das Anschalten des Modells selbst
+  (`ai.set_model_enabled`, Grundsatz 4 in [ki.md](ki.md)); ausschalten darf jeder Client mit Rechten, mit Freigabe.
+- **Fenstertext** (der Baum) geht wie jeder andere Inhalt an das gewählte Modell, nach Grundsatz 4 in
+  [ki.md](ki.md) (keine Datenregel, die still etwas zurückhält). Ob der Schalter auch ihn umfassen soll, ist offene
+  Frage 7.
+- **Verhältnis zu #664:** Seit #664 gibt es keine Datenregeln je Quelle mehr. Dieser Schalter ist keine solche Regel,
+  sondern eine Eigenschaft des Modells, die die Person bei der Modellwahl setzt; [ki.md](ki.md) bekommt ihn im
+  Bau-Issue dazu.
+
+## Kein Netzverkehr (harte Anforderung)
+
+**Entschieden von Sven am 21. November 2026:** Der Treiber erzeugt **keinerlei Netzverkehr nach außen**. Keine
+Nutzungsdaten, auch keine anonymen oder pseudonymen; keine Versionsangaben, keine Update-Abfragen, keine
+Installationsmeldungen, keine Downloads. Das Abschalten der Nutzungsdaten genügt nicht; Torro stellt sicher, dass der
+Treiber gar nicht nach außen verbinden kann. Kann Torro das auf einer Plattform nicht sicherstellen, gibt es dort kein
+Bildschirm-Werkzeug.
+
+### Was der Treiber sonst senden würde
+
+Nach den Quellen von `trycua/cua` (HEAD `20ddc59`, Recherche von Sven am 21. November 2026):
+
+| Was | Wohin | Wann | Schalter |
+|---|---|---|---|
+| Nutzungsdaten (`libs/cua-driver/rust/crates/cua-driver/src/telemetry.rs`): Version, Betriebssystem, Architektur, Werkzeugname, Dauer und Ergebnis in Stufen, Installations-Kennung | `eu.i.posthog.com/capture/`, mit fest eingebautem öffentlichem Projektschlüssel | in der Voreinstellung bei Werkzeugaufrufen | `DO_NOT_TRACK`, `CUA_DRIVER_RS_TELEMETRY_ENABLED=false`, `CUA_TELEMETRY_ENABLED=false`, `CUA_TELEMETRY=0`, `config.toml`, `cua-driver telemetry disable`; **kein Cargo-Feature**, `ureq` ist feste Abhängigkeit |
+| Installationsmeldung | `eu.i.posthog.com/capture/` (`cua_driver_installation_registered`) | beim ersten Start des Treibers | wie oben |
+| Ereignisse der Installationsskripte (`install.sh`, `install.ps1`) | `eu.i.posthog.com/batch/` | beim Installieren, vor jedem Start | keine in Torros Hand |
+| Update-Abfrage (`version_check.rs`, `release_source.rs`) | `cua.ai/driver/_install-rust.sh`, `api.github.com`, `releases.atom` | `mcp`, `serve`, `doctor` beim Start; `check_for_update`; unabhängig vom Schalter für Nutzungsdaten | `CUA_DRIVER_RS_UPDATE_CHECK=false` bzw. `update_check_enabled = false` |
+| Downloads | GitHub und andere | `update --apply`, `install_extension`, `install_ffmpeg`, `skills install` | Werkzeuge nicht anbieten |
+
+Ob die Variable `CUA_TELEMETRY_FORBID_NETWORK` im Treiber wirkt, ist unklar. Laut Hersteller enthalten die
+Nutzungsdaten keine Eingaben, Texte, Bilder, Fenstertitel, Programmnamen oder Pfade. Das ändert nichts: Auch
+Metadaten gehen nicht hinaus. **Folgerung: Die Schalter allein reichen nicht.** Sie sind Code des Herstellers, der
+sich mit jeder Version ändern kann, und die Meldungen der Skripte erreichen sie gar nicht.
+
+### Wie Torro das sicherstellt
+
+Drei Schichten; die erste ist die Sperre, die anderen beiden verhindern, dass es überhaupt zu einem Versuch kommt.
+
+1. **Netzsperre für den Kindprozess** (Pflicht). Erlaubt bleiben nur lokale Unix-Sockets (Bedienhilfen-Bus über
+   D-Bus, Wayland, X11) und die Pipes der Standard-Ein- und -Ausgabe zum Kern.
+2. **Kein Code, der sendet** (nur mit einem Fork): Nutzungsdaten, Update-Abfrage, Installationsmeldung und Downloads
+   sind entfernt.
+3. **Schalter des Treibers aus:** alle Variablen aus der Tabelle bei jedem Start, auch für kurze Aufrufe wie
+   `telemetry status` und `list-tools`. Werkzeuge, die laden oder senden würden (`check_for_update`,
+   `install_extension`, `install_ffmpeg`), bietet Torro nie an.
+
+### Netzsperre unter Linux: Machbarkeit
+
+**Wichtig für den Code der Suite:** Eine Sperre, die der Kern im Kindprozess vor dem Start setzt
+(`CommandExt::pre_exec`), ist in Rust `unsafe` und damit nach `CLAUDE.md` außerhalb von `torro-appkit` verboten.
+Machbar ohne `unsafe` ist ein **kleines Startprogramm** der Suite (etwa ein Unterbefehl von `torroworkplace`): Es
+schränkt sich selbst ein und ersetzt sich dann durch den Treiber (`exec`). Die Einschränkung erbt der Treiber und
+alles, was er startet; aufheben kann er sie nicht.
+
+| Weg | Wirkung | Unix-Sockets und Pipes zu Torro | Bewertung |
+|---|---|---|---|
+| **seccomp-Filter** im Startprogramm: `socket()` für `AF_INET`, `AF_INET6`, `AF_PACKET` abgelehnt, dazu `no_new_privs` | kein Internet, auch kein DNS; nichts lässt sich umgehen, ohne den Filter zu brechen | unberührt, auch abstrakte Sockets | **empfohlen**: ohne Zusatzprogramm, ohne User-Namespace, gut zu testen (ein `connect` scheitert mit `EPERM`); Bibliothek etwa `seccompiler` mit sicherer Schnittstelle, Architekturen x86_64 und aarch64 einzeln |
+| **Netzwerk-Namespace** (`unshare -n` bzw. `unshare(CLONE_NEWUSER\|CLONE_NEWNET)` im Startprogramm) | nur Loopback im eigenen Namespace, kein Weg nach draußen | Pfad-Sockets und Pipes gehen; **abstrakte Unix-Sockets nicht** (sie gehören zum Netzwerk-Namespace) | gut, wenn Bedienhilfen-Bus und X11 Pfad-Sockets nutzen (`/run/user/<uid>/at-spi/bus…`, `/tmp/.X11-unix/X0`); braucht User-Namespaces ohne Root (unter Arch an, unter Ubuntu ab 24.04 durch AppArmor eingeschränkt); der Test muss die Bus-Adresse prüfen |
+| **bubblewrap** (`bwrap --unshare-net --bind / /`) | wie Netzwerk-Namespace | wie Netzwerk-Namespace | gut, wenn `bwrap` da ist; zusätzliches Programm; könnte später auch Ordner der Suite ausblenden |
+| **Landlock** (Netzregeln ab Kernel 6.7) | sperrt nur TCP-`connect`/`bind` | unberührt | **nicht genug allein**: UDP und damit DNS-Anfragen bleiben offen, und schon eine DNS-Anfrage ist Metadaten |
+| **systemd-run** mit `IPAddressDeny=any` | Filter über cgroup und BPF | Pipes über `--pipe` | **ungeeignet als Sperre**: im Nutzer-Dienst von systemd braucht der Filter BPF-Rechte, die er meist nicht hat, und fehlt dann nur mit Warnung |
+| **Firejail** (`--net=none`) | eigener Netzwerk-Namespace | wie Netzwerk-Namespace | möglich, aber ein setuid-Programm als zusätzliche Abhängigkeit |
+
+Empfehlung für Linux: **seccomp im Startprogramm**; wenn der Test zeigt, dass alle nötigen Sockets Pfad-Sockets sind,
+zusätzlich ein eigener Netzwerk-Namespace. **Die Grenze bleibt:** Unix-Sockets sind kein Netz und bleiben offen,
+auch Torros `core.sock`. Dass der Treiber als derselbe Nutzer Dateien und Sockets der Suite erreicht, ist die bekannte
+Grenze des Modells (Abschnitt „Ausgangslage“), nicht Teil dieser Anforderung.
+
+### Netzsperre unter Windows und macOS
+
+- **Windows:** eine ausgehende Sperrregel der Windows-Firewall für genau die Programmdatei des Treibers. Sie anzulegen
+  braucht einmal Administratorrechte der Person; Torro prüft vor jedem Start, dass die Regel da und aktiv ist.
+  Alternative: der Treiber in einem AppContainer ohne Netz-Fähigkeit, wenn UI Automation dort geht.
+- **macOS:** Der Dienst in `CuaDriver.app` läuft nicht als Kind von Torro, eine Sperre je Prozess gibt es ohne Hilfe
+  von außen nicht. Möglich wäre ein eigener Build, der die Rechte unter Torros Namen bekommt und als Kind in einer
+  Sandbox (`sandbox-exec` mit `deny network-outbound`) läuft, oder eine Firewall wie Little Snitch bzw. LuLu, deren
+  Regel Torro nicht prüfen kann. **Offen, ob macOS die Anforderung erfüllen kann** (offene Frage 18).
+
+### Wie es prüfbar wird
+
+- **Vor jedem Start** prüft der Kern, dass die Sperre greift: Er startet den Treiber nur über das Startprogramm,
+  und das Startprogramm macht in derselben Sperre vor dem `exec` einen Selbsttest: Ein Socket für `AF_INET` und
+  `AF_INET6` muss sich gar nicht erst anlegen lassen, es geht also kein Paket hinaus. Scheitert der Selbsttest nicht, ist das Werkzeug aus, mit Meldung.
+- Zusätzlich, schon in der Sperre, `cua-driver telemetry status --json` und `get_config`: Nutzungsdaten und Update-Abfrage müssen aus sein.
+  Das ist nur ein Hinweis, keine Sperre.
+- **Die Seite in der Steuerzentrale** zeigt „Network: blocked“ mit dem Weg (Namespace, seccomp, Firewall-Regel) und
+  das Ergebnis des Selbsttests. Fehlt die Sperre, steht dort „Network not blocked: screen control is off“.
+- **Der Treiber startet nie ohne Sperre**, auch nicht für die Anzeige der Version auf dieser Seite.
+- **Im Test unter Hyprland** (Folge-Issue 0) wird einmal nachgemessen: mit und ohne Sperre unter `strace -f -e
+  trace=network` bzw. mit einem Netzmitschnitt, ob der Treiber trotz abgeschalteter Schalter Verbindungen versucht.
+  Bei den lesenden Aufrufen für dieses Konzept (`doctor`, `list-tools`, `telemetry status`, mit allen Schaltern aus)
+  ist das **nicht nachgeprüft** worden.
+
+### Was schon passiert ist
+
+Auf dem Testrechner hat das Installationsskript Installation und Version bereits gemeldet; die Kennung liegt unter
+`~/.cua-driver/.telemetry_id`. Das lässt sich nicht zurücknehmen. Für diesen Rechner: den Treiber aus dem Skript
+entfernen (`cua-driver uninstall --purge` löscht Kennung und lokalen Stand, laut Hersteller), dann über einen der
+beiden Wege ohne Meldung neu aufsetzen. Damit `uninstall` dabei nichts sendet, läuft auch das ohne Netz.
+
+Die Erweiterung `cua-perception` (Bilderkennung, zum Teil AGPL, vom Hersteller eingefroren) und das Aufzeichnen
+bleiben aus.
 
 ## Webseiten über den Browser
 
@@ -411,6 +534,7 @@ Wie beim Terminal:
 | Vorführung im Vordergrund erbitten und beenden | Karte „Show on screen“, Hinweis „Showing in … – Stop“ | `tools.screen_show` · Delete, `tools.screen_show_end` · Write | `tools_screen_show`, `tools_screen_show_end` (für fremde Clients immer abgelehnt) |
 | Aktion oder Vorführung freigeben | Karte im Chat | `approvals.decide_approval` mit `scope` | **Never** (Punkt 3) |
 | Schalter, Modus, gesperrte Programme | Steuerzentrale › MCP servers › Built-in › Screen | `settings.set_setting screen` | **Never** (neuer Punkt 16) |
+| Bildschirmfotos je Modell erlauben | Steuerzentrale › AI › Konto › Modellzeile „May see screenshots“ | `ai.set_model_screenshots` · Admin; anschalten für Modelle anderswo nur App-Schlüssel | `ai_set_model_screenshots` nur fürs Ausschalten (Punkt 16) |
 | Bedienen stoppen | „Stop“ im Chat, Tray „Stop screen control“ | `assistant.cancel` · Write (gibt es) | `assistant_cancel` |
 
 Die MCP-Tools gibt es wie beim Terminal nur der Form halber im Katalog: Torros MCP-Server lehnt sie für jeden fremden
@@ -420,11 +544,13 @@ Client ab. Ob sie dann überhaupt `Mcp::Tool` sein sollen oder `Never` mit neuem
 
 0. **Test unter Hyprland** (`task`, von Hand): der Testplan oben, Ergebnis in dieses Dokument. **Vor allem anderen**;
    fällt er schlecht aus, wird die Reihenfolge neu entschieden.
-1. **Anbindung und Stand:** Requests und Katalog (`tools.screen_*`, `settings.set_setting screen`, Punkt 16 in
-   [api.md](api.md)), Treiber finden, Kindprozess mit Umgebung, Prüfung der Nutzungsdaten und der Werkzeugliste,
-   Seite „Screen“ mit Schalter (aus).
+1. **Anbindung ohne Netz und Stand:** Requests und Katalog (`tools.screen_*`, `settings.set_setting screen`,
+   `ai.set_model_screenshots`, Punkt 16 in [api.md](api.md)), Installationsweg ohne Meldung (geprüftes Release oder
+   Fork), Startprogramm mit Netzsperre und Selbsttest, Kindprozess mit Umgebung, Prüfung der Werkzeugliste, Seite
+   „Screen“ mit Schalter (aus) und Stand der Sperre. Ohne Sperre kein Werkzeug.
 2. **Sehen:** Fenster auflisten, Baum und Bild, Ausschnitt; gesperrte Programme; `untrusted` und
-   `may_have_read_untrusted`; Frage einmal je Unterhaltung und Programm; keine Bilder im Verlauf.
+   `may_have_read_untrusted`; Frage einmal je Unterhaltung und Programm; keine Bilder im Verlauf; Schalter „May see
+   screenshots“ je Modell.
 3. **Bedienen im Hintergrund:** Aktionen mit Karte, `delivery_mode` fest auf `background`, Ablehnen statt
    Vordergrund, eine Unterhaltung zur Zeit, zwei Freigabe-Modi, harte Grenzen und Muster, Prüfung nach dem Ja, Protokoll.
 4. **Stopp und Anzeige:** Tray-Eintrag, Zeiger oder Rahmen am bedienten Fenster.
@@ -436,7 +562,10 @@ Client ab. Ob sie dann überhaupt `Mcp::Tool` sein sollen oder `Never` mit neuem
 ## Empfehlung
 
 `cua-driver` übernehmen und als eingebautes Werkzeug „Screen“ anbinden, nicht selbst bauen und nicht nur als
-fremden MCP-Server. Torro installiert ihn nicht, setzt bei jedem Start Nutzungsdaten und Update-Abfrage aus, bietet
+fremden MCP-Server. **Der Treiber hat nie Netz:** Torro startet ihn nur über ein eigenes Startprogramm mit
+Netzsperre (unter Linux seccomp), prüft die Sperre vor jedem Start und lässt das Werkzeug sonst aus; das
+Installationsskript des Herstellers fällt weg, weil es meldet. Ob dazu ein Fork ohne Sendecode kommt, ist offen.
+Bildschirmfotos bekommt ein Modell nur, wenn die Person es an der Modellwahl erlaubt, ab Werk nur lokale. Torro bietet
 dem Modell nur zwölf Befehle an und hält alle Sperren im Kern: keine Fenster der Suite, keine Passwort-Manager,
 Rechte-Dialoge und Terminals, keine Passwortfelder, keine Super-Tasten. **Standardarbeit ist der Hintergrund-Modus:**
 Maus, Fokus und aktives Fenster bleiben bei der Person, der Kern setzt das bei jedem Aufruf fest und lehnt ab, was im
@@ -449,9 +578,18 @@ allein genug kann, oder ob macOS zuerst kommt.
 
 ## Entscheidungen für Menschen
 
+**Schon entschieden** (Sven, 21. November 2026):
+
+- **Kein Netzverkehr des Treibers**, auch keine Metadaten, Versionen, Update-Abfragen oder Installationsmeldungen;
+  Torro stellt das mit einer Sperre sicher, sonst gibt es kein Werkzeug.
+- **Bildschirmfotos an Modelle entscheidet die Person**, je Modell an der Modellwahl.
+
+Noch zu entscheiden:
+
 1. Treiber übernehmen statt selbst bauen?
 2. Eingebautes Werkzeug statt nur eigener MCP-Server über #302?
-3. Torro installiert den Treiber nicht, die Person tut es nach der Anleitung des Herstellers?
+3. Installation ohne das Skript des Herstellers (geprüftes Release oder Fork), Torro ruft nie ein Skript aus dem Netz
+   auf?
 4. Hintergrund-Modus als Standardarbeit: der Kern setzt `background` fest und lehnt ab, statt still Maus und Fokus
    zu übernehmen?
 5. Vordergrund-Modus zum Zeigen und für Aktionen, die im Hintergrund nicht gehen: nur als Vorführung über
@@ -463,6 +601,9 @@ allein genug kann, oder ob macOS zuerst kommt.
 9. Nach fremden Inhalten fragt jede Aktion (statt das Bedienen ganz zu sperren)?
 10. Nur der Assistent, keine Bots, kein Client über API oder MCP; Schalter nur für Menschen (Punkt 16)?
 11. Reihenfolge der Bau-Issues, mit dem Test als Bedingung?
+12. Netzsperre unter Linux über seccomp in einem Startprogramm der Suite, und das Werkzeug bleibt aus, wo keine
+    Sperre greift?
+13. Voreinstellung „May see screenshots“: an nur für lokale Modelle?
 
 ## Offene Fragen
 
@@ -475,15 +616,18 @@ allein genug kann, oder ob macOS zuerst kommt.
    Vorführung auch selbst starten können (Knopf „Show me“ im Chat), und darf eine laufende Vorführung bei der
    nächsten Bitte ohne neue Karte weiterlaufen?
 5. **Enter nach dem Tippen** und Absenden von Formularen: eigenes Muster, das immer fragt?
-6. **Nutzungsdaten dauerhaft abschalten:** Darf Torro selbst `cua-driver telemetry disable` aufrufen (ändert die
-   Einstellung des Treibers für alle Programme), oder nur die Person?
-7. **Bilder an Cloud-Modelle:** erlaubt wie Mail-Text, oder Bilder nur an lokale Modelle?
+6. **Schalter des Treibers:** Soll Torro zusätzlich zur Sperre `cua-driver telemetry disable` und
+   `update_check_enabled = false` dauerhaft in die Konfiguration des Treibers schreiben (wirkt dann auch für andere
+   Programme, die ihn nutzen), oder nur die Variablen je Start setzen?
+7. **Bildschirmfotos an Modelle** (entschieden: die Person, je Modell): Passt die Voreinstellung „nur lokale
+   Modelle“, und soll der Schalter auch den Fenstertext umfassen?
 8. **Browser-Fenster der Person:** ganz sperren, bis das Browser-Werkzeug da ist, oder bedienbar wie andere Programme?
 9. **Bots:** später mit eigenem Schalter, oder nie?
 10. **MCP-Weg:** `Mcp::Tool` mit Ablehnung für fremde Clients wie beim Terminal, oder `Never` mit Listenpunkt?
 11. **Rechte-Modus `bounded` des Treibers:** lohnt ein Manifest zusätzlich zu den Prüfungen im Kern?
-12. **Updates des Treibers:** Mindestversion und Fingerabdrücke genügen, oder legt Torro eine Version fest und lädt sie
-    selbst?
+12. **Updates des Treibers:** Wer holt eine neue Version, wenn der Treiber selbst nie nachfragen darf: die Person von
+    Hand, oder Torro mit einer neuen eigenen Version, die eine geprüfte Version des Treibers festlegt (bzw. den Fork
+    nachzieht)?
 13. **Grenze des Hintergrunds unter Hyprland:** Genügt zum Start, was über Bedienhilfen geht (Knöpfe, Menüs, Werte,
     keine Tastenkürzel), oder soll Torro anbieten, ein Programm unter XWayland neu zu starten, damit mehr im Hintergrund
     geht?
@@ -494,6 +638,12 @@ allein genug kann, oder ob macOS zuerst kommt.
     Hyprland), und soll jede eigene Maus- oder Tastenbewegung der Person die Vorführung sofort beenden?
 16. **Grenzen der Vorführung:** Passen 5 Minuten und 50 Aktionen, und darf eine Vorführung bei Bedarf ein zweites
     Fenster desselben Programms (etwa einen Dialog) mit einschließen?
+17. **Fork oder Netzsperre:** Genügt das geprüfte Release von `cua-driver` mit Netzsperre, oder braucht es zusätzlich
+    einen MIT-Fork ohne Sendecode (ohne `telemetry.rs`, Update-Abfrage und `ureq`), den Torro bei jeder Version
+    nachzieht?
+18. **macOS und Windows:** Lässt sich „kein Netzverkehr“ dort überhaupt prüfbar erreichen (macOS: Dienst in
+    `CuaDriver.app` außerhalb von Torro; Windows: Firewall-Regel mit Administratorrechten), oder gibt es das Werkzeug
+    dort erst mit eigenem Build?
 
 ## Quellen
 
@@ -505,4 +655,6 @@ allein genug kann, oder ob macOS zuerst kommt.
   [Installation](https://cua.ai/docs/cua-driver/guide/getting-started/installation), abgerufen am 21. November 2026.
 - Hermes Agent: [Computer Use](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/computer-use.md)
   (Freigaben, Sperren, Abschalten der Nutzungsdaten), abgerufen am 21. November 2026.
+- Quellcode: [trycua/cua](https://github.com/trycua/cua) bei HEAD `20ddc59` (`telemetry.rs`, `version_check.rs`,
+  `release_source.rs`, `install.sh`, `install.ps1`), Recherche von Sven am 21. November 2026.
 - Lokal: `cua-driver doctor`, `list-tools`, `telemetry status --json` (Version 0.34.0, 21. November 2026).
