@@ -67,6 +67,10 @@ pub struct Settings {
     /// out of range in the file reads as the default.
     #[serde(default, skip_serializing_if = "FocusSlots::is_default", deserialize_with = "lenient")]
     pub focus_slots: FocusSlots,
+    /// Count postponed tasks (issue #623, `docs/aufschieben.md`): while on, the service notes on this
+    /// computer every move of an open task to a later due day it writes. Off unless turned on.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub postpone_stats: bool,
     /// "Quiet during busy events" (task E3.4): while a busy event of a shown calendar runs (not
     /// all-day, not marked free), only urgent inbox entries pop up; the rest is told in one
     /// message when it ends. On unless turned off.
@@ -826,6 +830,7 @@ impl Default for Settings {
             working_hours: WorkingHours::default(),
             list_orders: BTreeMap::new(),
             focus_slots: FocusSlots::default(),
+            postpone_stats: false,
             quiet_when_busy: on(),
             contacts_show_hidden_books: false,
             presence_heartbeat: false,
@@ -3547,6 +3552,7 @@ mod tests {
             working_hours: WorkingHours::DEFAULT,
             list_orders: BTreeMap::new(),
             focus_slots: FocusSlots::DEFAULT,
+            postpone_stats: false,
             quiet_when_busy: true,
             contacts_show_hidden_books: false,
             presence_heartbeat: false,
@@ -3819,6 +3825,7 @@ mod tests {
             working_hours: WorkingHours { from: q(7, 30), to: q(16, 0) },
             list_orders: BTreeMap::from([("work".to_string(), ListOrder::Manual)]),
             focus_slots: FocusSlots::new(4).expect("in range"),
+            postpone_stats: true,
             quiet_when_busy: false,
             contacts_show_hidden_books: false,
             presence_heartbeat: false,
