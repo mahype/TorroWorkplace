@@ -9267,6 +9267,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("all address books", "alle Adressbücher"),
     ("1 address book", "1 Adressbuch"),
     ("{n} address books", "{n} Adressbücher"),
+    ("1 hidden", "1 ausgeblendetes"),
+    ("{n} hidden", "{n} ausgeblendete"),
     ("1 contact", "1 Kontakt"),
     ("{n} contacts", "{n} Kontakte"),
     ("Hidden address books", "Ausgeblendete Adressbücher"),
