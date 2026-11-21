@@ -2993,8 +2993,6 @@ fn write_synced(path: &Path, content: &str) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    /// Issue #243: the modifiers of the template keys default per system, read their names and
-    /// fall back to the default when a file holds something else.
     /// Issue #838: the engine is `null` or an account with a model; one that does not read is the local chain.
     #[test]
     fn a_live_engine_names_an_account_and_a_model() {
@@ -3016,6 +3014,8 @@ mod tests {
         assert!(!serde_json::to_string(&Voice::default()).expect("json").contains("liveEngine"));
     }
 
+    /// Issue #243: the modifiers of the template keys default per system, read their names and
+    /// fall back to the default when a file holds something else.
     #[test]
     fn the_template_keys_modifiers_are_read_leniently() {
         use super::{Settings, ShortcutModifiers};
