@@ -1,6 +1,6 @@
 # KI in der Suite: Konten, Modelle, Zuordnung
 
-Stand: 2026-11-13 (#664: keine Datenregel mehr, Modellwahl nur in den Apps). **Diskussionsgrundlage.**
+Stand: 2026-11-21 (#324: Anmelden mit ChatGPT; #664: keine Datenregel mehr, Modellwahl nur in den Apps). **Diskussionsgrundlage.**
 Entstanden aus den Entscheidungen 8 und 9 in [eingang.md](eingang.md). Ergänzt den Eintrag „KI-Anbieter“ in
 [settings.md](settings.md).
 
@@ -56,7 +56,8 @@ benutzt nie den Schlüssel eines Agenten.
 5. **Vorschlag, nie Urteil.** KI-Ergebnisse sind gekennzeichnet, das Original bleibt sichtbar,
    nichts wird von einer KI versteckt, gelöscht oder verschickt.
 6. **Schlüssel bleiben im Dienst** (Regel 1 und 5 in „Was nie nach außen geht“): API-Schlüssel im
-   Schlüsselbund, eintragen nur über die Oberfläche, nie über MCP.
+   Schlüsselbund, eintragen nur über die Oberfläche, nie über MCP. Ebenso die Tokens einer Anmeldung im Browser
+   (#324, Abschnitt „Anmelden mit ChatGPT“).
 
 ## Anbieter
 
@@ -66,6 +67,7 @@ benutzt nie den Schlüssel eines Agenten.
 | **Selbst gehostet** | eigener Server mit einem der obigen; Nextcloud Assistant (TaskProcessing-API, z. B. mit lokalem LLM auf dem Nextcloud-Server) | OpenAI-kompatibel bzw. über das vorhandene Nextcloud-Konto, ohne neuen Schlüssel |
 | **Offene Modelle in der Cloud** | **OpenRouter** (Qwen, Llama, Mistral, DeepSeek … über einen Schlüssel; Filter „open weights“) | OpenAI-kompatibel (`https://openrouter.ai/api/v1`); API-Schlüssel |
 | **Anbieter** | Anthropic, OpenAI, Mistral, Google, xAI | eigene Schnittstelle (Anthropic) bzw. OpenAI-kompatibel; API-Schlüssel |
+| **Über einen Plan** | **ChatGPT** (Plus, Pro; #324) | Anmeldung im Browser („Sign in with ChatGPT“, OAuth mit PKCE), dann OpenAIs Responses API; kein Schlüssel |
 | **Zum Sortieren** | **Jev** von TypeSafe (Issue #323), nur Entscheiden | SystemOne (`https://api.typesafe.ai/v1/systemone`); API-Schlüssel, ein festes Modell `jev-latest` |
 
 **xAI** (Issue #838, `xai`, `https://api.x.ai/v1`, Schlüssel unter `https://console.x.ai`, Sitz USA) bringt die
@@ -213,6 +215,102 @@ ein ausdrückliches `remote: true` wird nicht überschrieben. Alte Reconnects er
 auch schlüsselfrei. Ein alter Dienst darf den Befehl ablehnen; es gibt **keinen** Rückfall auf die generische
 Verbindung, der Jans Einstufung als anderswo verlieren könnte. `AiProvider` und bestehende Konto-IDs bleiben gleich.
 
+## Anmelden mit ChatGPT (#324)
+
+Wer ChatGPT Plus oder Pro hat, aber keinen API-Schlüssel, verbindet ein Konto **ChatGPT** (`chatgpt`,
+`ai:chatgpt@api.openai.com`) mit „Continue with ChatGPT“: in der Einrichtung, unter Accounts › Add › AI (Gruppe
+„Online service“ bzw. „Cloud“). Die Nutzung läuft über das Kontingent des Plans; wie viel Torro davon nutzen darf,
+stellt man **in ChatGPT** ein (Settings › Usage › App limits, Link „Manage usage“ in der Oberfläche). Bei Claude gibt es
+das nicht: Anthropic erlaubt die Anmeldung über Pro oder Max nur in eigenen Programmen.
+
+**Nur mit eigener Client-ID** (Entscheidung zu #324, 21.11.2026): Torro bietet ChatGPT nur an, wenn eine Client-ID
+von OpenAI für Torro eingestellt ist, `TORRO_CHATGPT_CLIENT_ID` beim Bauen (`option_env!`) oder in der Umgebung des
+Dienstes und der Steuerzentrale. Ohne sie fehlt die Zeile „ChatGPT · Continue with ChatGPT“ in der Liste der Anbieter
+(`oauth::SignIn::offered`), und der Dienst lehnt `accounts.start_ai_sign_in` mit dem Satz „Signing in is not available
+in this version of Torro Workplace yet: it has no client ID from the provider.“ ab, ohne etwas zu schreiben. Eine
+früher vergebene Client-ID zählt dann nicht. Die Selbstregistrierung, die OpenAI Open-Source-Apps erlaubt, nutzt Torro
+bewusst nicht; das Gerüst kennt sie weiter (`Registration::Dynamic`) für Anbieter, bei denen sie gewollt ist.
+
+**Die Client-ID wird beim Bauen eingestellt** (Entscheidung zu #324, 21.11.2026): Dienst und Steuerzentrale lesen sie
+jeder für sich (`SignIn::offered`). Mit `TORRO_CHATGPT_CLIENT_ID` beim Bauen haben beide dieselbe ID. Die Variable zur
+Laufzeit ist nur zum Ausprobieren da und muss dann in der Umgebung beider Programme stehen; steht sie nur beim Dienst,
+fehlt die Zeile in der Oberfläche. Bewusst so, ohne Änderung an der Schnittstelle: Der Dienst meldet der Oberfläche
+nicht, welche Anmeldungen er anbietet.
+
+**Der offizielle Weg** (OpenAI, „Sign in with ChatGPT“, Vorschau seit dem DevDay am 29.09.2026; geprüft am 21.11.2026
+an <https://developers.openai.com/siwc/token-sharing-open-source> und
+<https://auth.openai.com/.well-known/openid-configuration>):
+
+- **Client-ID:** Eine Open-Source-App, die auf dem Rechner der Person läuft, dürfte sich laut OpenAI bei der ersten
+  Anmeldung selbst registrieren (`client_id=dynamic_agent_client`, `agent_name_hint`; die Rückleitung bringt eine
+  Client-ID `oaiapp_…`). Kommerzielle oder gehostete Apps beantragen eine Client-ID über eine Warteliste
+  (<https://openai.com/form/sign-in-with-chatgpt-interest/>). Torro nimmt nur die eingestellte Client-ID (oben) und
+  schickt mit jeder Anmeldung die Kennung dieses Rechners mit (`ext_agent_host_id`, `urn:uuid:…`). **Die Client-ID
+  eines anderen Programms (Codex) benutzt Torro nie**: Die Bedingungen verbieten, sich als ein anderes Programm
+  auszugeben.
+- **Ablauf:** OAuth 2.0 Authorization Code mit PKCE (S256), Rückleitung auf `http://127.0.0.1:<port>/auth/callback`
+  (zuerst Port 1455, sonst ein freier; nie `localhost`). Kein Device Code. Scopes `openid profile email offline_access
+  resource.invoke chatgpt.tokens.use.direct`, `resource=https://api.openai.com/v1`. Endpunkte unter
+  `https://auth.openai.com/api/accounts/` (`authorize`, `oauth/token`, `oauth/revoke`).
+- **Tokens:** Access-Token eine Stunde, Refresh-Token 30 Tage und bei jedem Erneuern neu. Fehlt
+  `chatgpt.tokens.use.direct` in der Antwort, hat die Person die Nutzung des Plans nicht erlaubt; dann wird nichts
+  gespeichert.
+- **Nutzung:** `https://api.openai.com/v1` mit `Authorization: Bearer`, `GET /models` (`{"models": [{"slug",
+  "display_name", "visibility"}]}`, nur `visibility: "list"`) und `POST /responses`, immer mit `store: false` und
+  `stream: true`. Der System-Text geht als `instructions`; `max_output_tokens`, `temperature` und einige weitere Felder
+  lehnt die Vorschau ab.
+- **Grenzen der Vorschau:** wöchentliche Obergrenze je App in ChatGPT (10–100 % der Wochennutzung), bei Plus ein
+  gemeinsames Fünf-Stunden-Limit über alle Apps; ist die Grenze erreicht, antwortet OpenAI mit
+  `subscription_sharing_usage_limit_exceeded` und Torro sagt, wo man sie anhebt. Kein Bild-, Datei- oder Code-Werkzeug
+  von OpenAI, keine Sprache.
+
+**Im Dienst** (`torroworkplace::account::sign_in`, Protokoll in `torro_core::ai::oauth`):
+
+- `accounts.start_ai_sign_in {provider}` öffnet den Listener auf `127.0.0.1`, baut die Adresse mit PKCE und antwortet
+  mit `flow` und `url`; die Oberfläche öffnet die Adresse im Browser und fragt mit `accounts.check_ai_sign_in {flow}`,
+  bis das Konto da ist. `accounts.cancel_ai_sign_in` bricht ab; nach zehn Minuten endet eine Anmeldung von selbst.
+  Alle drei sind Admin, **nur App-Schlüssel, MCP Never** (Punkt 5 in „Was nie nach außen geht“).
+- Die Rückleitung wird zuerst an Pfad und `state` geprüft, dann tauscht der Dienst den Code, prüft das ID-Token
+  (Aussteller, Empfänger = Client-ID, `nonce`, Ablauf, `sub`) und listet die Modelle des Plans zur Probe. Erst dann
+  kommt der Token-Satz (Access, Refresh, Ablauf, Client-ID, Kennung des Rechners) als **das eine Secret des Kontos**
+  in den Schlüsselbund; `accounts.json` hat nur Konto, Adresse und die angemeldete Mail-Adresse. Kennung des Rechners
+  und zuletzt benutzte Client-ID stehen zusätzlich in `<config>/ai-sign-in.json` (0600), weil sie das Abmelden
+  überdauern; die Client-ID dort öffnet keine Anmeldung, wenn keine eingestellt ist.
+- **Erneuern:** Vor jeder Anfrage, wenn das Access-Token in zwei Minuten endet, eine Erneuerung zur Zeit (ein
+  Refresh-Token gilt nur einmal), die neuen Tokens zuerst in den Schlüsselbund. Nimmt OpenAI das Refresh-Token nicht
+  mehr (abgemeldet in ChatGPT, abgelaufen, schon benutzt), verwirft der Dienst die Tokens; das Konto zeigt „Sign in
+  again“.
+- **Abmelden** ist `accounts.remove_account` wie bei jedem Konto: Der Dienst widerruft zuerst das Refresh-Token bei
+  OpenAI, dann entfernt er Tokens und Konto. Bestätigt OpenAI den Widerruf nicht, steht das im Protokoll; beenden lässt
+  sich die Verbindung auch in ChatGPT (Settings › Security and login › Login connections).
+- Wie jedes Cloud-Konto: Modelle sind nach dem Verbinden aus und rechnen anderswo (Cloud · US); Anschalten nur Menschen.
+
+**Gerüst für weitere Anbieter:** Ein Anbieter mit Anmeldung im Browser ist ein `oauth::SignIn` (Endpunkte, Scopes,
+`resource`, Art der Client-ID, Port, Link zur Nutzung) und ein Zweig in `AiProvider::sign_in`; Listener, Erneuern,
+Widerruf und Oberfläche („Continue with …“) nehmen ihn ohne Umbau. xAI (Grok) läuft heute mit Schlüssel; bietet xAI
+eine Anmeldung im Browser an, kommt sie so dazu.
+
+**Offen** (#324):
+
+1. Das ID-Token wird nicht gegen die JWKS von OpenAI geprüft, nur seine Angaben: Es kommt direkt vom Token-Endpunkt über
+   TLS (OpenID Connect Core 3.1.3.7, Punkt 6). OpenAI empfiehlt die Prüfung der Signatur; dafür bräuchte es eine
+   JWT-Bibliothek.
+2. Werkzeuge: Die Vorschau verlangt, Funktions-Werkzeuge „in namespaces“ oder als `additional_tools` zu schicken; die
+   Form ist nicht beschrieben. Torro schickt sie wie bei OpenAI; lehnt OpenAI sie ab, sagt die Meldung das
+   (`subscription_sharing_unsupported_capability`).
+3. Ein Konto je Rechner (`ai:chatgpt@api.openai.com`); mehrere ChatGPT-Konten oder Arbeitsbereiche nebeneinander gibt
+   es noch nicht. Eine andere Person meldet sich erst nach dem Entfernen an.
+4. Vorschlag je Plan (`ai.recommend`, #325): Die Empfehlungsliste kennt nur Anbieter mit Schlüssel
+   (`AiProvider::CLOUD`) und weiß nichts über den Plan (die Antwort sagt ihn nicht); das braucht einen Umbau und ist ein
+   Folgepunkt.
+5. Das Aussehen des Knopfs (schwarz mit ChatGPT-Logo nach den Richtlinien von OpenAI) ist noch der gewöhnliche Knopf
+   der Suite.
+6. Torro braucht eine eigene Client-ID von OpenAI (Formular, Warteliste); wann und ob es sie gibt, ist offen. Bis dahin
+   ist ChatGPT nicht im Angebot.
+7. **Offener Prüfpunkt für den Test mit der echten Client-ID** (Entscheidung zu #324): Ob OpenAI `ext_agent_host_id`
+   auch mit einer beantragten Client-ID erwartet oder annimmt, beschreibt die Doku nur für den Open-Source-Weg. Torro
+   schickt die Kennung immer mit (`SignIn::sends_host_id`); lehnt OpenAI sie ab, ist das ein Feld in `oauth::CHATGPT`.
+
 ## Empfehlung je Rechner
 
 Zusätzlich zur bisherigen Antwort `slots` liefert `ai.recommend` kontobezogene `preparations`: je Platz
@@ -323,6 +421,8 @@ Einstellungen zeigt beim Ersatzweg „Answers in a fixed format, slower“.
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
 | KI-Konto verbinden (lokal: Adresse; Anbieter: Schlüssel) | Accounts › Add › AI | `accounts.connect_ai` · Admin, nur App-Schlüssel | **Never** (Punkt 5: Geheimnisse nur über die Oberfläche) |
+| Mit ChatGPT anmelden (#324) | Einrichtung, Accounts › Add › AI: „Continue with ChatGPT“ | `accounts.start_ai_sign_in`, `accounts.check_ai_sign_in`, `accounts.cancel_ai_sign_in` · Admin, nur App-Schlüssel | **Never** (Punkt 5: Anmeldung und Tokens nur über die Oberfläche) |
+| Abmelden (auch ChatGPT, widerruft das Refresh-Token) | Kontoseite › Remove | `accounts.remove_account` · Admin | wie vorhanden |
 | Modelle eines Kontos | Accounts › KI-Konto › Models | `ai.list_models` · Read | `ai_list_models` |
 | Modell an/aus (S.24) | Accounts › KI-Konto › Models, Schalter | `ai.set_model_enabled` · Admin (anschalten, was anderswo rechnet: nur Menschen) | `ai_set_model_enabled` |
 | Plätze und Zuordnungen lesen | Einstellungen der App (Assistent › General, Mail-Fenster › AI) | `ai.list_assignments` (Feld `slots`: beide Plätze mit Modell; `mail_to_cloud` entfiel mit #664) · Read; `settings.get_settings` (`aiSlots`) · Read | `ai_list_assignments`, `settings_get_settings` |

@@ -1350,7 +1350,8 @@ pub fn deniable(name: &str) -> bool {
 impl Request {
     /// Whether this request may come from the app key only because of a value it carries, while
     /// its command is open to clients with the right rights ([`Rights::allows_request`]): setting
-    /// `voice_enabled` (point 6, the microphone) or `presence_heartbeat` to anything but `false`, or
+    /// `voice_enabled` (point 6, the microphone), `presence_heartbeat` or `postpone_stats` (issue #623) to anything
+    /// but `false`, or
     /// `search_provider` (point 6, issue #305, a web search provider) with `enabled` anything but
     /// `false`, or `allowed_folder` (point 9, issue #304) or `privacy_content` and `privacy_provider` (point 14,
     /// issue #672) with any value, or `maps` (task TE.1, the place
@@ -1385,7 +1386,9 @@ impl Request {
                 key:
                     crate::SettingKey::VoiceEnabled
                     // The heartbeat tells others lastingly when the person is there (`docs/chat.md`).
-                    | crate::SettingKey::PresenceHeartbeat,
+                    | crate::SettingKey::PresenceHeartbeat
+                    // Recording the person's habits is theirs to start (issue #623).
+                    | crate::SettingKey::PostponeStats,
                 value,
             } => switches_on(value),
             Request::SetSetting { key: crate::SettingKey::SearchProvider, value } => {
@@ -1879,6 +1882,8 @@ impl Request {
             Request::SetFocus { .. } => &SET_FOCUS,
             Request::PlanTodo { .. } => &PLAN_TODO,
             Request::PostponeFocusPlan => &POSTPONE_FOCUS_PLAN,
+            Request::PostponeStats { .. } => &POSTPONE_STATS,
+            Request::ClearPostponements => &CLEAR_POSTPONEMENTS,
             Request::CreateTodoFromMail { .. } => &CREATE_TODO_FROM_MAIL,
             Request::CreateTaskList { .. } => &CREATE_LIST,
             Request::CreateFilterList { .. } => &CREATE_FILTER_LIST,
@@ -1972,6 +1977,9 @@ impl Request {
             Request::ImportTorroMailAccount { .. } => &IMPORT_TORROMAIL_ACCOUNT,
             Request::ConnectAi { .. } => &CONNECT_AI,
             Request::ConnectLocalAi { .. } => &CONNECT_LOCAL_AI,
+            Request::StartAiSignIn { .. } => &START_AI_SIGN_IN,
+            Request::CheckAiSignIn { .. } => &CHECK_AI_SIGN_IN,
+            Request::CancelAiSignIn { .. } => &CANCEL_AI_SIGN_IN,
             Request::ConnectNtfy { .. } => &CONNECT_NTFY,
             Request::SetNtfyLogin { .. } => &SET_NTFY_LOGIN,
             Request::SetNtfyTopic { .. } => &SET_NTFY_TOPIC,
@@ -2359,6 +2367,9 @@ pub static CATALOGUE: &[&Command] = &[
     &IMPORT_TORROMAIL_ACCOUNT,
     &CONNECT_AI,
     &CONNECT_LOCAL_AI,
+    &START_AI_SIGN_IN,
+    &CHECK_AI_SIGN_IN,
+    &CANCEL_AI_SIGN_IN,
     &CONNECT_NTFY,
     &SET_NTFY_LOGIN,
     &SET_NTFY_TOPIC,
@@ -2625,6 +2636,11 @@ pub static CATALOGUE: &[&Command] = &[
     &START_COMMAND,
     &READ_COMMAND_OUTPUT,
     &STOP_COMMAND,
+    // Tasks, out of their group on purpose (issue #623): the assistant offers the first reading tools in
+    // catalogue order at once and the rest through `find_tools` (`assistant::tools::offered`); the evaluation
+    // of postponed tasks is rarely needed and must not push an everyday tool out. The reference groups by area.
+    &POSTPONE_STATS,
+    &CLEAR_POSTPONEMENTS,
 ];
 
 /// The commands that send something out of the computer on the person's behalf
@@ -3049,6 +3065,28 @@ static POSTPONE_FOCUS_PLAN: Command = Command {
     description: "Moves every open task with a focus that is due today or overdue to tomorrow, in its order and in \
                   front of the tasks due tomorrow (due times stay). Returns the tasks written; empty when there \
                   is nothing to move. Changes their `sort_order` like plan_todo.",
+};
+
+static POSTPONE_STATS: Command = Command {
+    name: "tasks.postpone_stats",
+    area: Area::Tasks,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "What the person postponed: the tasks moved to a later due day most often (with count and last time) \
+                  and the counts by priority, focus, list and the weekday the task was due on, of the lists you may \
+                  see, kept on this computer for the days the setting `postpone_retention` says (365 unless \
+                  changed). Pass `since` (YYYY-MM-DD) for a shorter span. Returns \
+                  `enabled: false` with empty counts while the person has not turned counting on (setting \
+                  `postpone_stats`). Use it to help plan, e.g. to suggest splitting a task postponed often.",
+};
+
+static CLEAR_POSTPONEMENTS: Command = Command {
+    name: "tasks.clear_postponements",
+    area: Area::Tasks,
+    access: Access::Delete,
+    mcp: Mcp::Tool,
+    description: "Deletes the history of postponed tasks that tasks.postpone_stats evaluates, for the lists you may \
+                  see; it cannot be restored. Counting goes on while the setting `postpone_stats` is on.",
 };
 
 static CREATE_TODO_FROM_MAIL: Command = Command {
@@ -3935,6 +3973,38 @@ static CONNECT_LOCAL_AI: Command = Command {
     description: "Connects a named local AI program (jan, gpt4all, koboldcpp, llama_cpp), checking its address and optional key before storing it. Only the app key may choose a data destination, even without a key. Jan may relay to cloud providers; its models count as elsewhere. Unknown programs return unsupported. Never fall back to accounts.connect_ai on an older daemon.",
 };
 
+// Never MCP tools, and for the app key only (issue #324): signing in brings tokens into the core (`docs/api.md`,
+// "Was nie nach außen geht", 5). The person's consent is the click in the control centre and the browser; an agent
+// could otherwise connect an account the suite then sends data to, or watch a sign-in it did not start.
+static START_AI_SIGN_IN: Command = Command {
+    name: "accounts.start_ai_sign_in",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Starts signing in to an AI account with a browser instead of an API key (chatgpt: Sign in with \
+                  ChatGPT, OAuth with PKCE and a callback on 127.0.0.1). Returns the flow and the address to open in \
+                  the browser; the tokens stay in the core's keychain and are renewed there. Only the app key may use it.",
+};
+
+static CHECK_AI_SIGN_IN: Command = Command {
+    name: "accounts.check_ai_sign_in",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Asks how a sign-in with a browser stands: pending, the connected AI account (never its tokens), or \
+                  the error that ended it (auth, offline, error; not-found for a flow that is over or unknown). Only \
+                  the app key may use it.",
+};
+
+static CANCEL_AI_SIGN_IN: Command = Command {
+    name: "accounts.cancel_ai_sign_in",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Ends a sign-in with a browser: the core stops listening for the callback and stores nothing. Only \
+                  the app key may use it.",
+};
+
 static CONNECT_AI: Command = Command {
     name: "accounts.connect_ai",
     area: Area::Accounts,
@@ -4217,6 +4287,10 @@ static SET_SETTING: Command = Command {
                   task list by hand with tasks.move_todo, or \"due_date\" to group it by due date again) or \
                   `focus_slots` (1 to 5, 3 unless changed: how many open top-level tasks due today or overdue may \
                   ask for focus; tasks.set_focus refuses a further one with conflict) or \
+                  `postpone_stats` (true, false; while on, moves of open tasks to a later due day are counted on \
+                  this computer for tasks.postpone_stats; only a person may turn it on) or \
+                  `postpone_retention` (days the history of postponed tasks is kept, 365 unless changed; below 30 \
+                  is taken as 30, above 1095 as 1095; lowering it drops older postponements at once) or \
                   `quiet_when_busy` (true, false; while on, only urgent inbox entries pop up during a busy event) \
                   or `design` (the spacing level from list_designs: \"torro\" for Standard, \"comfort\" or \
                   \"dense\"; it changes only spacing and the heights of rows and controls, never the font, the \
@@ -7195,6 +7269,9 @@ mod tests {
                 key: crate::Secret::new("sk-or-v1-example"),
             },
             Request::ConnectLocalAi { program: "jan".into(), server: None, key: crate::Secret::default() },
+            Request::StartAiSignIn { provider: torro_core::ai::AiProvider::ChatGpt },
+            Request::CheckAiSignIn { flow: "f1".into() },
+            Request::CancelAiSignIn { flow: "f1".into() },
             Request::AiModels { account: "ai:openrouter@openrouter.ai".into(), all: true },
             Request::SetModelEnabled {
                 account: "ai:ollama@localhost:11434".into(),
@@ -7263,6 +7340,8 @@ mod tests {
                 before: None,
             },
             Request::PostponeFocusPlan,
+            Request::PostponeStats { since: chrono::NaiveDate::from_ymd_opt(2026, 11, 1) },
+            Request::ClearPostponements,
             Request::CreateTodoFromMail {
                 account: "mail:anna@mailbox.org".into(),
                 id: "m:0a1b2c3d".into(),
@@ -8466,6 +8545,10 @@ mod tests {
                         | "accounts.import_torromail_account"
                         | "accounts.connect_ai"
                         | "accounts.connect_local_ai"
+                        // Issue #324: signing in with a browser brings tokens into the core.
+                        | "accounts.start_ai_sign_in"
+                        | "accounts.check_ai_sign_in"
+                        | "accounts.cancel_ai_sign_in"
                         | "accounts.set_ntfy_login"
                         | "approvals.decide_approval"
                         // Point 6: the microphone. Switching voice on through settings.set_setting
@@ -9412,6 +9495,7 @@ mod tests {
                 "anthropic",
                 "openai_compatible",
                 "openai",
+                "chatgpt",
                 "gemini",
                 "xai",
                 "mistral",
@@ -9675,6 +9759,8 @@ mod tests {
                 "working_hours",
                 "list_order",
                 "focus_slots",
+                "postpone_stats",
+                "postpone_retention",
                 "quiet_when_busy",
                 "contacts.show_hidden_books",
                 "presence_heartbeat",

@@ -16,6 +16,16 @@ workspace = true
 [package.metadata.dist.dependencies.homebrew]
 "mahype/torro/torroworkplace" = { stage = ["run"] }
 
+# sherpa-onnx-c-api.dll and onnxruntime.dll for Windows (issue #773): dist packs only binaries into the archive, so
+# the DLLs go out as an asset of their own, built in dist's global job from k2-fsa's pinned archive
+# (packaging/assistant_runtime.py, packaging/windows/assistant-runtime.json). The command runs in this folder.
+[[package.metadata.dist.extra-artifacts]]
+artifacts = [
+    "../../target/assistant-runtime/torroassistant-runtime-x86_64-pc-windows-msvc.zip",
+    "../../target/assistant-runtime/torroassistant-runtime-x86_64-pc-windows-msvc.zip.sha256",
+]
+build = ["python3", "../../packaging/assistant_runtime.py", "--output", "../../target/assistant-runtime"]
+
 # The built-in sound (cpal, issue #762) needs ALSA's headers to build on Linux; the release runner installs them.
 [package.metadata.dist.dependencies.apt]
 libasound2-dev = "*"
@@ -42,8 +52,8 @@ base64.workspace = true
 # The voice listener (`--listen`, task C.9) asks the core from a plain loop, without a window.
 tokio.workspace = true
 # Speech built in (issue #762): speech to text, the wake word and reading aloud with sherpa-onnx, the microphone and
-# the sound output with cpal; no program is looked for on `PATH` any more.
-sherpa-onnx.workspace = true
+# the sound output with cpal; no program is looked for on `PATH` any more. sherpa-onnx itself is chosen per target
+# below (issue #773).
 # Silero VAD is checked against its SHA-256 before it loads (issue #833): a damaged file never reaches sherpa-onnx.
 sha2.workspace = true
 cpal.workspace = true
@@ -66,6 +76,19 @@ webbrowser.workspace = true
 # system package; without the socket cpal falls back to ALSA.
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { workspace = true, features = ["pulseaudio"] }
+
+# sherpa-onnx linked into the program on Linux and macOS.
+[target.'cfg(not(windows))'.dependencies]
+sherpa-onnx = { workspace = true, features = ["static"] }
+
+# Windows (issue #773): sherpa-onnx as a DLL. k2-fsa builds its static Windows libraries only against the static C
+# runtime (`static-MT`), which would force `+crt-static` on every program of the suite. With `shared`, only the
+# assistant needs `sherpa-onnx-c-api.dll` and `onnxruntime.dll` beside its program (both carry their own C runtime,
+# so the program links with the dynamic C runtime of `cargo build` and the static one of dist's release alike);
+# the build copies them next to the program in `target/`, the release ships them as
+# `torroassistant-runtime-<target>.zip` (`packaging/assistant_runtime.py`).
+[target.'cfg(windows)'.dependencies]
+sherpa-onnx = { workspace = true, features = ["shared"] }
 
 [dev-dependencies]
 tempfile.workspace = true
