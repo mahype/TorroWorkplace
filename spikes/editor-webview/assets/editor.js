@@ -59,10 +59,16 @@ document.addEventListener('drop', (e) => {
 });
 
 // Paste: which types were offered, and what Squire made of them.
+// Which types the clipboard offered (native event, before Squire), then what Squire made of it
+// (willPaste carries the cleaned fragment in `detail`).
+ed.addEventListener('paste', (e) => {
+  const d = e.clipboardData;
+  post('paste-offered', { types: d ? [...d.types] : [], files: d ? [...d.files].map((f) => f.type) : [], html: d ? d.getData('text/html') : '' });
+}, true);
 squire.addEventListener('willPaste', (e) => {
-  const types = e.clipboardData ? [...e.clipboardData.types] : [];
-  post('paste', { types, fragment: e.fragment ? [...e.fragment.childNodes].map((n) => n.outerHTML || n.textContent).join('') : null });
-  log('paste ' + types.join(','));
+  const frag = e.detail.fragment;
+  post('paste', { html: e.detail.html ?? null, text: e.detail.text ?? null,
+    fragment: frag ? [...frag.childNodes].map((n) => n.outerHTML || n.textContent).join('') : null });
 });
 squire.addEventListener('input', () => post('input', { text: ed.innerText, images: ed.querySelectorAll('img').length }));
 // What is selected (Ctrl+A, mouse): the text length and how many pictures lie inside.
