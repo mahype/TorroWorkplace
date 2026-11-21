@@ -5065,6 +5065,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The maps app could not be opened.", "Die Karten-App konnte nicht geöffnet werden."),
     ("Open the address of {name} in Maps", "Die Adresse von {name} in Karten öffnen"),
     ("Clear stored map tiles and contact places", "Gespeicherte Kartenkacheln und Kontakt-Orte löschen"),
+    ("Delete the history of postponed tasks", "Verlauf verschobener Aufgaben löschen"),
     ("Turn off address lookup for contacts", "Adresssuche für Kontakte ausschalten"),
     ("the program for geo: links", "das Programm für geo:-Links"),
     ("Address: \"{address}\"", "Adresse: \"{address}\""),

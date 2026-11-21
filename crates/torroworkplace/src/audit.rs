@@ -269,6 +269,8 @@ pub fn ids(request: &Request) -> Vec<String> {
             [item(&Some(href.clone())), item(before)].into_iter().flatten().collect()
         }
         Request::PostponeFocusPlan => Vec::new(),
+        // What was postponed spans the lists the client sees; nothing to name (issue #623).
+        Request::PostponeStats { .. } | Request::ClearPostponements => Vec::new(),
         // The list only (task E8.7a): never the mail account, the mail's id or its Message-ID,
         // not even hashed – together they would tell which mail a person turned into a task.
         Request::CreateTodoFromMail { collection: list, .. } => vec![collection(list)],

@@ -1360,6 +1360,24 @@ pub enum Request {
     /// fails, the ones before it stay: reload and send it again.
     #[serde(rename = "tasks.postpone_focus_plan")]
     PostponeFocusPlan,
+    /// What the person postponed (issue #623, `docs/aufschieben.md`): every move of an open task to a later
+    /// due day through the core (`tasks.plan_todo`, `tasks.postpone_focus_plan`, `tasks.save_todo`), counted
+    /// on this computer only while the setting `postpone_stats` is on, kept `postpone_retention` days (365
+    /// unless changed). Answered with
+    /// [`Response::PostponeStats`]: the tasks postponed most and the counts by priority, focus, list and
+    /// weekday, of the lists the caller may see; `enabled: false` with empty counts while the setting is
+    /// off. Codes: none of its own.
+    #[serde(rename = "tasks.postpone_stats")]
+    PostponeStats {
+        /// Only postponements from this day on, e.g. `2026-11-01`; leave out for all that are kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<NaiveDate>,
+    },
+    /// Deletes the history of postponed tasks (issue #623): all of it for the app key, for a client only
+    /// what was recorded for the lists it may see. It cannot be restored. Answered with
+    /// [`Response::Ok`]; the setting `postpone_stats` stays as it is.
+    #[serde(rename = "tasks.clear_postponements")]
+    ClearPostponements,
     /// Makes a task of the mail `id` in the mail account `account`, in the task list `collection`
     /// (task E8.7a): for mail in any folder, also one that is no inbox entry. The mail itself is
     /// not changed (not marked read, not moved). Answered with [`Response::Todo`]: the new task as
@@ -5669,6 +5687,57 @@ pub struct TodoRef {
     pub etag: String,
 }
 
+/// The evaluation of postponed tasks (`tasks.postpone_stats`, issue #623).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostponeStats {
+    /// Whether postponements are counted (setting `postpone_stats`). While off, the rest is empty.
+    pub enabled: bool,
+    /// The day of the oldest postponement counted; left out when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<NaiveDate>,
+    /// How many postponements are counted.
+    pub total: usize,
+    /// The tasks postponed, most often first (the more recent first among equals).
+    pub tasks: Vec<PostponedTask>,
+    /// By the task's priority when it was postponed: `urgent`, `high`, `medium`, `low` or `none`.
+    pub by_priority: Vec<PostponeCount>,
+    /// By the task's focus when it was postponed: `normal`, `focus` or `strong`.
+    pub by_focus: Vec<PostponeCount>,
+    /// By the id of the task list it was in, as `tasks.list_lists` lists it.
+    pub by_list: Vec<PostponeCount>,
+    /// By the weekday the task was due on and left: `mon` … `sun`.
+    pub by_weekday: Vec<PostponeCount>,
+}
+
+/// One task of [`PostponeStats::tasks`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostponedTask {
+    /// iCalendar UID of the task; it stays when the task moves to another list.
+    pub uid: String,
+    /// The list it was last postponed in.
+    pub collection: String,
+    /// How many times it was postponed.
+    pub count: usize,
+    /// When it was postponed last.
+    pub last: DateTime<Utc>,
+    /// `href` of the task as `tasks.list_todos` lists it; left out when the task is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub href: Option<String>,
+    /// Its title, from the core's cache; left out when the task is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Whether it is done by now.
+    #[serde(default)]
+    pub done: bool,
+}
+
+/// One group of an evaluation: its key and how many postponements fall into it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostponeCount {
+    pub key: String,
+    pub count: usize,
+}
+
 /// One conversation engine in the cloud (`settings.list_live_engines`, issue #838).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LiveEngineOption {
@@ -5854,6 +5923,16 @@ pub enum SettingKey {
     /// `tasks.plan_todo` refuse a further focus task with `conflict` while the slots are full. Open
     /// task windows follow.
     FocusSlots,
+    /// Count postponed tasks (issue #623, `docs/aufschieben.md`): `true` or `false` (the default). While
+    /// on, the core notes on this computer every move of an open task to a later due day it writes, for
+    /// `tasks.postpone_stats`; while off it notes nothing. Only the app key may send `true` – a person
+    /// decides that their habits are recorded. Turning it off keeps the history
+    /// (`tasks.clear_postponements` deletes it).
+    PostponeStats,
+    /// How many days the history of postponed tasks is kept (issue #623): a whole number, 365 unless
+    /// changed; one below 30 is taken as 30, one above 1095 as 1095
+    /// (`torro_core::settings::PostponeRetention`). Lowering it drops the older postponements at once.
+    PostponeRetention,
     /// "Quiet during busy events": `true` (the default) or `false`. While on, inbox entries pop
     /// up during a busy event of a shown calendar only when they are urgent; the others are
     /// told in one message when the event ends.
@@ -6302,6 +6381,10 @@ pub enum Response {
     },
     Todos {
         todos: Vec<Todo>,
+    },
+    /// The evaluation [`Request::PostponeStats`] asked for (issue #623).
+    PostponeStats {
+        stats: PostponeStats,
     },
     Event {
         event: Event,
