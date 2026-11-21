@@ -476,11 +476,11 @@ fn generated(context: &Context<'_>) -> String {
     lines.push(match (context.areas, context.rights) {
         // Not set up yet (no client): no tool at all, not even the help.
         ([], None) => "- Areas you may use: none. You have no tools now; tell the person they can grant you access in \
-                       Torro Workplace › Assistant."
+                       Settings › Access."
             .to_string(),
         ([], Some(_)) => "- Areas you may use: none. You have no tools for the person's data now, only the suite's \
-                          help and your own access; tell the person they can grant you access in Torro Workplace › \
-                          Assistant."
+                          help and your own access; tell the person they can grant you access in Settings › \
+                          Access."
             .to_string(),
         (areas, _) => format!("- Areas you may use: {}.", names(areas)),
     });
@@ -1043,7 +1043,7 @@ mod tests {
             "`info`",
             "You can never approve",
             "`not-found` also means",
-            "Torro Workplace › Assistant",
+            "Settings › Access",
             "say so honestly",
             "language of the person's last message",
             "time zone",
