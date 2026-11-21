@@ -21,7 +21,7 @@ N.2 und N.3 laufen parallel (verschiedene Crates). N.7 kann nach N.1 beginnen.
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:**
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torro-ipc/src/sync.rs` (neu), `crates/torroworkplace/src/sync/mod.rs`
-  (neu), `crates/torroworkplace/src/{core,mcp,approvals}.rs`, `docs/api.md` (Punkt 9, Bereich in der Tabelle),
+  (neu), `crates/torroworkplace/src/{core,mcp,approvals}.rs`, `docs/api.md` (neuer Punkt „Rechner bestätigen“ mit der nächsten freien Nummer, Bereich in der Tabelle),
   `docs/api-reference.md`
 - `Area::Sync`; Requests und Katalog nach der Tabelle „Drei Wege“ im Konzept: `sync.get_status` (Read),
   `sync.update_sync { enabled?, account?, areas?, keep_mail_local? }` (Admin), `sync.run_now` (Write), `sync.list_devices` (Read),
@@ -46,7 +46,7 @@ N.2 und N.3 laufen parallel (verschiedene Crates). N.7 kann nach N.1 beginnen.
   `approvals::Facts` über die Kennung (Rechnername gekürzt, ohne Steuerzeichen). Protokoll nur mit Kennungen.
 - Server-Anweisungen in `mcp.rs` um den Bereich `sync` ergänzen („only the person confirms a computer“).
 - **Oberfläche:** N.7 · **API:** wie oben · **MCP:** je Eintrag ein Tool `sync_*`, außer `sync.confirm_device`
-  (Never, Punkt 9).
+  (Never, Punkt „Rechner bestätigen“).
 - **Abnahme:** Handler-Tests mit Temp-Verzeichnis; Rechte-Tabelle deckt den Bereich; Test, dass
   `sync.confirm_device` auch mit Admin-Script-Schlüssel `forbidden` ist; Test, dass Assistent und Bot
   `sync.resolve_conflict` nicht dürfen; Test, dass `list_conflicts` ohne Leserecht in `assistant` keine Texte
@@ -150,7 +150,7 @@ N.2 und N.3 laufen parallel (verschiedene Crates). N.7 kann nach N.1 beginnen.
   mit falscher Signatur werden nicht eingetragen; geänderter Schlüssel eines bestätigten Rechners → anhalten und
   melden.
 - Beim Einschalten auf einem weiteren Rechner zeigt die Steuerzentrale die vorhandenen Rechner zum Bestätigen.
-- **Oberfläche:** N.7 · **API:** `sync.confirm_device` · Admin · **MCP:** Never (Punkt 9).
+- **Oberfläche:** N.7 · **API:** `sync.confirm_device` · Admin · **MCP:** Never (Punkt „Rechner bestätigen“).
 - **Abnahme:** Tests: fremder Abschnitt ohne Signatur wird nicht eingetragen; untergeschobener Abschnitt im Ordner
   eines bestätigten Rechners wird abgelehnt; erst nach `confirm_device` kommen die Einträge an; privater Schlüssel in
   keiner Antwort, keinem Protokoll, keinem `Debug`.

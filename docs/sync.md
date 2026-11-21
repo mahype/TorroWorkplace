@@ -186,8 +186,8 @@ Darum gilt:
    *Linux-PC* wants to sync. Allow?“, mit Kurzform des Schlüssels). Erst dann trägt der Kern dessen
    Einträge ein. Abschnitte ohne gültige Signatur werden nicht eingetragen und gemeldet. So kann auch
    jemand, der in den Ordner schreiben kann (eine andere App mit App-Passwort, ein Sync-Client),
-   nichts in den Prompt schmuggeln. Bestätigen geht nur mit dem App-Schlüssel (neuer Punkt 9 in „Was
-   nie nach außen geht“, wie das Bestätigen eines Bots).
+   nichts in den Prompt schmuggeln. Bestätigen geht nur mit dem App-Schlüssel (neuer Punkt „Einen
+   Rechner für den Sync bestätigen“ in „Was nie nach außen geht“, wie das Bestätigen eines Bots).
 2. **Rechte wandern nie mit.** Ein Bot kommt ohne seinen Client. Auf jedem Rechner bekommt er einen
    eigenen neuen Client mit `Rights::none`, und die Person vergibt die Rechte dort (Punkt 2). Der
    Eingang meldet: „Bot *Reiseplaner* came from *MacBook*. Grant access?“
@@ -242,7 +242,7 @@ gesperrt (`loops_back`), sonst könnten sie über einen Konflikt ihre eigene Per
 | Jetzt abgleichen | „Sync now“, Tray | `sync.run_now` · Write | `sync_run_now` |
 | Rechner auflisten (Name, System, zuletzt gesehen, bestätigt) | Sync › Computers | `sync.list_devices` · Read | `sync_list_devices` |
 | Diesen Rechner umbenennen | ebenda | `sync.rename_device` · Write | `sync_rename_device` |
-| Rechner bestätigen | ebenda, Eingang, Benachrichtigung | `sync.confirm_device` · Admin | **Never** (neuer Punkt 9: Daten in den Prompt lassen entscheidet nur ein Mensch) |
+| Rechner bestätigen | ebenda, Eingang, Benachrichtigung | `sync.confirm_device` · Admin | **Never** (neuer Punkt „Rechner bestätigen“: Daten in den Prompt lassen entscheidet nur ein Mensch) |
 | Rechner entfernen oder ablehnen; mit der eigenen Kennung „Remove this computer from sync“ | ebenda | `sync.remove_device` · Admin (Freigabe; wie `accounts.remove_account`) | `sync_remove_device` |
 | Konflikte auflisten | Sync › Conflicts, Hinweis auf Persona-Seite und im Bot-Editor | `sync.list_conflicts` · Read; die Fassungen nur mit Leserecht im Bereich des Schlüssels (`assistant`, `bots`, `settings`), sonst nur Kennung, Art und Rechner | `sync_list_conflicts` |
 | Konflikt lösen (eine Fassung behalten, auch „Restore?“ = `keep: other`) | ebenda | `sync.resolve_conflict { id, keep }` · Admin (Freigabe), zusätzlich das Recht des passenden Fachbefehls (`assistant.update_profile`, `assistant.forget`, `bots.save_bot`, `settings.set_setting`) | `sync_resolve_conflict` |
@@ -253,8 +253,8 @@ Neue Konflikte und neue Rechner kommen außerdem als Eintrag in den Eingang (Spu
 ## Reihenfolge
 
 Stufe 1 ist der ganze Assistent plus Einstellungen: Aufgaben N.1–N.8 in
-[tasks/sync.md](tasks/sync.md). Stufe 2 (später, eigene Planung): Filterlisten (Offener Punkt 3 in
-[github.md](github.md)), eigene Designs, Regeln des Eingangs, Workspace-Vorlagen je Fenstermanager,
+[tasks/sync.md](tasks/sync.md). Stufe 2 (später, eigene Planung): Filterlisten
+([github.md](github.md)), eigene Designs, Regeln des Eingangs, Workspace-Vorlagen je Fenstermanager,
 Ende-zu-Ende-Verschlüsselung, `notify_push`.
 
 ## Offen
@@ -265,8 +265,9 @@ Nichts.
 
 Getroffen am 2026-10-14.
 
-1. **Schnittstellen freigegeben:** neuer Bereich `sync`, Punkt 9 in „Was nie nach außen geht“
-   (Rechner bestätigen nur durch einen Menschen) und das optionale Feld `device` an `Entry`.
+1. **Schnittstellen freigegeben:** neuer Bereich `sync`, ein neuer Punkt in „Was nie nach außen
+   geht“ (Rechner bestätigen nur durch einen Menschen) und das optionale Feld `device` an `Entry`. Damals
+   war es Punkt 9; die Nummer ist inzwischen vergeben, N.1 hängt den Punkt mit der nächsten freien Nummer an.
 2. **Stufe 1 ohne Verschlüsselung:** Die Einträge liegen wie Kalender und Aufgaben in den eigenen
    Nextcloud-Dateien. Ende-zu-Ende mit Passphrase kommt in Stufe 2.
 3. **Fehlender Antrieb:** Antrieb und Modell gleichen sich ab. Ein fehlender Antrieb wird angezeigt
