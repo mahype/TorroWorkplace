@@ -842,6 +842,17 @@ Kante bis 4096; ersetzt die sechs, Datei `<präfix>-1000x700.png`). Der erste Fe
   den ganzen Bildschirm (`--reminders`, ein eigenes Fenster je Bildschirm; mit `--shots` lehnt der
   Kalender ihre Zustände mit Exit 64 ab) und Schriftwechsel zur
   Laufzeit (eine Schrift, die erst nach dem Start geladen wird, zeigt eine Ersatzschrift). Dafür bleibt `shoot.sh` (unten).
+- **Rasterbilder (#519):** Logos der Absender und Kontaktfotos stehen mit dem normalen GPU-Renderer (wgpu) im Bild,
+  rund beschnitten wie im Fenster (`border_radius`). iced_wgpu lädt Bilder aus Bytes oder einem Pfad in einem
+  eigenen Thread; im Fenster löst das fertige Hochladen ein neues Zeichnen aus, ohne Fenster nicht. Deshalb legt
+  `shots::run` (also `shots.sh`) die Ansicht vor dem Bild so oft neu aus, bis ein Merkbild angekommen ist, das nach
+  allen Bildern der Ansicht angefragt wurde (der Thread arbeitet der Reihe nach). Kein Umweg mit `WGPU_BACKEND=gl`
+  nötig (unter Linux scheitert er ohnehin mit einem Validierungsfehler von wgpu). Ohne GPU zeichnet tiny-skia (auch
+  erzwingbar mit `ICED_BACKEND=tiny-skia`): Bilder ja, aber **eckig** – fehlende Rundung ist dort kein Befund.
+  `… pictures still loading after 300 layouts` auf stderr heißt: Ein Bild kam nicht an, sein Platz bleibt leer.
+  `shots::write` direkt (aus Tests) wartet nicht auf das Merkbild, sondern gibt den Bildern nur drei Durchläufe Zeit.
+  Demo-Stellen: Logos in `torroinbox --view mail` (GitHub rund, work.example.org eckiges Zeichen), auch im Leser mit
+  `--message m:w3`; Kontaktfotos in `torrocontacts --open by-city` und `--open readonly`.
 - **Mail-Kopf (#564):** Kopf und Inhaltstrenner nach Ziehen der Sidebar-/Listenbreite auf einer
   Achse prüfen; ausgeklappt, Icon-Leiste, Drawer, Einstellungen und Fokusansicht ansehen, in
   allen Abstandsstufen hell/dunkel sowie mit eigener dunkler Sidebar im Hellmodus (z. B. `channelr`).

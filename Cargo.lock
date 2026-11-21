@@ -11074,6 +11074,7 @@ dependencies = [
  "chrono",
  "iced",
  "iced_test",
+ "image",
  "muda",
  "png 0.18.1",
  "roxmltree 0.21.1",
