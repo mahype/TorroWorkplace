@@ -42,8 +42,8 @@ pub use capabilities::{
     UserStatusCapability,
 };
 pub use files::{
-    CHUNK_MAX, CHUNK_MIN, CHUNKS_MAX, DavPath, FilesError, PREVIEW_MAX_BYTES, Picture, Reference, ShareMeta, Uploaded,
-    numbered,
+    CHUNK_MAX, CHUNK_MIN, CHUNKS_MAX, DavPath, FilesError, PREVIEW_MAX_BYTES, Picture, Reference, ReferenceFile,
+    ShareMeta, Uploaded, numbered,
 };
 pub use notifications::{Listing, Notification, NotificationId, Person};
 pub use ocs::{MAX_WAIT, Nextcloud, OcsError, THROTTLE_WAIT, TalkError};

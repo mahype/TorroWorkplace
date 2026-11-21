@@ -1091,8 +1091,8 @@ mod tests {
             for (n, link) in links.iter().chain([&fourth]).enumerate() {
                 let reference = torro_nextcloud::Reference {
                     title: format!("Page {n}"),
-                    description: None,
                     image: Some(format!("p{n}")),
+                    ..Default::default()
                 };
                 state.references.insert((*link).into(), reference);
             }
@@ -1150,7 +1150,7 @@ mod tests {
         let page = "https://example.com/blog/post";
         {
             let mut state = server.state();
-            let reference = torro_nextcloud::Reference { title: "A post".into(), description: None, image: None };
+            let reference = torro_nextcloud::Reference { title: "A post".into(), ..Default::default() };
             state.references.insert(page.into(), reference);
             let list = state.messages.get_mut("ben4chat").expect("Ben");
             list.push(super::super::remote::tests::message(9, &format!("The board {own}, and {page}")));
@@ -1348,7 +1348,7 @@ mod tests {
         let file = "https://cloud.example.org/f/12";
         {
             let mut state = server.state();
-            let reference = torro_nextcloud::Reference { title: "Plan.pdf".into(), description: None, image: None };
+            let reference = torro_nextcloud::Reference { title: "Plan.pdf".into(), ..Default::default() };
             state.references.insert(file.into(), reference);
             let mut png = Vec::new();
             image::DynamicImage::new_rgb8(4, 3)

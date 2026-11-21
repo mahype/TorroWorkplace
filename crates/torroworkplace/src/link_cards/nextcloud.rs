@@ -157,13 +157,19 @@ pub async fn resolve(
     }
 }
 
-/// The card of `file` from what the own server resolved of `link`. For a file Nextcloud names it in the title and
-/// its media type in the description (its file reference provider); any other description is no type.
+/// The card of `file` from what the own server resolved of `link`. For a file Nextcloud names it in the title; its
+/// size, folder and media type come from the file provider's details ([`torro_nextcloud::ReferenceFile`]), the media
+/// type otherwise from the description (any other description is no type). A `?dir=` link names its folder itself.
 fn card_of(link: &str, file: &FileLink, reference: torro_nextcloud::Reference) -> LinkCard {
-    let content_type = reference.description.filter(|text| is_media_type(text)).unwrap_or_default();
+    let details = reference.file.unwrap_or_default();
+    let content_type = details
+        .mimetype
+        .filter(|text| is_media_type(text))
+        .or_else(|| reference.description.filter(|text| is_media_type(text)))
+        .unwrap_or_default();
     let folder = match file {
         FileLink::Files { dir, .. } => dir.trim_matches('/').to_owned(),
-        FileLink::Id(_) | FileLink::Share(_) => String::new(),
+        FileLink::Id(_) | FileLink::Share(_) => details.path.as_deref().map(folder_of).unwrap_or_default(),
     };
     let domain = Url::parse(link).ok().and_then(|url| url.host_str().map(str::to_owned)).unwrap_or_default();
     LinkCard {
@@ -173,10 +179,22 @@ fn card_of(link: &str, file: &FileLink, reference: torro_nextcloud::Reference) -
         domain,
         image: reference.image.is_some() || matches!(file, FileLink::Id(_)),
         kind: LinkCardKind::NextcloudFile,
-        // The size is 0 ("not told"): the server's reference does not carry it to the core yet.
-        file: Some(Box::new(LinkFile { name: reference.title, size: 0, content_type, folder })),
+        // The size is 0 ("not told") when the server's answer has no file details.
+        file: Some(Box::new(LinkFile {
+            name: reference.title,
+            size: details.size.unwrap_or_default(),
+            content_type,
+            folder,
+        })),
         ..LinkCard::default()
     }
+}
+
+/// The folder of a file's path as the server shows it: `/Projects/Customer/Offer.pdf` is `Projects/Customer`; a
+/// file in the top folder has none.
+fn folder_of(path: &str) -> String {
+    let path = path.trim_matches('/');
+    path.rsplit_once('/').map(|(folder, _)| folder.to_owned()).unwrap_or_default()
 }
 
 /// `type/subtype` as media types are written (`application/pdf`, `httpd/unix-directory`), nothing else.
@@ -257,7 +275,13 @@ mod tests {
         let reference = torro_nextcloud::Reference {
             title: "Offer.pdf".into(),
             description: Some("application/pdf".into()),
-            image: None,
+            file: Some(torro_nextcloud::ReferenceFile {
+                id: Some(123),
+                size: Some(20480),
+                path: Some("/Projects/Customer/Offer.pdf".into()),
+                mimetype: Some("application/pdf".into()),
+            }),
+            ..Default::default()
         };
         server.state().references.insert(format!("{SERVER}/f/123"), reference);
         (ChatService::fixed(vec![(ACCOUNT.into(), Arc::clone(&server))]), server)
@@ -279,6 +303,7 @@ mod tests {
         );
         let file = card.file.expect("details");
         assert_eq!((file.name.as_str(), file.content_type.as_str()), ("Offer.pdf", "application/pdf"));
+        assert_eq!((file.size, file.folder.as_str()), (20480, "Projects/Customer"));
 
         let gone = format!("{SERVER}/f/999");
         assert_eq!(resolve(&chat, Reach::Suite, ACCOUNT, &gone, &FileLink::Id(999)).await, Ok(None));
@@ -291,7 +316,7 @@ mod tests {
         let reference = torro_nextcloud::Reference {
             title: "Notes.txt".into(),
             description: Some("Our notes".into()),
-            image: None,
+            ..Default::default()
         };
         server.state().references.insert(link.clone(), reference);
         let file = FileLink::Files { dir: "/Projects/Customer".into(), file: Some("Notes.txt".into()) };
@@ -307,10 +332,10 @@ mod tests {
     async fn a_client_without_the_chat_right_gets_nothing_and_nothing_is_asked() {
         let (chat, server) = service();
         let link = format!("{SERVER}/f/123");
-        server.state().references.insert(
-            link.clone(),
-            torro_nextcloud::Reference { title: "Plan.pdf".into(), description: None, image: None },
-        );
+        server
+            .state()
+            .references
+            .insert(link.clone(), torro_nextcloud::Reference { title: "Plan.pdf".into(), ..Default::default() });
         let mut rights = RightsTemplate::FullAccess.rights();
         rights.chat_accounts = torro_ipc::api::Selection::Only(Vec::new());
         let card = resolve(&chat, Reach::Client(&rights), ACCOUNT, &link, &FileLink::Id(123)).await;
@@ -319,6 +344,22 @@ mod tests {
         rights.chat_accounts = torro_ipc::api::Selection::Only(vec![ACCOUNT.into()]);
         let card = resolve(&chat, Reach::Client(&rights), ACCOUNT, &link, &FileLink::Id(123)).await;
         assert_eq!(card.expect("asked").map(|card| card.title), Some("Plan.pdf".into()));
+    }
+
+    /// A file link whose answer has no file details (a share, an older server) still has its card, with no size and
+    /// no folder; a file in the top folder has no folder either.
+    #[tokio::test]
+    async fn a_card_without_file_details_has_no_size_and_no_folder() {
+        let (chat, server) = service();
+        let link = format!("{SERVER}/s/AbC123xyz");
+        let bare = torro_nextcloud::Reference { title: "Shared.zip".into(), ..Default::default() };
+        server.state().references.insert(link.clone(), bare);
+        let share = FileLink::Share("AbC123xyz".into());
+        let card = resolve(&chat, Reach::Suite, ACCOUNT, &link, &share).await.expect("asked").expect("a card");
+        let details = card.file.expect("details");
+        assert_eq!((details.size, details.folder.as_str(), details.content_type.as_str()), (0, "", ""));
+        assert_eq!(folder_of("/Offer.pdf"), "");
+        assert_eq!(folder_of("/A/B/Offer.pdf"), "A/B");
     }
 
     #[tokio::test]

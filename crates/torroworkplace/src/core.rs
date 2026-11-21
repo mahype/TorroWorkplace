@@ -4778,10 +4778,10 @@ impl Core {
     /// What the assistant or the bots would refuse `request` with anyway (tasks C.1 and B.1):
     /// limits, an unknown conversation, engine or bot, a conversation that still answers or is of
     /// another bot, a bot's window, too many bots. `None` for every other request.
-    async fn assistant_refusal(&self, request: &Request) -> Option<Response> {
+    async fn assistant_refusal(&self, request: &Request, from: Option<&str>) -> Option<Response> {
         match (request.operation().area(), request) {
             (Area::Assistant, _) | (Area::Bots, Request::AskBot { .. }) => {
-                match self.assistant.refusal(&self.ai, request).await {
+                match self.assistant.refusal_from(&self.ai, request, from).await {
                     Some(refused) => Some(refused),
                     None => self.models_off_refusal(request).await,
                 }
@@ -5233,7 +5233,7 @@ impl Core {
         // What the assistant would refuse anyway is nothing to approve (task C.1): limits, an
         // unknown conversation or engine, a conversation that still answers, a bot's window; nor
         // what the bots would (task B.1): an unknown bot, too many bots.
-        if let Some(refused) = self.assistant_refusal(&request).await {
+        if let Some(refused) = self.assistant_refusal(&request, Some(&id)).await {
             return Ok(refused);
         }
         // A note the client does not see, or a full memory (task C.10): nothing to approve either.
@@ -35161,7 +35161,7 @@ done"#,
         {
             let mut state = server.state();
             let reference =
-                torro_nextcloud::Reference { title: "A post".into(), description: None, image: Some("p".into()) };
+                torro_nextcloud::Reference { title: "A post".into(), image: Some("p".into()), ..Default::default() };
             state.references.insert(page.into(), reference);
             let mut png = Vec::new();
             image::DynamicImage::new_rgb8(4, 3)
@@ -36344,6 +36344,53 @@ done"#,
             .map(|line| (line.result, line.ids.contains(&engine_id)))
             .collect();
         assert_eq!(decided, [("ok".to_string(), true), ("denied".to_string(), true)]);
+    }
+
+    /// Issue #752: a client goes on only with a conversation with a bot that it started itself, by `bots.ask_bot` and
+    /// by `assistant.send_message` with `bot`: the person's conversation, and another client's, hold what the bot read
+    /// with its full rights and are not for it to feed to a model.
+    #[tokio::test]
+    async fn a_client_continues_only_its_own_conversation_with_a_bot() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let bot =
+            bot_with(&core, "Travel planner", torro_ipc::assistant::TEST_ENGINE, reading(&[Area::Calendar])).await;
+        let rights = || only_full(&[Area::Bots, Area::Assistant]);
+        let (_, key) = outside_client(&core, rights()).await;
+        let (_, other) = outside_client(&core, rights()).await;
+        let again = |conversation: &str| Request::AskBot {
+            bot: bot.id.clone(),
+            text: "And what did you read?".into(),
+            conversation: Some(conversation.into()),
+        };
+
+        // The person's conversation with the bot: nothing of it goes to a client's run.
+        let Response::Conversation { conversation: persons, .. } = core.handle(to_bot(&bot.id, None)).await else {
+            panic!("the person chats with the bot")
+        };
+        conversation_until(&core, &persons.id, |running, _| !running).await;
+        let before = conversation_until(&core, &persons.id, |running, _| !running).await.len();
+        assert_eq!(code(&ask(&core, Some(&key), again(&persons.id)).await), "forbidden");
+        let chat = to_bot(&bot.id, Some(&persons.id));
+        assert_eq!(code(&ask(&core, Some(&key), chat).await), "forbidden");
+        let after = conversation_until(&core, &persons.id, |running, _| !running).await.len();
+        assert_eq!(before, after, "nothing was added to it");
+
+        // Its own it goes on with, another client's it does not.
+        let Response::Conversation { conversation: mine, .. } = ask(&core, Some(&key), ask_bot(&bot.id)).await else {
+            panic!("the client asks the bot")
+        };
+        conversation_until(&core, &mine.id, |running, _| !running).await;
+        assert_eq!(code(&ask(&core, Some(&other), again(&mine.id)).await), "forbidden");
+        assert!(matches!(ask(&core, Some(&key), again(&mine.id)).await, Response::Conversation { .. }));
+        conversation_until(&core, &mine.id, |running, _| !running).await;
+        let chat = to_bot(&bot.id, Some(&mine.id));
+        assert!(matches!(ask(&core, Some(&key), chat).await, Response::Conversation { .. }));
+        // The person may go on with any conversation.
+        conversation_until(&core, &mine.id, |running, _| !running).await;
+        assert!(matches!(core.handle(to_bot(&bot.id, Some(&mine.id))).await, Response::Conversation { .. }));
+        conversation_until(&core, &mine.id, |running, _| !running).await;
     }
 
     // ----- The assistant asks bots (task B.2) -----
