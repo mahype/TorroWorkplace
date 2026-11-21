@@ -74,7 +74,13 @@ program of the suite. Now only the assistant needs two files beside its program,
   (`[package.metadata.dist.extra-artifacts]`); the Windows job of `build-installers.yml` builds it again, because
   it runs in parallel with that job.
 - **Setup, the service's app installer and Scoop** put the DLLs beside `torroassistant.exe` and remove them with
-  the assistant. dist's PowerShell installer copies only programs: it does not bring the DLLs.
+  the assistant.
+- **dist's PowerShell installer** copies only programs. The global job of `release.yml` (a hand edit) runs
+  `../assistant_runtime.py --patch-powershell` on `torroassistant-installer.ps1` before the upload. The installer
+  then also downloads the runtime archive and its `.sha256` from the same release, checks it, checks each DLL
+  against the SHA-256 pinned into the script and copies both beside `torroassistant.exe`. The patch refuses a
+  script whose layout it does not know, so a dist upgrade fails the release instead of shipping an installer
+  without DLLs. The PowerShell installer has no uninstall, like for every program.
 
 ## All-users Setup (#589)
 

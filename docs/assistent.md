@@ -879,8 +879,10 @@ höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent �
   hätte für alle Programme der Suite gegolten. Neben `torroassistant.exe` liegen deshalb `sherpa-onnx-c-api.dll` und
   `onnxruntime.dll` (beide mit eigener C-Laufzeit); der Bau legt sie in `target/` neben das Programm, das Release
   liefert sie als eigenes Archiv `torroassistant-runtime-x86_64-pc-windows-msvc.zip`, das Setup, der App-Installer
-  des Dienstes und Scoop mitbringen und mit dem Assistenten wieder entfernen (`packaging/windows/README.md`). Der
-  PowerShell-Installer von dist bringt nur das Programm. Die C-Laufzeit der Programme ist wieder wie vor #762:
+  des Dienstes und Scoop mitbringen und mit dem Assistenten wieder entfernen (`packaging/windows/README.md`). Den
+  PowerShell-Installer von dist, der von sich aus nur das Programm kopiert, ergänzt der globale Release-Job: Er lädt
+  das Archiv samt `.sha256` aus demselben Release, prüft es und jede DLL gegen ihre feste SHA-256 und legt die DLLs
+  neben das Programm. Ein Deinstallieren kennt dieser Weg nicht, wie bei allen Programmen. Die C-Laufzeit der Programme ist wieder wie vor #762:
   `cargo build` linkt sie dynamisch, das Release statisch (dist setzt `msvc-crt-static` von sich aus). Auf dem Mac
   fragt das System beim ersten Diktieren nach dem Mikrofon (`NSMicrophoneUsageDescription`).
 
