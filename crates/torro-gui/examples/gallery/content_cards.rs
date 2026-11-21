@@ -87,6 +87,7 @@ fn file_card(name: &str, bytes: u64, image: bool) -> LinkCard {
             size: bytes,
             content_type: String::new(),
             folder: "Projects/Customer".into(),
+            id: None,
         })),
         ..LinkCard::default()
     }

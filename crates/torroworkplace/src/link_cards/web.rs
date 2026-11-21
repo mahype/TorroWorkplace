@@ -72,12 +72,20 @@ pub enum CardPicture {
 
 impl Resolved {
     /// What a card of the kinds of the own server and GitHub ([`crate::link_cards::nextcloud`],
-    /// [`crate::link_cards::chat`], [`crate::link_cards::github`]) gives, linked as `kind`: a file linked by its id
-    /// has the server's preview as its picture; any other card has none, and says so (`image` off), since only the
-    /// file id names a picture the core can fetch.
+    /// [`crate::link_cards::chat`], [`crate::link_cards::github`]) gives, linked as `kind`: a file of the own server
+    /// has the server's preview as its picture, by the id its card carries ([`torro_chat::LinkFile::id`], issue
+    /// #924: a share and a link by folder and name too) or the id the link names; any other card has none, and says
+    /// so (`image` off), since only the file id names a picture the core can fetch.
     pub fn found(card: Option<LinkCard>, kind: &super::LinkKind) -> Resolved {
         let picture = match kind {
-            super::LinkKind::NextcloudFile(super::FileLink::Id(id)) => Some(CardPicture::File(*id)),
+            super::LinkKind::NextcloudFile(file) => {
+                let told = card.as_ref().and_then(|card| card.file.as_ref()).and_then(|file| file.id);
+                let named = match file {
+                    super::FileLink::Id(id) => Some(*id),
+                    super::FileLink::Share(_) | super::FileLink::Files { .. } => None,
+                };
+                told.or(named).map(CardPicture::File)
+            }
             _ => None,
         };
         let card = card.map(|card| LinkCard { image: card.image && picture.is_some(), ..card });
@@ -154,18 +162,36 @@ mod tests {
         assert!(turned_off(&privacy, "https://other.example.net/", SERVER));
     }
 
-    /// Issue #790: a file linked by its id has the server's preview as its picture; any other card has none.
+    /// Issue #790: a file linked by its id has the server's preview as its picture; a share whose card names no id
+    /// has none. Issue #924: a share or a link by name whose card carries the file's id has its preview too.
     #[test]
-    fn only_a_file_linked_by_its_id_has_a_picture() {
+    fn a_file_has_a_picture_when_its_link_or_its_card_names_its_id() {
         let card = LinkCard { url: "https://cloud.example.org/f/12".into(), image: true, ..LinkCard::default() };
         let file = super::super::LinkKind::NextcloudFile(super::super::FileLink::Id(12));
         let found = Resolved::found(Some(card.clone()), &file);
         assert_eq!(found.picture, Some(CardPicture::File(12)));
         assert!(found.card.is_some_and(|card| card.image));
         let share = super::super::LinkKind::NextcloudFile(super::super::FileLink::Share("abc".into()));
-        let found = Resolved::found(Some(card), &share);
+        let found = Resolved::found(Some(card.clone()), &share);
         assert_eq!(found.picture, None);
         assert!(found.card.is_some_and(|card| !card.image), "no picture it could fetch");
+
+        let file = torro_chat::LinkFile {
+            name: "Offer.pdf".into(),
+            size: 1,
+            content_type: String::new(),
+            folder: String::new(),
+            id: Some(34),
+        };
+        let told = LinkCard { file: Some(Box::new(file)), ..card };
+        let found = Resolved::found(Some(told.clone()), &share);
+        assert_eq!(found.picture, Some(CardPicture::File(34)));
+        assert!(found.card.is_some_and(|card| card.image));
+        let by_name = super::super::LinkKind::NextcloudFile(super::super::FileLink::Files {
+            dir: "/A".into(),
+            file: Some("Offer.pdf".into()),
+        });
+        assert_eq!(Resolved::found(Some(told), &by_name).picture, Some(CardPicture::File(34)));
     }
 
     #[test]
