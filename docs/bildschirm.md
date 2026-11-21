@@ -90,6 +90,98 @@ Unter Linux und Windows ist `cua-driver mcp` selbst der Treiber und endet mit se
 leitet er an den Dienst in `CuaDriver.app` weiter, weil nur diese App die Rechte für Bedienhilfen und Bildschirmaufnahme
 hat. Den HTTP-Weg des Treibers (`CUA_DRIVER_RS_MCP_HTTP_PORT`) nutzt Torro nicht.
 
+## Zwei Modi zu bedienen: Hintergrund und Vordergrund
+
+| | Hintergrund-Modus | Vordergrund-Modus („Show me“) |
+|---|---|---|
+| Zweck | arbeiten, während die Person weiterarbeitet | der Person vorführen, was der Assistent tut; eine Aktion, die im Hintergrund nicht geht |
+| Wann | immer, ohne Zutun (Standard) | nur in einer freigegebenen Vorführung |
+| Maus, Fokus, aktives Fenster | bleiben bei der Person | gehen für die Vorführung an den Assistenten |
+| Auslöser | – | die Person bittet darum („Zeig mir, wie …“), oder der Assistent schlägt es vor |
+| Freigabe | Karten wie im Abschnitt „Freigabe“ | eigene Karte „Show on screen“ im Chat, danach wie unten |
+| Ende | – | Aktionen fertig, Zeitgrenze, „Stop“, Tray, Tastenkürzel; dann zurück in den Hintergrund |
+
+### Hintergrund-Modus: Standard
+
+Der Assistent bedient fremde Programme, **während die Person weiterarbeitet.** Mauszeiger, Tastaturfokus, aktives
+Fenster und Arbeitsfläche bleiben bei ihr; der Rechner ist nie blockiert. Das ist die Standardarbeit des Werkzeugs.
+Den Vordergrund gibt es nur in einer Vorführung, die die Person freigibt (nächster Abschnitt).
+
+- **Was „Hintergrund“ heißt:** Der Treiber schickt jede Aktion an ein bestimmtes Fenster (Prozess und
+  Fenster-Kennung), nicht an den Eingabefokus des Systems. Der Zeiger der Person bewegt sich nicht, das Fenster kommt
+  nicht nach vorn, der Fokus wechselt nicht. Das Fenster darf verdeckt sein oder, je nach Plattform, auf einer anderen
+  Arbeitsfläche liegen.
+- **Zwei Wege im Hintergrund**, in dieser Reihenfolge:
+  1. **Über ein Element** des Bedienhilfen-Baums (`element_token`): Knopf auslösen, Wert setzen, Menüpunkt aufrufen.
+     Das spricht die Bedienhilfen-Schnittstelle des Programms an, nicht Maus oder Tastatur, und geht auch bei
+     verdecktem Fenster. **Bevorzugt.**
+  2. **Über einen Bildpunkt** im Bildschirmfoto des Fensters (mit `capture_id`), die Eingabe an das Fenster
+     adressiert. Nur, wo die Plattform solche Eingaben an ein Fenster im Hintergrund zulässt.
+- **Der Kern hält den Hintergrund fest:** Er setzt bei jedem Aufruf `delivery_mode: "background"`. Ein Feld des
+  Modells dafür gibt es nicht; `foreground` setzt nur der Kern, und nur in einer freigegebenen Vorführung.
+  `bring_to_front` bietet er dem Modell nie an.
+- **Ablehnen statt übernehmen:** Kann der Treiber eine Aktion im Hintergrund nicht sicher ausliefern
+  (`background_unavailable`), meldet der Kern das dem Modell („This action can't run in the background in
+  LibreOffice.“). Er weicht nie still auf den Vordergrund aus; auch der Treiber tut das nicht. Das Modell versucht
+  einen anderen Weg (Element statt Taste, Wert setzen statt Tippen), sagt der Person, was nicht geht, oder schlägt
+  eine Vorführung vor.
+- **Nicht blockierend auch im Chat:** Aktionen laufen, während die Person weiterschreibt; „Stop“ geht jederzeit. Die
+  Karte im Modus „Bei jeder Aktion“ erscheint im Chat und holt kein Fenster nach vorn. Wer den Assistenten eine Weile
+  allein arbeiten lassen will, nimmt den Modus „Je Programm einmal“.
+- **Sichtbar trotz Hintergrund:** Werkzeugzeile im Chat und Eintrag im Tray, solange bedient wird. Der Zeiger des
+  Treibers ist ein eigener, eingeblendeter Zeiger (`move_cursor` bewegt den der Person nicht); geht er unter Hyprland
+  nicht, genügen Chat und Tray.
+- **Eine Unterhaltung zur Zeit:** Alle Sitzungen des Treibers teilen Bildschirm, Tastatur und Fokus. Darum bedient
+  höchstens eine Unterhaltung gleichzeitig; eine zweite bekommt `busy`.
+
+### Vordergrund-Modus: zum Zeigen
+
+Manchmal soll die Person sehen, was passiert: „Zeig mir, wo ich in LibreOffice die Seitenränder einstelle.“ Dann holt
+der Assistent das Fenster nach vorn, bewegt den echten Zeiger sichtbar und tippt so, dass man zusehen kann. Dasselbe
+gilt für eine einzelne Aktion, die im Hintergrund abgelehnt wurde und die die Person trotzdem will. In dieser Zeit
+kann die Person den Rechner nicht nebenher benutzen; darum ist der Vordergrund nie Standard und nie still.
+
+- **Auslösen:** Das Modell ruft `tools.screen_show` mit Programm, Fenster und einem Satz, was es zeigen will. Es tut
+  das, wenn die Person darum bittet, oder schlägt es vor (etwa nach `background_unavailable`). Von selbst wechselt
+  nichts in den Vordergrund.
+- **Freigeben:** eine eigene Karte im Chat, **„Show on screen“**: Programm und Fenster, der Satz des Modells als
+  fremder Text gekennzeichnet, und deutlich „The assistant will take over the mouse and keyboard in this window. Don't
+  type meanwhile. Press Esc twice or ‹Stop› to take back control.“ Antworten: „Deny“, „Show me“. Ein „In this
+  conversation“ oder „Always“ gibt es dafür nicht; jede Vorführung fragt neu, auch im Modus „Je Programm einmal“
+  und auch nach fremden Inhalten. Nur auf der Karte, nie per Stimme oder Benachrichtigung.
+- **Während der Vorführung:** Der Kern holt das Fenster nach vorn (über `torro-wm` bzw. `bring_to_front`) und setzt
+  für Aktionen in genau diesem Fenster `delivery_mode: "foreground"`. Für jede Aktion gilt weiter der gewählte Modus:
+  Im Modus „Bei jeder Aktion“ zeigt der Kern die Karte. Alle harten Grenzen und Muster gelten unverändert. Aktionen in
+  einem anderen Fenster laufen im Hintergrund oder gar nicht.
+- **Grenzen:** eine Vorführung gilt für ein Fenster, höchstens 5 Minuten und 50 Aktionen (Vorschlag, fest im Kern).
+- **Ende:** wenn das Modell `tools.screen_show_end` ruft, bei der Zeit- oder Aktionsgrenze, bei „Stop“ im Chat, über
+  den Tray („Stop screen control“), mit einem Tastenkürzel zum Zurückholen, oder wenn das Fenster zugeht. Danach ist
+  wieder alles Hintergrund, und der Kern gibt den Fokus an das Fenster zurück, das ihn vorher hatte.
+- **Sichtbar:** solange die Vorführung läuft, ein deutlicher Hinweis im Tray und am Chat („Showing in LibreOffice –
+  Stop“).
+
+### Was im Hintergrund geht
+
+Nach Doku des Herstellers; für Hyprland nicht beobachtet.
+
+| Plattform | Element (Knopf, Wert, Menü) | Bildpunkt-Klick | Tasten, Tippen in Felder ohne Bedienhilfe | Bild eines Fensters |
+|---|---|---|---|---|
+| Linux X11 | ja | ja (an das Fenster adressiert) | ja, manche Toolkits verwerfen es | ja |
+| Linux Wayland allgemein | ja (AT-SPI hängt nicht am Compositor) | je Compositor | **nein**, `background_unavailable` (Sway, GNOME, KDE) | je Compositor, oft nur über XWayland |
+| **Hyprland** | **voraussichtlich ja** | **unklar** | **voraussichtlich nein**: Wayland gibt Tasten nur an das Fenster mit Fokus | **unklar**: `doctor` findet über X11 keine Fenster |
+| Programm unter XWayland auf Hyprland | ja | voraussichtlich ja | voraussichtlich ja | voraussichtlich ja |
+| macOS | ja; SwiftUI-Fenster auf einem anderen Space verlieren den Baum | ja | ja | ja (ScreenCaptureKit) |
+| Windows | ja | ja (Fenster-Nachrichten) | ja, außer Programme, die nur Roh-Eingaben lesen | ja |
+
+Überall ohne Hintergrund: Zeichenflächen wie Blender, Unity und Spiele, die Eingaben je Prozess nicht annehmen;
+Bildpunkt-Klicks laufen dort ins Leere.
+
+Für Hyprland heißt das voraussichtlich: **Im Hintergrund geht, was ein Programm über seine Bedienhilfen anbietet**,
+also Knöpfe, Menüs, Häkchen und Textfelder, deren Wert sich setzen lässt (`set_value`, `type_text` in Felder mit
+AT-SPI-Bearbeitung). Tastenkürzel und Tippen in Felder ohne Bedienhilfe gehen nicht. Ob Bildschirmfotos und
+Bildpunkt-Klicks gehen, muss der Test klären. Ein Programm unter XWayland (`GDK_BACKEND=x11`, `QT_QPA_PLATFORM=xcb`)
+kann mehr, muss dafür aber so gestartet werden.
+
 ## Test unter Hyprland
 
 **Ergebnis: noch kein Bedien-Test.** Geprüft am 21. November 2026 auf dem Rechner mit Hyprland, nur lesend und mit
@@ -120,6 +212,25 @@ mit `GDK_BACKEND=x11` bzw. `QT_QPA_PLATFORM=xcb` unter XWayland startet, sollte 
 Je Zeile festhalten: kommt der Baum, kommt ein Bild, kommt die Eingabe im Hintergrund an, bewegt sich Maus oder Fokus
 der Person, was lehnt der Treiber mit welchem Fehler ab. Die Nutzungsdaten bleiben dabei aus.
 
+**Was der Test für den Hintergrund-Modus klären muss** (je Programm):
+
+1. Kommt der Baum über AT-SPI, wenn das Fenster verdeckt ist und wenn es auf einer anderen Arbeitsfläche liegt?
+2. Lösen Element-Aktionen (Knopf, `set_value`, `invoke_menu`) im verdeckten Fenster aus?
+3. Kommt ein Bildschirmfoto des einzelnen Wayland-Fensters, auch verdeckt?
+4. Kommt ein Bildpunkt-Klick im Hintergrund an, oder lehnt der Treiber ab?
+5. Lehnt der Treiber Tasten und Tippen in Felder ohne Bedienhilfe sauber ab (`background_unavailable`), statt in das
+   Fenster mit Fokus zu tippen?
+6. **Bleibt die Person ungestört?** Während jeder Aktion tippt die prüfende Person in einem anderen Fenster weiter;
+   vorher und nachher `hyprctl activewindow` und `hyprctl cursorpos` vergleichen. Kein Zeichen darf im falschen
+   Fenster landen, Fokus und Zeiger dürfen sich nicht ändern.
+7. Dasselbe Programm unter XWayland: Was geht dann zusätzlich, und verschwindet die Warnung von `doctor`?
+8. Erscheint der eigene Zeiger des Treibers unter Hyprland?
+
+**Für den Vordergrund-Modus** zusätzlich: Holt `bring_to_front` unter Hyprland das Fenster nach vorn, oder muss
+Torro das über `torro-wm` tun? Kommen Klicks und Tasten mit `delivery_mode: "foreground"` an (unter Wayland über
+virtuelle Tastatur und Zeiger, die Hyprland anbieten muss)? Kann ein Tastenkürzel zum Zurückholen die Vorführung
+sicher beenden?
+
 ## Befehle
 
 Bereich `tools`, ohne eigenes `ToolId`, wie das Terminal. Namen sind ein Vorschlag (offene Frage 1).
@@ -136,11 +247,13 @@ Bereich `tools`, ohne eigenes `ToolId`, wie das Terminal. Namen sind ein Vorschl
 | `tools.screen_scroll` | `scroll` | scrollen |
 | `tools.screen_drag` | `drag` | ziehen |
 | `tools.screen_menu` | `invoke_menu` | Menüpunkt über den Menüpfad |
+| `tools.screen_show` | `bring_to_front` (nur der Kern, nach dem Ja) | Vorführung im Vordergrund erbitten: Karte „Show on screen“ |
+| `tools.screen_show_end` | – | Vorführung beenden, zurück in den Hintergrund |
 
 - **Nur Fenster, nie der ganze Bildschirm:** `get_desktop_state` bietet Torro nicht an. Der ganze Bildschirm zeigt
   Benachrichtigungen, andere Fenster und gesperrte Programme.
-- **Nur im Hintergrund** in der ersten Stufe. Der Vordergrund nimmt der Person Maus und Fokus; er kommt, wenn
-  überhaupt, mit eigener Freigabe (offene Frage 4).
+- **Standard ist der Hintergrund** (Abschnitt „Zwei Modi zu bedienen“). Der Vordergrund nimmt der Person Maus und
+  Fokus; es gibt ihn nur in einer Vorführung mit eigener Karte.
 - **Nie angeboten:** Programme beenden oder starten, Zwischenablage (sie hält oft Passwörter), Konfiguration und
   Erweiterungen des Treibers, Updates, Aufzeichnen und Abspielen, Fenster verschieben (das macht `torro-wm`), die
   Maus-Rohbefehle (`mouse_button_*`, `parallel_mouse_drag`), Sitzungen (verwaltet der Kern), die Browser-Werkzeuge
@@ -148,9 +261,9 @@ Bereich `tools`, ohne eigenes `ToolId`, wie das Terminal. Namen sind ein Vorschl
 - **Grenzen** wie beim Terminal fest im Kern: höchstens eine laufende Aktion je Unterhaltung, Baum gekürzt
   (`max_elements`), Bild verkleinert, Zeitgrenze je Aktion. Das Modell ändert sie nicht.
 
-## Zwei Modi
+## Zwei Freigabe-Modi
 
-Abgestimmt auf das Terminal. Nur ein Mensch schaltet um (Steuerzentrale › MCP servers › Built-in › Screen).
+Abgestimmt auf das Terminal. Sie gelten im Hintergrund wie im Vordergrund. Nur ein Mensch schaltet um (Steuerzentrale › MCP servers › Built-in › Screen).
 
 - **„Bei jeder Aktion fragen“** (Voreinstellung): Vor jedem Klick, jedem Tippen, jeder Taste, jedem Scrollen und Ziehen
   erscheint die Karte. So macht es Hermes für dieselben Aktionen.
@@ -295,7 +408,8 @@ Wie beim Terminal:
 | Fenster sehen | Chat: Werkzeugzeile, Frage einmal je Unterhaltung und Programm | `tools.screen_read_window` · Read | `tools_screen_read_window` (ebenso) |
 | Ausschnitt vergrößern | Werkzeugzeile | `tools.screen_zoom` · Read | `tools_screen_zoom` (ebenso) |
 | Klicken, Tippen, Tasten, Scrollen, Ziehen, Menü | Werkzeugzeile und Karte | `tools.screen_click`, `screen_type`, `screen_keys`, `screen_scroll`, `screen_drag`, `screen_menu` · Delete (wie `tools.run_command`: ein Klick kann alles auslösen) | `tools_screen_…` (ebenso) |
-| Aktion freigeben | Karte im Chat | `approvals.decide_approval` mit `scope` | **Never** (Punkt 3) |
+| Vorführung im Vordergrund erbitten und beenden | Karte „Show on screen“, Hinweis „Showing in … – Stop“ | `tools.screen_show` · Delete, `tools.screen_show_end` · Write | `tools_screen_show`, `tools_screen_show_end` (für fremde Clients immer abgelehnt) |
+| Aktion oder Vorführung freigeben | Karte im Chat | `approvals.decide_approval` mit `scope` | **Never** (Punkt 3) |
 | Schalter, Modus, gesperrte Programme | Steuerzentrale › MCP servers › Built-in › Screen | `settings.set_setting screen` | **Never** (neuer Punkt 16) |
 | Bedienen stoppen | „Stop“ im Chat, Tray „Stop screen control“ | `assistant.cancel` · Write (gibt es) | `assistant_cancel` |
 
@@ -311,32 +425,44 @@ Client ab. Ob sie dann überhaupt `Mcp::Tool` sein sollen oder `Never` mit neuem
    Seite „Screen“ mit Schalter (aus).
 2. **Sehen:** Fenster auflisten, Baum und Bild, Ausschnitt; gesperrte Programme; `untrusted` und
    `may_have_read_untrusted`; Frage einmal je Unterhaltung und Programm; keine Bilder im Verlauf.
-3. **Bedienen:** Aktionen mit Karte, zwei Modi, harte Grenzen und Muster, Prüfung nach dem Ja, Protokoll.
+3. **Bedienen im Hintergrund:** Aktionen mit Karte, `delivery_mode` fest auf `background`, Ablehnen statt
+   Vordergrund, eine Unterhaltung zur Zeit, zwei Freigabe-Modi, harte Grenzen und Muster, Prüfung nach dem Ja, Protokoll.
 4. **Stopp und Anzeige:** Tray-Eintrag, Zeiger oder Rahmen am bedienten Fenster.
-5. **macOS**, 6. **Windows** (je ein Issue).
-7. **Browser-Werkzeug** über CDP: eigenes Konzept-Issue.
+5. **Vordergrund-Modus:** `tools.screen_show` mit Karte „Show on screen“, Grenzen, Ende und Rückgabe des Fokus,
+   Tastenkürzel zum Zurückholen.
+6. **macOS**, 7. **Windows** (je ein Issue).
+8. **Browser-Werkzeug** über CDP: eigenes Konzept-Issue.
 
 ## Empfehlung
 
 `cua-driver` übernehmen und als eingebautes Werkzeug „Screen“ anbinden, nicht selbst bauen und nicht nur als
 fremden MCP-Server. Torro installiert ihn nicht, setzt bei jedem Start Nutzungsdaten und Update-Abfrage aus, bietet
-dem Modell nur zehn Befehle an und hält alle Sperren im Kern: keine Fenster der Suite, keine Passwort-Manager,
-Rechte-Dialoge und Terminals, keine Passwortfelder, keine Super-Tasten. Ab Werk aus, nur für den Assistenten, jede
-Aktion mit Karte; Bildschirminhalt ist fremder Inhalt. Webseiten bekommen später einen eigenen Browser-Weg.
-**Gebaut wird erst nach dem Test unter Hyprland**: Er entscheidet, ob Linux mit dem Bedienhilfen-Baum allein
-genug kann, oder ob macOS zuerst kommt.
+dem Modell nur zwölf Befehle an und hält alle Sperren im Kern: keine Fenster der Suite, keine Passwort-Manager,
+Rechte-Dialoge und Terminals, keine Passwortfelder, keine Super-Tasten. **Standardarbeit ist der Hintergrund-Modus:**
+Maus, Fokus und aktives Fenster bleiben bei der Person, der Kern setzt das bei jedem Aufruf fest und lehnt ab, was im
+Hintergrund nicht geht, statt still den Rechner zu übernehmen. **Der Vordergrund-Modus ist zum Zeigen da** und für
+eine Aktion, die im Hintergrund nicht geht: nur als Vorführung mit eigener Karte „Show on screen“, begrenzt auf ein
+Fenster und wenige Minuten, jederzeit abzubrechen. Ab Werk aus, nur für den Assistenten, jede Aktion mit
+Karte; Bildschirminhalt ist fremder Inhalt. Webseiten bekommen später einen eigenen Browser-Weg.
+**Gebaut wird erst nach dem Test unter Hyprland**: Er entscheidet, ob Linux im Hintergrund mit dem Bedienhilfen-Baum
+allein genug kann, oder ob macOS zuerst kommt.
 
 ## Entscheidungen für Menschen
 
 1. Treiber übernehmen statt selbst bauen?
 2. Eingebautes Werkzeug statt nur eigener MCP-Server über #302?
 3. Torro installiert den Treiber nicht, die Person tut es nach der Anleitung des Herstellers?
-4. Zwei Modi („Bei jeder Aktion“ als Voreinstellung, „Je Programm einmal“), kein „Always“?
-5. Sehen fragt einmal je Unterhaltung und Programm?
-6. Die Liste der gesperrten Programme, Tasten und Tippmuster wie oben?
-7. Nach fremden Inhalten fragt jede Aktion (statt das Bedienen ganz zu sperren)?
-8. Nur der Assistent, keine Bots, kein Client über API oder MCP; Schalter nur für Menschen (Punkt 16)?
-9. Reihenfolge der Bau-Issues, mit dem Test als Bedingung?
+4. Hintergrund-Modus als Standardarbeit: der Kern setzt `background` fest und lehnt ab, statt still Maus und Fokus
+   zu übernehmen?
+5. Vordergrund-Modus zum Zeigen und für Aktionen, die im Hintergrund nicht gehen: nur als Vorführung über
+   `tools.screen_show` mit eigener Karte „Show on screen“, jedes Mal neu gefragt, ein Fenster, höchstens 5 Minuten
+   und 50 Aktionen?
+6. Zwei Freigabe-Modi („Bei jeder Aktion“ als Voreinstellung, „Je Programm einmal“), kein „Always“?
+7. Sehen fragt einmal je Unterhaltung und Programm?
+8. Die Liste der gesperrten Programme, Tasten und Tippmuster wie oben?
+9. Nach fremden Inhalten fragt jede Aktion (statt das Bedienen ganz zu sperren)?
+10. Nur der Assistent, keine Bots, kein Client über API oder MCP; Schalter nur für Menschen (Punkt 16)?
+11. Reihenfolge der Bau-Issues, mit dem Test als Bedingung?
 
 ## Offene Fragen
 
@@ -345,7 +471,9 @@ genug kann, oder ob macOS zuerst kommt.
 2. **Test unter Hyprland:** Wer führt ihn aus und wann? Bis dahin ist offen, ob unter Hyprland mehr als der
    Bedienhilfen-Baum geht.
 3. **„Always“ je Programm:** gebraucht, oder genügt „In this conversation“?
-4. **Vordergrund:** überhaupt anbieten? Wenn ja, mit eigener Karte und nur, wenn die Person am Rechner ist?
+4. **Wechsel in den Vordergrund:** Genügt die Karte „Show on screen“ je Vorführung, oder soll die Person eine
+   Vorführung auch selbst starten können (Knopf „Show me“ im Chat), und darf eine laufende Vorführung bei der
+   nächsten Bitte ohne neue Karte weiterlaufen?
 5. **Enter nach dem Tippen** und Absenden von Formularen: eigenes Muster, das immer fragt?
 6. **Nutzungsdaten dauerhaft abschalten:** Darf Torro selbst `cua-driver telemetry disable` aufrufen (ändert die
    Einstellung des Treibers für alle Programme), oder nur die Person?
@@ -356,6 +484,16 @@ genug kann, oder ob macOS zuerst kommt.
 11. **Rechte-Modus `bounded` des Treibers:** lohnt ein Manifest zusätzlich zu den Prüfungen im Kern?
 12. **Updates des Treibers:** Mindestversion und Fingerabdrücke genügen, oder legt Torro eine Version fest und lädt sie
     selbst?
+13. **Grenze des Hintergrunds unter Hyprland:** Genügt zum Start, was über Bedienhilfen geht (Knöpfe, Menüs, Werte,
+    keine Tastenkürzel), oder soll Torro anbieten, ein Programm unter XWayland neu zu starten, damit mehr im Hintergrund
+    geht?
+14. **Allein arbeiten lassen:** Ist der Modus „Je Programm einmal“ der richtige Weg, damit der Assistent im
+    Hintergrund arbeitet, während die Person woanders ist, oder braucht es eine Freigabe für einen ganzen Ablauf
+    („Fülle dieses Formular aus“) mit Bericht am Ende?
+15. **Ende der Vorführung:** Welches Tastenkürzel holt die Kontrolle zurück (zweimal Esc, ein eigenes Kürzel in
+    Hyprland), und soll jede eigene Maus- oder Tastenbewegung der Person die Vorführung sofort beenden?
+16. **Grenzen der Vorführung:** Passen 5 Minuten und 50 Aktionen, und darf eine Vorführung bei Bedarf ein zweites
+    Fenster desselben Programms (etwa einen Dialog) mit einschließen?
 
 ## Quellen
 
