@@ -299,7 +299,7 @@ Umgehung bei jedem Start ab, und Squire braucht DOMPurify. **Empfehlung: Weg A**
 
 | Teil | Version |
 |---|---|
-| tao / wry | 0.37.3 / 0.57.2 (Linux: GTK 3.24.52, WebKitGTK `webkit2gtk-4.1` 2.54.1) |
+| tao / wry | 0.37.3 / 0.57.3 (Linux: GTK 3.24.52, WebKitGTK `webkit2gtk-4.1` 2.54.1) |
 | Squire | `squire-rte` 2.4.11 (MIT, Neil Jenkins; letzte Version 2026-11-10) |
 | DOMPurify | 3.4.18 (MPL-2.0 oder Apache-2.0), von Squire für HTML-Eingaben vorausgesetzt |
 
@@ -313,8 +313,8 @@ Umgehung bei jedem Start ab, und Squire braucht DOMPurify. **Empfehlung: Weg A**
 | Kosten der Umgehung | Software statt GPU-Puffer beim Zeichnen der Seite; im Versuch kein Ruckeln bemerkt, nicht gemessen (kein Bildlauf-Test). | – |
 | Datei-Drop, nativ | **Ja.** `enter`, `drop` und `leave` kommen mit absolutem Pfad und Position (logische Pixel im Webview). Bild auf den Text, Bild auf den freien Bereich und ein Bild aus dem Dateimanager: je ein `drop` mit Pfad. Ein PDF wurde nicht gezogen; der Weg hängt nicht vom Typ ab. | `EVIDENCE.md` (Auszug des stdout-Protokolls) |
 | Datei-Drop, DOM | Die Seite sieht nur `text/uri-list` und `text/html`, `files` ist leer, aber ihre Position stimmt. Die Datei liest also die Rust-Seite über den nativen Pfad. WebKit/Squire fügen sonst die `file://`-Adresse als Text ein; der Drop muss vor Squire abgefangen werden (Handler in der Capture-Phase am Editor; der Spike hängt seinen Handler nur an `document`, das ist hier nicht belegt). | `EVIDENCE.md` (Auszug des stdout-Protokolls) |
-| Umlaute | **Ja.** `äöü ß „Öl“` über virtuelle Tastatur (`wtype`) und von Hand getippt. Eingabemethoden (fcitx5) wurden nicht geprüft: Der Nutzer verwendet keine. | `EVIDENCE.md` |
-| Strg+Z | **Ja.** Squire macht Rückgängig und Wiederholen (`undo-state`); getippter Text zählt als ein Schritt. | `EVIDENCE.md` |
+| Umlaute | **Ja.** `äöü ß „Öl“` über virtuelle Tastatur (`wtype`) und von Hand getippt. Eingabemethoden (fcitx5) wurden nicht geprüft. | `EVIDENCE.md` |
+| Strg+Z | **Ja.** Squire macht Rückgängig und Wiederholen (`undo-state`). | `EVIDENCE.md` |
 | Auswahl über Bilder | **Ja.** Strg+A wählt alles (226 Zeichen, 2 Bilder), Tippen ersetzt alles. Mit der Maus: eine Auswahl über 3 Bilder (die 2 der Fixture und ein per Drop im Text verschobenes) und mehrere Absätze. | `EVIDENCE.md` |
 | Einfügen | **Ja.** Aus Chromium (`text/html` + `text/plain`) und einer zweiten Quelle (`text/plain` zuerst, `text/html`) kommt HTML mit vielen Inline-Stilen (`font-*`, `caret-color`); `torro_mail::html::sanitize` macht daraus `<p>…</p>` ohne Stile. Synthetischer Office-Test (`mso-`-Stile, `<script>`, Fremdbild): Skript weg, Tabelle und Link bleiben, Fremdbild weg. Fett aus `<span style="font-weight">` geht verloren, `<b>` bleibt. LibreOffice-Tabelle: nicht eindeutig prüfbar, siehe Was fehlt. | `fixtures/paste-synthetic.html`, Protokoll |
 | HTML hin und zurück | **Ja.** `--selftest`: 19 Punkte, alle ok. `torro-quote`, `torro-signature`, beide `type="cite"`, beide `cid:`-Bilder und Umlaute überstehen Squire und `sanitize`; `sanitize` ist idempotent. Bilder laden über `torro://img/<cid>`, beim Speichern zurück zu `cid:`. | `--selftest` |
@@ -337,7 +337,7 @@ im Editor überlegenswert.
 
 ### Was fehlt
 
-- Eingabemethode (fcitx5), ein PDF-Drop und eine LibreOffice-Tabelle sind nicht eindeutig geprüft.
+- Eingabemethode (fcitx5), ein PDF-Drop und eine LibreOffice-Tabelle sind nicht eindeutig geprüft; ob die Nutzer eine Eingabemethode verwenden, ist offen.
 - Bildlauf und langes Schreiben unter der Umgehung (Software-Zeichnen) nicht gemessen.
 - macOS (WKWebView) und Windows (WebView2) nicht geprüft; wry deckt beide ab.
 - `__NV_DISABLE_EXPLICIT_SYNC=1` ist ein Treiber-Schalter, `WEBKIT_DISABLE_DMABUF_RENDERER=1` ein WebKit-Schalter; ob
@@ -365,7 +365,7 @@ mit HTML, Zeilenumbruch mit Formaten und Drops. `winit` 0.30.13 liefert unter Wa
 
 ### Empfehlung
 
-**Weg A.** Alle Punkte, an denen der Iced-Editor scheitert, gehen im Versuch, und Datei-Drops mit Position lösen die
+**Weg A.** Die Punkte, an denen der Iced-Editor scheitert (Rückgängig, Auswahl über Bilder, Datei-Drops), gehen im Versuch (offene Lücken: „Was fehlt“), und Datei-Drops mit Position lösen die
 gewünschte Regel (Bild auf den Text einbetten, übriges Fenster fragen, andere Dateien als Anhang) auf Machbarkeit. Die
 Auflagen: (1) das Fenster mit `WEBKIT_DISABLE_DMABUF_RENDERER=1` als Kindprozess starten, (2) Squire mit DOMPurify
 ausliefern (Lizenzen beachten), (3) WebKitGTK in Paketen und CI wieder einplanen, (4) auf macOS und Windows vor dem
