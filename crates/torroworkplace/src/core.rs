@@ -36346,6 +36346,53 @@ done"#,
         assert_eq!(decided, [("ok".to_string(), true), ("denied".to_string(), true)]);
     }
 
+    /// Issue #752: a client goes on only with a conversation with a bot that it started itself, by `bots.ask_bot` and
+    /// by `assistant.send_message` with `bot`: the person's conversation, and another client's, hold what the bot read
+    /// with its full rights and are not for it to feed to a model.
+    #[tokio::test]
+    async fn a_client_continues_only_its_own_conversation_with_a_bot() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let bot =
+            bot_with(&core, "Travel planner", torro_ipc::assistant::TEST_ENGINE, reading(&[Area::Calendar])).await;
+        let rights = || only_full(&[Area::Bots, Area::Assistant]);
+        let (_, key) = outside_client(&core, rights()).await;
+        let (_, other) = outside_client(&core, rights()).await;
+        let again = |conversation: &str| Request::AskBot {
+            bot: bot.id.clone(),
+            text: "And what did you read?".into(),
+            conversation: Some(conversation.into()),
+        };
+
+        // The person's conversation with the bot: nothing of it goes to a client's run.
+        let Response::Conversation { conversation: persons, .. } = core.handle(to_bot(&bot.id, None)).await else {
+            panic!("the person chats with the bot")
+        };
+        conversation_until(&core, &persons.id, |running, _| !running).await;
+        let before = conversation_until(&core, &persons.id, |running, _| !running).await.len();
+        assert_eq!(code(&ask(&core, Some(&key), again(&persons.id)).await), "forbidden");
+        let chat = to_bot(&bot.id, Some(&persons.id));
+        assert_eq!(code(&ask(&core, Some(&key), chat).await), "forbidden");
+        let after = conversation_until(&core, &persons.id, |running, _| !running).await.len();
+        assert_eq!(before, after, "nothing was added to it");
+
+        // Its own it goes on with, another client's it does not.
+        let Response::Conversation { conversation: mine, .. } = ask(&core, Some(&key), ask_bot(&bot.id)).await else {
+            panic!("the client asks the bot")
+        };
+        conversation_until(&core, &mine.id, |running, _| !running).await;
+        assert_eq!(code(&ask(&core, Some(&other), again(&mine.id)).await), "forbidden");
+        assert!(matches!(ask(&core, Some(&key), again(&mine.id)).await, Response::Conversation { .. }));
+        conversation_until(&core, &mine.id, |running, _| !running).await;
+        let chat = to_bot(&bot.id, Some(&mine.id));
+        assert!(matches!(ask(&core, Some(&key), chat).await, Response::Conversation { .. }));
+        // The person may go on with any conversation.
+        conversation_until(&core, &mine.id, |running, _| !running).await;
+        assert!(matches!(core.handle(to_bot(&bot.id, Some(&mine.id))).await, Response::Conversation { .. }));
+        conversation_until(&core, &mine.id, |running, _| !running).await;
+    }
+
     // ----- The assistant asks bots (task B.2) -----
 
     /// A bot named `name` answering with `engine`, saved by the person; its client gets `rights`.
