@@ -14,6 +14,7 @@ Stand: 2026-10-05, Tiling-Manager ergänzt am 2026-10-11. Zahlen zum Speicherbed
 - **Technik:** Rust-Kern + ratatui-TUI (sehr leicht) als Grundlage für alle Systeme. Die GUI kommt danach; Favorit ist **Iced**, entschieden wird nach einem Vergleich (Phase 3).
 - **Tiling-Manager:** Hyprland (Linux), AeroSpace (macOS), GlazeWM (Windows); siehe Abschnitt 6.
 - **Tray-Icon:** Omarchy 4 hat eine Tray-Leiste (Quickshell, StatusNotifierItem). Linux: `ksni` (ohne GTK), macOS/Windows: `tray-icon`.
+- **Schreibfenster:** Ein Fenster mit System-Webview und Squire (Weg A) löst die Lücken des Iced-Editors (Rückgängig, Auswahl über Bilder, Datei-Drops unter Wayland); Preis: ein zweiter Fenstertyp mit WebKitGTK und ein Absturz auf NVIDIA, solange `WEBKIT_DISABLE_DMABUF_RENDERER=1` fehlt. Abschnitt 9.
 
 ## 1. Suiten und „Desktop als Dashboard“
 
@@ -281,3 +282,92 @@ Wieder ansehen, wenn (a) Blitz 0.3 stabil ist und die Darstellungs-Attribute ken
 Bereinigung in CSS übersetzen –, (b) der Versuch auf Hyprland läuft und (c) möglichst Iced auf wgpu ≥ 30 steht, damit
 Weg 1 ohne Bildkopie möglich wird. Dann wäre Blitz als Lesebereich in TorroInbox der Ersatz für `torromailview`; die
 Befehle aus M9.1 bleiben gleich. Entschieden wird mit dem Menschen, nicht hier.
+
+## 9. Schreibfenster mit Webview (Versuch #917)
+
+Stand 2026-11-21. Versuch aus Issue #917: Kann das Schreibfenster der Mail-App ein eigenes Fenster mit System-Webview
+und einem fertigen WYSIWYG-Editor werden (Weg A), oder braucht es ein eigenes Rich-Text-Widget in Iced (Weg B)?
+Code: [`spikes/editor-webview/`](../spikes/editor-webview/) (eigenes Cargo-Projekt, `exclude = ["spikes"]`; WebKitGTK
+kommt nicht in Workspace, Release-Bau oder CI). Gemessen auf Hyprland (Wayland), NVIDIA RTX 4090, Linux 7.2,
+`--release`. macOS und Windows wurden nicht geprüft.
+
+**Kurz:** Weg A trägt. Rückgängig, Auswahl über Bilder, Einfügen, Umlaute und HTML hin und zurück gehen, und Datei-Drops
+kommen unter Wayland mit Pfad und Position an (wry/GTK, anders als winit). Zwei Haken: WebKitGTK stürzt hier ohne
+Umgehung bei jedem Start ab, und Squire braucht DOMPurify. **Empfehlung: Weg A**, mit den Auflagen unten.
+
+### Versionen
+
+| Teil | Version |
+|---|---|
+| tao / wry | 0.37.3 / 0.57.3 (Linux: GTK 3.24.52, WebKitGTK `webkit2gtk-4.1` 2.54.1) |
+| Squire | `squire-rte` 2.4.11 (MIT, Neil Jenkins; letzte Version 2026-11-10) |
+| DOMPurify | 3.4.18 (MPL-2.0 oder Apache-2.0), von Squire für HTML-Eingaben vorausgesetzt |
+
+### Was geprüft wurde
+
+| Punkt | Ergebnis | Beleg |
+|---|---|---|
+| Zeichnen, Größe, Kacheln | **Ja, mit Umgehung.** Mit `WEBKIT_DISABLE_DMABUF_RENDERER=1` zeichnet das Fenster nach Kacheln (breiter, schmaler) und Schweben (520×420, 900×700) sauber, keine leere Fläche. | `shots/nodmabuf-1…6`, `EVIDENCE.md` |
+| Absturz ohne Umgehung | **Ja, Befund.** Mit eingeschaltetem Bildschirm stürzt das Fenster in 15 von 15 Starts ab: `wp_linux_drm_syncobj_surface_v1: Missing acquire timeline` (Error 71, explizite Synchronisation, NVIDIA). Ohne Umgehung lief es nur bei ausgeschaltetem Bildschirm. | `EVIDENCE.md` |
+| Umgehungen | `WEBKIT_DISABLE_DMABUF_RENDERER=1`: 0 von 15 Abstürzen. `__NV_DISABLE_EXPLICIT_SYNC=1`: 0 von 5. `WEBKIT_DISABLE_COMPOSITING_MODE=1`: 5 von 5 stürzen ab. `GDK_BACKEND=x11`: 5 von 5 stürzen ab (Ursache nicht untersucht). | `EVIDENCE.md` |
+| Kosten der Umgehung | Software statt GPU-Puffer beim Zeichnen der Seite; im Versuch kein Ruckeln bemerkt, nicht gemessen (kein Bildlauf-Test). | – |
+| Datei-Drop, nativ | **Ja.** `enter`, `drop` und `leave` kommen mit absolutem Pfad und Position (logische Pixel im Webview). Bild auf den Text, Bild auf den freien Bereich und ein Bild aus dem Dateimanager: je ein `drop` mit Pfad. Ein PDF wurde nicht gezogen; der Weg hängt nicht vom Typ ab. | `EVIDENCE.md` (Auszug des stdout-Protokolls) |
+| Datei-Drop, DOM | Die Seite sieht nur `text/uri-list` und `text/html`, `files` ist leer, aber ihre Position stimmt. Die Datei liest also die Rust-Seite über den nativen Pfad. WebKit/Squire fügen sonst die `file://`-Adresse als Text ein; der Drop muss vor Squire abgefangen werden (Handler in der Capture-Phase am Editor; der Spike hängt seinen Handler nur an `document`, das ist hier nicht belegt). | `EVIDENCE.md` (Auszug des stdout-Protokolls) |
+| Umlaute | **Ja.** `äöü ß „Öl“` über virtuelle Tastatur (`wtype`) und von Hand getippt. Eingabemethoden (fcitx5) wurden nicht geprüft. | `EVIDENCE.md` |
+| Strg+Z | **Ja.** Squire macht Rückgängig und Wiederholen (`undo-state`). | `EVIDENCE.md` |
+| Auswahl über Bilder | **Ja.** Strg+A wählt alles (226 Zeichen, 2 Bilder), Tippen ersetzt alles. Mit der Maus: eine Auswahl über 3 Bilder (die 2 der Fixture und ein per Drop im Text verschobenes) und mehrere Absätze. | `EVIDENCE.md` |
+| Einfügen | **Ja.** Aus Chromium (`text/html` + `text/plain`) und einer zweiten Quelle (`text/plain` zuerst, `text/html`) kommt HTML mit vielen Inline-Stilen (`font-*`, `caret-color`); `torro_mail::html::sanitize` macht daraus `<p>…</p>` ohne Stile. Synthetischer Office-Test (`mso-`-Stile, `<script>`, Fremdbild): Skript weg, Tabelle und Link bleiben, Fremdbild weg. Fett aus `<span style="font-weight">` geht verloren, `<b>` bleibt. LibreOffice-Tabelle: nicht eindeutig prüfbar, siehe Was fehlt. | `fixtures/paste-synthetic.html`, Protokoll |
+| HTML hin und zurück | **Ja.** `--selftest`: 19 Punkte, alle ok. `torro-quote`, `torro-signature`, beide `type="cite"`, beide `cid:`-Bilder und Umlaute überstehen Squire und `sanitize`; `sanitize` ist idempotent. Bilder laden über `torro://img/<cid>`, beim Speichern zurück zu `cid:`. | `--selftest` |
+| Startzeit | Median **231 ms** bis die Seite bereit ist (222–243, 5 Läufe), mit `__NV_DISABLE_EXPLICIT_SYNC=1` 349 ms. Erstes Zeichnen nicht getrennt gemessen. | `--measure` |
+| Speicher | Median **227 MB** PSS (3 Prozesse: Fenster, WebKit-Web- und -Netzwerkprozess), mit `__NV_DISABLE_EXPLICIT_SYNC=1` 241 MB. Vergleichswert `torroinbox` fehlt: Es lief nicht. | `--measure` |
+| Binärgröße | Spike 1,86 MB (`--release`, ohne WebKit selbst; das kommt vom System). | `ls` |
+
+### Squire und TipTap (nur Papier)
+
+| | Squire 2.4.11 | TipTap 3.35.0 |
+|---|---|---|
+| Lizenz | MIT | MIT |
+| Größe | `squire.js` 60 KB (18 KB gzip); dazu DOMPurify 29 KB (12 KB gzip) | Paket `@tiptap/core` entpackt 3,3 MB (mit Typen und Maps); gebündelt nicht gemessen |
+| Abhängigkeiten | keine zur Laufzeit; HTML-Eingaben brauchen DOMPurify oder eine eigene `sanitizeToDOMFragment` | `@tiptap/pm` (ProseMirror) als Peer plus je ein Paket je Format; `starter-kit` bündelt rund 23 |
+| Pflege | letzte Version 2026-11-10, schlankes Projekt eines Autors | letzte Version 2026-11-20, Firma dahinter |
+| Passung | schreibt HTML, das Mail-Clients kennen (`div`, `blockquote`); nahe an dem, was `sanitize` erlaubt | eigenes Dokumentmodell (ProseMirror), HTML nur Import/Export; mehr Umbau nötig |
+
+TipTap wurde nicht gebaut. Für Mail passt Squire besser, TipTap wäre erst bei Tabellen, Kommentaren oder Zusammenarbeit
+im Editor überlegenswert.
+
+### Was fehlt
+
+- Eingabemethode (fcitx5), ein PDF-Drop und eine LibreOffice-Tabelle sind nicht eindeutig geprüft; ob die Nutzer eine Eingabemethode verwenden, ist offen.
+- Bildlauf und langes Schreiben unter der Umgehung (Software-Zeichnen) nicht gemessen.
+- macOS (WKWebView) und Windows (WebView2) nicht geprüft; wry deckt beide ab.
+- `__NV_DISABLE_EXPLICIT_SYNC=1` ist ein Treiber-Schalter, `WEBKIT_DISABLE_DMABUF_RENDERER=1` ein WebKit-Schalter; ob
+  ein neuer WebKitGTK oder Treiber den Absturz behebt, ist offen.
+
+### Kosten für die Suite
+
+- **Zweiter Fenstertyp:** Das Schreibfenster wäre ein eigener Prozess (wie früher `torromailview`) mit tao/wry statt
+  Iced; Oberfläche, Menüs und Theme müssten dort in HTML/CSS nachgebaut werden (Texte weiter englisch mit `tr()`).
+- **GTK/WebKitGTK zurück in Release und CI:** Linux-Pakete bräuchten `webkit2gtk-4.1`; das war mit M9.9 gerade entfernt
+  worden (Entscheidung 9 in `docs/mail.md`). Der Release-Bau muss dafür Abhängigkeiten installieren.
+- **Umgehung setzen:** Die Variable muss gesetzt sein, bevor WebKit startet. `set_var` ist `unsafe` und im Workspace
+  verboten; der Start müsste das Fenster mit gesetzter Variable als Kindprozess starten.
+- **Bilder umschreiben:** Die Mail-Logik lässt nur `cid:`-Bilder durch. Der Versuch lädt sie über `torro://img/<cid>`
+  und schreibt beim Speichern zurück; dieser Weg trägt, ist aber Code, den es heute nicht gibt (für neue Bilder im Text
+  zusätzlich ein vorläufiger Name bis zum Speichern).
+- **Speicher:** rund 230 MB mehr, solange das Fenster offen ist.
+
+### Weg B grob
+
+Ein Rich-Text-Widget in Iced: Cursor und Auswahl über Absätze und Bilder, Rückgängig, Eingabemethode, Zwischenablage
+mit HTML, Zeilenumbruch mit Formaten und Drops. `winit` 0.30.13 liefert unter Wayland keine Datei-Drops; sie müssten
+über eine andere Schicht kommen. Das ist ein großes Eigenbauprojekt ohne Vorbild im Iced-Umfeld; Rückgängig und Auswahl
+über Bilder fehlen im heutigen Editor genau deshalb.
+
+### Empfehlung
+
+**Weg A.** Die Punkte, an denen der Iced-Editor scheitert (Rückgängig, Auswahl über Bilder, Datei-Drops), gehen im Versuch (offene Lücken: „Was fehlt“), und Datei-Drops mit Position lösen die
+gewünschte Regel (Bild auf den Text einbetten, übriges Fenster fragen, andere Dateien als Anhang) auf Machbarkeit. Die
+Auflagen: (1) das Fenster mit `WEBKIT_DISABLE_DMABUF_RENDERER=1` als Kindprozess starten, (2) Squire mit DOMPurify
+ausliefern (Lizenzen beachten), (3) WebKitGTK in Paketen und CI wieder einplanen, (4) auf macOS und Windows vor dem
+Bau kurz prüfen. Entschieden wird mit dem Menschen; gebaut wird in einem Folge-Issue.
+

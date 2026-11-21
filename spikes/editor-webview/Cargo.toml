@@ -1,0 +1,33 @@
+# Spike for issue #917: can the compose window be a window with the system webview and a ready-made
+# WYSIWYG editor (Squire)? Its own Cargo project, excluded from the workspace (`exclude = ["spikes"]` in
+# the root), so WebKitGTK, GTK and tao/wry never touch the workspace, its lock file, the release build or
+# CI. Nothing here is product code; the answer is the section "Schreibfenster mit Webview" in
+# docs/research.md.
+[package]
+name = "editor-webview"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# An empty workspace of its own: Cargo then never looks for a workspace above (an exclude in the root is
+# not enough when this checkout is a git worktree inside another checkout).
+[workspace]
+
+[dependencies]
+# Window and webview. On Linux wry draws with WebKitGTK (`webkit2gtk-4.1`), inside a GTK box of the tao window.
+tao = "0.37.2"
+wry = "0.57.2"
+serde_json = "1"
+# The real cleaning of what a draft may contain, so the spike sees what the core would keep.
+torro-mail = { path = "../../crates/torro-mail" }
+
+[profile.release]
+strip = "debuginfo"
+lto = "thin"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
