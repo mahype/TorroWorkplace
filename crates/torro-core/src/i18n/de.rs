@@ -4633,8 +4633,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Bot \"{name}\"", "Bot „{name}“"),
     ("Bots", "Bots"),
     (
-        "Bots and asking them, which act with their own rights",
-        "Bots und Fragen an sie; sie handeln mit eigenen Rechten",
+        "Bots and asking them, which act only with what the bot and the asker both may do",
+        "Bots und Fragen an sie; sie handeln nur mit dem, was Bot und Fragender beide dürfen",
     ),
     ("Change an unknown bot to \"{name}\"", "Unbekannten Bot zu „{name}“ ändern"),
     ("Change the bot \"{name}\"", "Bot „{name}“ ändern"),
