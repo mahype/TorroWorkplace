@@ -516,7 +516,7 @@ Wie beim Terminal:
 - **Kein Haken in den Rechten:** Ein Mensch schaltet das Werkzeug auf der Seite „Screen“ der Steuerzentrale ein, ab
   Werk aus. Rechte-Editor, `my_access` und Vorlagen bleiben unberührt.
 - **Wer es erreicht:** nur der Client des Assistenten aus seiner eigenen Unterhaltung (`Actor::Assistant`). Bots nicht
-  (offene Frage 9), kein Agent mit geliehenem Schlüssel, kein Client über API oder MCP (`forbidden`, auch mit allen
+  in der ersten Stufe nicht (später mit eigenem Schalter, Abschnitt „Später“), kein Agent mit geliehenem Schlüssel, kein Client über API oder MCP (`forbidden`, auch mit allen
   Rechten). Grund: Ein fremder Agent bediente sonst den Bildschirm der Person ohne Karte; wer das will, bindet den
   Treiber selbst an und steht dann außerhalb der Suite.
 - **Schalter, Modus, gesperrte Programme** ändert nur ein Mensch: neuer Punkt 16 in „Was nie nach außen geht“
@@ -537,8 +537,24 @@ Wie beim Terminal:
 | Bildschirmfotos je Modell erlauben | Steuerzentrale › AI › Konto › Modellzeile „May see screenshots“ | `ai.set_model_screenshots` · Admin; anschalten für Modelle anderswo nur App-Schlüssel | `ai_set_model_screenshots` nur fürs Ausschalten (Punkt 16) |
 | Bedienen stoppen | „Stop“ im Chat, Tray „Stop screen control“ | `assistant.cancel` · Write (gibt es) | `assistant_cancel` |
 
-Die MCP-Tools gibt es wie beim Terminal nur der Form halber im Katalog: Torros MCP-Server lehnt sie für jeden fremden
-Client ab. Ob sie dann überhaupt `Mcp::Tool` sein sollen oder `Never` mit neuem Listenpunkt, ist offene Frage 10.
+**MCP-Weg (entschieden von Sven am 21. November 2026):** Die Befehle sind `Mcp::Tool` im Katalog, und Torros
+MCP-Server lehnt sie für jeden fremden Client ab (`forbidden`, auch mit allen Rechten), nach demselben Muster wie das
+Terminal ([terminal.md](terminal.md), Abschnitte „Rechte“ und „Drei Wege“: `tools_run_command` „für fremde Clients immer
+abgelehnt“). Kein `Never` mit neuem Listenpunkt für die Befehle selbst; `Never` bleibt für Freigeben und Einstellen
+(Punkte 3 und 16).
+
+## Später
+
+Nicht Teil der ersten Stufe:
+
+- **Bots** bekommen das Bildschirm-Werkzeug später (entschieden von Sven am 21. November 2026), mit einem eigenen
+  Schalter je Bot, **ab Werk aus**; einschalten nur ein Mensch. Dafür gelten dann dieselben Karten, Sperren und die
+  Netzsperre; ein Bot im Auftrag des Hauptbots bekommt es nur, wenn beide es haben (`Rights::common`). Eigenes
+  Bau-Issue nach den Stufen 1 bis 5.
+- **Browser-Werkzeug** über CDP (Folge-Issue 8).
+- **Sandbox** für den Treiber (Ordner der Suite ausblenden, etwa mit bubblewrap), wie beim Terminal unter „Später“.
+
+
 
 ## Reihenfolge der Bau-Issues
 
@@ -583,6 +599,8 @@ allein genug kann, oder ob macOS zuerst kommt.
 - **Kein Netzverkehr des Treibers**, auch keine Metadaten, Versionen, Update-Abfragen oder Installationsmeldungen;
   Torro stellt das mit einer Sperre sicher, sonst gibt es kein Werkzeug.
 - **Bildschirmfotos an Modelle entscheidet die Person**, je Modell an der Modellwahl.
+- **Bots** bekommen das Werkzeug später, mit eigenem Schalter, ab Werk aus (nicht in der ersten Stufe).
+- **MCP:** Die Befehle sind `Mcp::Tool` und werden für fremde Clients abgelehnt, wie beim Terminal.
 
 Noch zu entscheiden:
 
@@ -599,7 +617,7 @@ Noch zu entscheiden:
 7. Sehen fragt einmal je Unterhaltung und Programm?
 8. Die Liste der gesperrten Programme, Tasten und Tippmuster wie oben?
 9. Nach fremden Inhalten fragt jede Aktion (statt das Bedienen ganz zu sperren)?
-10. Nur der Assistent, keine Bots, kein Client über API oder MCP; Schalter nur für Menschen (Punkt 16)?
+10. In der ersten Stufe nur der Assistent, kein Client über API oder MCP; Schalter nur für Menschen (Punkt 16)?
 11. Reihenfolge der Bau-Issues, mit dem Test als Bedingung?
 12. Netzsperre unter Linux über seccomp in einem Startprogramm der Suite, und das Werkzeug bleibt aus, wo keine
     Sperre greift?
@@ -622,8 +640,9 @@ Noch zu entscheiden:
 7. **Bildschirmfotos an Modelle** (entschieden: die Person, je Modell): Passt die Voreinstellung „nur lokale
    Modelle“, und soll der Schalter auch den Fenstertext umfassen?
 8. **Browser-Fenster der Person:** ganz sperren, bis das Browser-Werkzeug da ist, oder bedienbar wie andere Programme?
-9. **Bots:** später mit eigenem Schalter, oder nie?
-10. **MCP-Weg:** `Mcp::Tool` mit Ablehnung für fremde Clients wie beim Terminal, oder `Never` mit Listenpunkt?
+9. **Bots** – entschieden: später, mit eigenem Schalter, ab Werk aus (Abschnitt „Später“).
+10. **MCP-Weg** – entschieden: `Mcp::Tool`, für fremde Clients immer abgelehnt, wie beim Terminal (Abschnitt
+    „Drei Wege“).
 11. **Rechte-Modus `bounded` des Treibers:** lohnt ein Manifest zusätzlich zu den Prüfungen im Kern?
 12. **Updates des Treibers:** Wer holt eine neue Version, wenn der Treiber selbst nie nachfragen darf: die Person von
     Hand, oder Torro mit einer neuen eigenen Version, die eine geprüfte Version des Treibers festlegt (bzw. den Fork
