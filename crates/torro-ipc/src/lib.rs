@@ -861,6 +861,41 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Secret::is_blank")]
         key: Secret,
     },
+    /// Starts signing in to an AI account with a browser instead of an API key (issue #324, `docs/ki.md`,
+    /// "Anmelden mit ChatGPT"): today `chatgpt` ("Sign in with ChatGPT"), later further providers with a
+    /// `torro_core::ai::oauth::SignIn`. The core listens on `http://127.0.0.1:<port>` for the provider's callback
+    /// (OAuth 2.0 Authorization Code with PKCE), and answers with [`Response::AiSignIn`]: the `flow` to ask about
+    /// and the `url` the client opens in the browser. The tokens never leave the core: it exchanges the code, keeps
+    /// the tokens in the system keychain under the account id `ai:chatgpt@api.openai.com` and renews them itself.
+    /// Ask with [`Request::CheckAiSignIn`] until it is done; a sign-in that is not finished in ten minutes ends.
+    ///
+    /// Error codes: `unsupported` for a provider without a sign-in, `error` when the suite has no client id the
+    /// provider requires (the message says so) or no port is free on this computer. A second start for the same
+    /// provider ends the first sign-in (its flow is then unknown). Only the app key may send it: every client key gets `forbidden`, whatever its rights, because it
+    /// brings a secret into the core (`docs/api.md`, "Was nie nach außen geht", 5); it never waits for an approval.
+    #[serde(rename = "accounts.start_ai_sign_in")]
+    StartAiSignIn {
+        /// The provider to sign in to: `chatgpt`.
+        provider: AiProvider,
+    },
+    /// Asks how the sign-in `flow` of [`Request::StartAiSignIn`] stands (issue #324): [`Response::AiSignInPending`]
+    /// while the person is still in the browser, [`Response::Account`] once the core checked the tokens with the
+    /// provider and stored the account (the model list is asked like every account's; connecting turns on no
+    /// model), else the error that ended it, once: `auth` when the provider refused, `error` when the person
+    /// declined or the answer did not belong to the sign-in, `offline`, `not-found` for a flow the core does not
+    /// know (ended, asked about already, or of an earlier run). Only the app key may send it.
+    #[serde(rename = "accounts.check_ai_sign_in")]
+    CheckAiSignIn {
+        /// The flow as [`Response::AiSignIn`] named it.
+        flow: String,
+    },
+    /// Ends the sign-in `flow` (issue #324): the core stops listening and forgets it; nothing is stored. Answered
+    /// with [`Response::Ok`], also for a flow it does not know. Only the app key may send it.
+    #[serde(rename = "accounts.cancel_ai_sign_in")]
+    CancelAiSignIn {
+        /// The flow as [`Response::AiSignIn`] named it.
+        flow: String,
+    },
     /// Connects an ntfy server's topics that need no login (task E5.12): the inbox subscribes to
     /// them as the source `ntfy:<host>` (task E5.13).
     ///
@@ -6517,10 +6552,21 @@ pub enum Response {
         client: ClientInfo,
     },
     /// The account a sign-in just connected ([`Request::ConnectGithub`],
-    /// [`Request::SetGithubToken`], [`Request::ConnectAi`], [`Request::ConnectNtfy`],
+    /// [`Request::SetGithubToken`], [`Request::ConnectAi`], [`Request::CheckAiSignIn`], [`Request::ConnectNtfy`],
     /// [`Request::SetNtfyLogin`]), as [`Request::Accounts`] lists it; never with its secret.
     Account {
         account: AccountInfo,
+    },
+    /// A sign-in with a browser began ([`Request::StartAiSignIn`], issue #324): open `url` in the browser and ask
+    /// about `flow` with [`Request::CheckAiSignIn`]. The address holds no token and not PKCE's verifier, only its
+    /// challenge; its `state` and `nonce` bind the callback to this sign-in, so it goes to the app key alone.
+    AiSignIn {
+        flow: String,
+        url: String,
+    },
+    /// The person has not finished the sign-in `flow` in the browser yet ([`Request::CheckAiSignIn`]).
+    AiSignInPending {
+        flow: String,
     },
     /// The control centre was opened so a person can finish the request there (a client's
     /// [`Request::ConnectGithub`] or [`Request::ConnectNtfy`]); nothing has changed yet.
