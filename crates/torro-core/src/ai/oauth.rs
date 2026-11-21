@@ -7,10 +7,11 @@
 //! the system keychain. A further provider (xAI, …) is one more [`SignIn`], never a change of the types here.
 //!
 //! The first provider is ChatGPT ([`CHATGPT`], "Sign in with ChatGPT", checked against
-//! <https://developers.openai.com/siwc/token-sharing-open-source> on 2026-11-21): an open-source app that runs on
-//! the person's computer registers itself at its first sign-in (`client_id=dynamic_agent_client`) and gets a
-//! client id of its own (`oaiapp_…`) back in the callback. A client id given at build or run time
-//! ([`SignIn::client_env`]) goes first; no other app's client id is ever used.
+//! <https://developers.openai.com/siwc/token-sharing-open-source> on 2026-11-21). OpenAI would let an open-source
+//! app register itself at its first sign-in ([`Registration::Dynamic`]); the suite does not (decision on #324): it
+//! offers ChatGPT only with a client id of its own from OpenAI, given at build or run time
+//! ([`SignIn::client_env`], [`Registration::Configured`]). Without one the sign-in is not offered
+//! ([`SignIn::offered`]) and the core refuses it. No other app's client id is ever used.
 //!
 //! Tokens are secrets: [`TokenSet`] never shows one in `Debug`, and no error here repeats one.
 
@@ -73,11 +74,14 @@ pub struct SignIn {
     pub built_client_id: Option<&'static str>,
     /// Where the person sets how much of their plan the suite may use, for "Manage usage".
     pub usage_url: Option<&'static str>,
+    /// The provider wants this computer's id (`ext_agent_host_id`) with every authorization request.
+    pub sends_host_id: bool,
 }
 
 /// "Sign in with ChatGPT" (issue #324): endpoints from `https://auth.openai.com/.well-known/openid-configuration`,
 /// scopes and `resource` from the guide for open-source apps (both checked on 2026-11-21). Tokens are used at
-/// `https://api.openai.com/v1` ([`crate::ai::AiProvider::ChatGpt`]).
+/// `https://api.openai.com/v1` ([`crate::ai::AiProvider::ChatGpt`]). Only with a client id of the suite's own from
+/// OpenAI (`TORRO_CHATGPT_CLIENT_ID`, decision on #324); without one ChatGPT is not offered.
 pub const CHATGPT: SignIn = SignIn {
     issuer: "https://auth.openai.com",
     authorize_url: "https://auth.openai.com/api/accounts/authorize",
@@ -88,10 +92,11 @@ pub const CHATGPT: SignIn = SignIn {
     resource: Some("https://api.openai.com/v1"),
     callback_path: "/auth/callback",
     port: 1455,
-    registration: Registration::Dynamic { entry: "dynamic_agent_client", name_hint: "Torro Workplace" },
+    registration: Registration::Configured,
     client_env: "TORRO_CHATGPT_CLIENT_ID",
     built_client_id: option_env!("TORRO_CHATGPT_CLIENT_ID"),
     usage_url: Some("https://chatgpt.com/settings/usage"),
+    sends_host_id: true,
 };
 
 /// Which client id a sign-in sends.
@@ -113,19 +118,26 @@ impl SignIn {
             .filter(|id| !id.is_empty())
     }
 
-    /// The client id of the next sign-in: the configured one, else `issued` (kept from an earlier sign-in), else
-    /// a registration where the provider allows one. [`AiError::Invalid`] with a sentence for people when there is
-    /// no way: the suite was built without the client id this provider requires.
+    /// The sign-in can be offered: a client id is configured, or the provider lets the app register itself. The
+    /// control centre lists only these; the core refuses the others ([`SignIn::client`]).
+    pub fn offered(&self) -> bool {
+        self.configured_client_id().is_some() || matches!(self.registration, Registration::Dynamic { .. })
+    }
+
+    /// The client id of the next sign-in: the configured one first. Where the provider lets the app register
+    /// itself, else `issued` (kept from an earlier sign-in), else a registration. [`AiError::Invalid`] with a
+    /// sentence for people when a provider that needs a configured client id has none, even with an id issued
+    /// before: only a configured one counts there.
     pub fn client(&self, issued: Option<&str>) -> Result<Client, AiError> {
         if let Some(id) = self.configured_client_id() {
             return Ok(Client::Known(id));
         }
-        if let Some(id) = issued.map(str::trim).filter(|id| !id.is_empty()) {
-            return Ok(Client::Known(id.to_string()));
-        }
         match self.registration {
-            Registration::Dynamic { .. } => Ok(Client::Register),
             Registration::Configured => Err(not_configured()),
+            Registration::Dynamic { .. } => Ok(match issued.map(str::trim).filter(|id| !id.is_empty()) {
+                Some(id) => Client::Known(id.to_string()),
+                None => Client::Register,
+            }),
         }
     }
 
@@ -197,7 +209,7 @@ pub fn authorize_url(sign_in: &SignIn, attempt: &Attempt) -> Result<String, AiEr
             }
             (Client::Register, Registration::Configured) => return Err(not_configured()),
         }
-        if matches!(sign_in.registration, Registration::Dynamic { .. }) {
+        if sign_in.sends_host_id || matches!(sign_in.registration, Registration::Dynamic { .. }) {
             query.append_pair("ext_agent_host_id", &attempt.host_id);
         }
         query
@@ -633,9 +645,17 @@ mod tests {
         );
     }
 
+    /// The way a provider that lets apps register themselves signs in (the scaffold keeps it for later providers).
+    const REGISTERING: SignIn = SignIn {
+        registration: Registration::Dynamic { entry: "dynamic_agent_client", name_hint: "Torro Workplace" },
+        client_env: "TORRO_TEST_NO_SUCH_VARIABLE",
+        built_client_id: None,
+        ..CHATGPT
+    };
+
     #[test]
     fn a_first_sign_in_registers_with_the_apps_name_and_this_computer() {
-        let url = authorize_url(&CHATGPT, &attempt(Client::Register)).expect("url");
+        let url = authorize_url(&REGISTERING, &attempt(Client::Register)).expect("url");
         let parsed = url::Url::parse(&url).expect("parses");
         let pairs: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
         assert!(url.starts_with("https://auth.openai.com/api/accounts/authorize?"));
@@ -650,25 +670,30 @@ mod tests {
         assert!(!url.contains("dBjftJeZ"), "the verifier never travels");
         let known = authorize_url(&CHATGPT, &attempt(Client::Known("oaiapp_1".into()))).expect("url");
         assert!(known.contains("client_id=oaiapp_1") && !known.contains("agent_name_hint"));
+        assert!(known.contains("ext_agent_host_id=urn"), "ChatGPT wants this computer's id with its own client id");
+        assert_eq!(authorize_url(&CHATGPT, &attempt(Client::Register)), Err(not_configured()));
     }
 
     #[test]
-    fn a_configured_client_id_goes_first_then_the_issued_one_then_a_registration() {
+    fn chatgpt_is_offered_only_with_a_configured_client_id() {
         let configured =
             SignIn { client_env: "TORRO_TEST_NO_SUCH_VARIABLE", built_client_id: Some(" own "), ..CHATGPT };
+        assert!(configured.offered());
         assert_eq!(configured.client(Some("oaiapp_1")), Ok(Client::Known("own".into())));
         let plain = SignIn { client_env: "TORRO_TEST_NO_SUCH_VARIABLE", built_client_id: None, ..CHATGPT };
-        assert_eq!(plain.client(Some("oaiapp_1")), Ok(Client::Known("oaiapp_1".into())));
-        assert_eq!(plain.client(None), Ok(Client::Register));
-        let only = SignIn { registration: Registration::Configured, ..plain };
-        assert_eq!(only.client(None), Err(not_configured()));
-        assert!(authorize_url(&only, &attempt(Client::Register)).is_err());
+        assert!(!plain.offered(), "no client id, no ChatGPT");
+        assert_eq!(plain.client(None), Err(not_configured()));
+        assert_eq!(plain.client(Some("oaiapp_1")), Err(not_configured()), "an id issued before does not count");
+        // A provider that lets apps register themselves: the issued id, else a registration.
+        assert!(REGISTERING.offered());
+        assert_eq!(REGISTERING.client(Some("oaiapp_1")), Ok(Client::Known("oaiapp_1".into())));
+        assert_eq!(REGISTERING.client(None), Ok(Client::Register));
     }
 
     #[test]
     fn the_callback_is_checked_by_path_and_state_before_anything_else() {
         let register = attempt(Client::Register);
-        let read = |target: &str| read_callback(&CHATGPT, &register, target);
+        let read = |target: &str| read_callback(&REGISTERING, &register, target);
         assert_eq!(read("/favicon.ico"), Err(CallbackError::Unrelated));
         assert_eq!(read("/auth/callback"), Err(CallbackError::Unrelated));
         assert_eq!(read("/auth/callback?code=x&state=other&client_id=oaiapp_1"), Err(CallbackError::Foreign));

@@ -101,6 +101,10 @@ impl SignIns {
     /// `None` for a provider without a sign-in.
     pub async fn start(&self, ai: &Arc<AiAccounts>, provider: AiProvider) -> Option<Result<(String, String), AiError>> {
         let sign_in = ai.sign_in_of(provider)?;
+        // Decision on #324: without a client id of the suite's own (ChatGPT) nothing starts and nothing is written.
+        if !sign_in.offered() {
+            return Some(Err(oauth::not_configured()));
+        }
         Some(self.begin(ai, provider, sign_in).await)
     }
 
@@ -366,7 +370,7 @@ mod tests {
         Box::leak(text.into_boxed_str())
     }
 
-    /// ChatGPT's sign-in at the fake `server`, on any free port, without a configured client id.
+    /// ChatGPT's sign-in at the fake `server`, on any free port, with the configured client id `oaiapp_1`.
     fn fake_sign_in(server: &MockServer) -> SignIn {
         SignIn {
             issuer: leak(server.url("")),
@@ -375,8 +379,17 @@ mod tests {
             revoke_url: Some(leak(server.url("/revoke"))),
             port: 0,
             client_env: "TORRO_TEST_NO_SUCH_VARIABLE",
-            built_client_id: None,
+            built_client_id: Some("oaiapp_1"),
             ..oauth::CHATGPT
+        }
+    }
+
+    /// A provider that lets the app register itself (the scaffold's other way, not ChatGPT's since #324).
+    fn registering(server: &MockServer) -> SignIn {
+        SignIn {
+            registration: Registration::Dynamic { entry: "dynamic_agent_client", name_hint: "Torro Workplace" },
+            built_client_id: None,
+            ..fake_sign_in(server)
         }
     }
 
@@ -412,7 +425,7 @@ mod tests {
     async fn a_first_sign_in_registers_exchanges_the_code_and_keeps_the_tokens_in_the_keychain_only() {
         let dir = tempfile::tempdir().expect("dir");
         let server = MockServer::start_async().await;
-        let sign_in = fake_sign_in(&server);
+        let sign_in = registering(&server);
         // The nonce is random: the fake token endpoint answers with the one the test reads from the address.
         let keys = MemoryTokens::default();
         let ai = Arc::new(service(dir.path(), &keys, Vec::new()).with_sign_in(AiProvider::ChatGpt, sign_in));
@@ -499,13 +512,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn without_a_client_id_a_provider_that_needs_one_explains_instead_of_failing() {
+    async fn chatgpt_signs_in_with_its_configured_client_id_and_this_computers_id() {
         let dir = tempfile::tempdir().expect("dir");
         let server = MockServer::start_async().await;
-        let configured = SignIn { registration: Registration::Configured, ..fake_sign_in(&server) };
         let keys = MemoryTokens::default();
-        let ai = Arc::new(service(dir.path(), &keys, Vec::new()).with_sign_in(AiProvider::ChatGpt, configured));
-        let sign_ins = SignIns::new(Some(dir.path().join(SIGN_IN_FILE)));
+        let ai =
+            Arc::new(service(dir.path(), &keys, Vec::new()).with_sign_in(AiProvider::ChatGpt, fake_sign_in(&server)));
+        let sign_ins =
+            SignIns::new(Some(dir.path().join(SIGN_IN_FILE))).with_base(AiProvider::ChatGpt, &server.url("/v1"));
+        let (flow, url) = sign_ins.start(&ai, AiProvider::ChatGpt).await.expect("signs in").expect("started");
+        let pairs: HashMap<String, String> = url::Url::parse(&url).expect("url").query_pairs().into_owned().collect();
+        assert_eq!(pairs["client_id"], "oaiapp_1");
+        assert!(!pairs.contains_key("agent_name_hint"), "no registration");
+        assert!(pairs["ext_agent_host_id"].starts_with("urn:uuid:"));
+        sign_ins.cancel(&flow);
+    }
+
+    /// Decision on #324: without a configured client id ChatGPT is refused, also when an id was issued before.
+    #[tokio::test]
+    async fn without_a_configured_client_id_chatgpt_is_refused_with_a_sentence() {
+        let dir = tempfile::tempdir().expect("dir");
+        let server = MockServer::start_async().await;
+        let unconfigured = SignIn { built_client_id: None, ..fake_sign_in(&server) };
+        assert!(!unconfigured.offered());
+        let file = dir.path().join(SIGN_IN_FILE);
+        std::fs::write(&file, r#"{"chatgpt":{"host_id":"urn:uuid:x","client_id":"oaiapp_old"}}"#).expect("file");
+        let keys = MemoryTokens::default();
+        let ai = Arc::new(service(dir.path(), &keys, Vec::new()).with_sign_in(AiProvider::ChatGpt, unconfigured));
+        let sign_ins = SignIns::new(Some(file));
         let refused = sign_ins.start(&ai, AiProvider::ChatGpt).await.expect("a sign-in provider");
         assert_eq!(refused, Err(oauth::not_configured()));
         assert!(sign_ins.start(&ai, AiProvider::OpenRouter).await.is_none(), "a key provider has no sign-in");
