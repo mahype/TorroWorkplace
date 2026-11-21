@@ -43,7 +43,7 @@ const SEPARATOR: &str = " · ";
 /// The head of `memory.md`: what the file is, for a person who opens it. English like the files of
 /// the suite; the notes below it are in the person's words.
 const MEMORY_HEAD: &str = "# Memory of the assistant\n\nNotes the assistant keeps because you asked it to. It reads \
-                           them in every conversation. Change them in Torro Workplace › Assistant › Memory.\n";
+                           them in every conversation. Change them in Settings › Profile › Memory.\n";
 
 /// `profile.json` as stored: what is not there takes its default.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

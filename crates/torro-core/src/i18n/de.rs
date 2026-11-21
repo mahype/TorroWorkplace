@@ -4436,8 +4436,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Der Assistent konnte {agent} nicht vorbereiten. Versuch es noch einmal.",
     ),
     (
-        "The assistant has no access yet. Choose what it may use in Torro Workplace › Assistant.",
-        "Der Assistent hat noch keinen Zugriff. Leg in Torro Workplace › Assistent fest, was er nutzen darf.",
+        "The assistant has no access yet. Choose what it may use in Settings › Access.",
+        "Der Assistent hat noch keinen Zugriff. Leg unter Einstellungen › Zugriff fest, was er nutzen darf.",
     ),
     (
         "This agent cannot answer now. Check that it is installed, then try again.",

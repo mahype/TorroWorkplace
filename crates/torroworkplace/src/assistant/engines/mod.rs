@@ -302,7 +302,7 @@ impl Failed {
         let name = agent.name();
         match self {
             Failed::NoClient => {
-                tr("The assistant has no access yet. Choose what it may use in Torro Workplace › Assistant.").into()
+                tr("The assistant has no access yet. Choose what it may use in Settings › Access.").into()
             }
             Failed::NoBotClient => {
                 tr("This bot has no access any more. Save it again, then choose what it may use.").into()
