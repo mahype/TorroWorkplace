@@ -1014,6 +1014,12 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
             refuse(format!("at most {MAX_BULK_IDS} conversations at once"))
         }
         Request::SendMessage { text, .. } if text.trim().is_empty() => refuse("the message is empty".into()),
+        // Issue #859: the core picks the conversation of a voice message itself.
+        Request::SendMessage { voice: true, conversation, bot, about, .. }
+            if conversation.is_some() || bot.is_some() || about.is_some() =>
+        {
+            refuse("voice cannot name a conversation, bot or mail".into())
+        }
         Request::SendMessage { text, .. } if text.chars().count() > MAX_TEXT_CHARS => {
             refuse(format!("a message may hold at most {MAX_TEXT_CHARS} characters"))
         }
@@ -1390,6 +1396,7 @@ mod tests {
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         }
     }
 
@@ -1505,6 +1512,7 @@ mod tests {
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert_eq!(code(limit_refusal(&model)), Some("error".into()));
         let bot = Request::SendMessage {
@@ -1518,6 +1526,7 @@ mod tests {
             bot: Some(long.clone()),
             about: None,
             spoken: false,
+            voice: false,
         };
         assert_eq!(code(limit_refusal(&bot)), Some("error".into()));
         let choose = |engine: &str, model: &str| Request::ChooseModel {
@@ -1541,6 +1550,7 @@ mod tests {
             bot: None,
             about: Some(MailRef { account: account.into(), id: id.into() }),
             spoken: false,
+            voice: false,
         };
         assert_eq!(code(limit_refusal(&about("mail:anna@example.org", "m:4"))), None);
         assert_eq!(
@@ -1558,6 +1568,25 @@ mod tests {
         assert_eq!(code(limit_refusal(&check(TEST_ENGINE, &"m".repeat(MAX_ID_BYTES + 1)))), Some("error".into()));
         assert_eq!(code(limit_refusal(&check(&"a".repeat(MAX_ID_BYTES + 1), "m:4"))), Some("error".into()));
         assert_eq!(code(limit_refusal(&Request::Ping)), None, "other requests keep no limit here");
+        // Issue #859: a voice message leaves the conversation to the core.
+        let voice = |conversation: Option<&str>, bot: Option<&str>, about: Option<MailRef>| Request::SendMessage {
+            conversation: conversation.map(str::to_string),
+            engine: TEST_ENGINE.into(),
+            model: None,
+            effort: None,
+            text: "Hi".into(),
+            without: Vec::new(),
+            mode: Mode::Default,
+            bot: bot.map(str::to_string),
+            about,
+            spoken: true,
+            voice: true,
+        };
+        assert_eq!(code(limit_refusal(&voice(None, None, None))), None);
+        assert_eq!(code(limit_refusal(&voice(Some("0123456789abcdef"), None, None))), Some("error".into()));
+        assert_eq!(code(limit_refusal(&voice(None, Some("b1"), None))), Some("error".into()));
+        let mail = MailRef { account: "mail:anna@example.org".into(), id: "m:4".into() };
+        assert_eq!(code(limit_refusal(&voice(None, None, Some(mail)))), Some("error".into()));
     }
 
     #[test]

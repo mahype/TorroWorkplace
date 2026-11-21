@@ -150,6 +150,7 @@ async fn ask(setup: &Setup, conversation: Option<&str>, text: &str, without: Vec
         on_behalf: None,
         from: Some(crate::assistant::TEST_CLIENT.into()),
         spoken: false,
+        voice: None,
     };
     match setup.assistant.send(message, EngineKind::Agent, chrono::Utc::now()).await {
         Response::Conversation { conversation, .. } => conversation.id,
@@ -330,6 +331,7 @@ fn send_to_claude() -> Request {
         bot: None,
         about: None,
         spoken: false,
+        voice: false,
     }
 }
 
@@ -719,6 +721,7 @@ async fn the_model_and_the_effort_go_to_claude_code() {
         on_behalf: None,
         from: Some(crate::assistant::TEST_CLIENT.into()),
         spoken: false,
+        voice: None,
     };
     let Response::Conversation { conversation, .. } =
         setup.assistant.send(message, EngineKind::Agent, chrono::Utc::now()).await

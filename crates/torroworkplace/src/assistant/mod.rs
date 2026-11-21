@@ -89,11 +89,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, TimeDelta, Utc};
 use tokio::sync::{Mutex, MutexGuard};
 use torro_core::AppId;
 use torro_core::ai::Effort;
-use torro_core::i18n::tr;
+use torro_core::i18n::{tr, trf};
 use torro_core::paths::AppPaths;
 use torro_core::settings::Retention;
 use torro_ipc::api::{Access, Area};
@@ -183,6 +183,9 @@ struct State {
     /// not by an agent with access to the assistant. Only that message can name a bot. In memory
     /// only: after a restart the person names the bot again.
     said: HashMap<String, u64>,
+    /// The "Voice" a client's voice message renamed (issue #859), by the new conversation it started: for the
+    /// line of that message in the log, which takes it at once ([`Assistant::take_retired`]).
+    retired: HashMap<String, String>,
 }
 
 /// An answer that runs.
@@ -597,6 +600,7 @@ impl Assistant {
             on_behalf: None,
             from: None,
             spoken: false,
+            voice: None,
         };
         self.engine_and_about_refusal(ai, &message, about.clone(), actor).await
     }
@@ -623,6 +627,7 @@ impl Assistant {
             on_behalf: None,
             from: None,
             spoken: false,
+            voice: None,
         };
         self.engine_and_about_refusal(ai, &message, Some(about), &Actor::Assistant).await
     }
@@ -731,12 +736,21 @@ impl Assistant {
     /// conversation keeps it for good; one that goes on keeps its own, and `error` when `about` names another.
     async fn send_about(
         self: &Arc<Self>,
-        message: Message,
+        mut message: Message,
         about: Option<MailRef>,
         kind: EngineKind,
         now: DateTime<Utc>,
     ) -> Response {
         let mut state = self.state().await;
+        // A voice message (issue #859): decided under the same lock, so two of them pick the same "Voice".
+        let voice =
+            message.voice.filter(|_| message.conversation.is_none()).map(|minutes| voice_for(&state, minutes, now));
+        let (by_voice, mut retire) = (voice.is_some(), None);
+        match voice {
+            Some(VoiceTarget::Continue(id)) => message.conversation = Some(id),
+            Some(VoiceTarget::New { retire: old }) => retire = old,
+            None => {}
+        }
         let (mut conversation, new) = match &message.conversation {
             Some(id) if state.running.contains_key(id) => return busy(),
             Some(id) => match state.conversations.get(id) {
@@ -763,6 +777,10 @@ impl Assistant {
                     let mut conversation = Conversation::new(id, &message.text, now);
                     conversation.bot = message.bot.as_ref().map(|bot| bot.id.clone());
                     conversation.about = about;
+                    // Named before it starts, so the answer already carries it.
+                    if by_voice {
+                        conversation.title = tr("Voice").to_string();
+                    }
                     (conversation, true)
                 }
                 Err(err) => return failure(&err),
@@ -791,6 +809,23 @@ impl Assistant {
         lines.push(Line::Entry { entry: entry.clone() });
         if let Err(message) = self.write(&conversation.id, lines).await {
             return failure(message);
+        }
+        // The old "Voice" keeps its date only now the new one stands (issue #859); should that fail, the
+        // newest "Voice" still counts next time, and the message goes on.
+        if let Some((old, title)) = retire {
+            let line = Line::Renamed { title };
+            match self.write(&old, vec![line.clone()]).await {
+                Ok(()) => {
+                    if let Some(retired) = state.conversations.get_mut(&old) {
+                        retired.apply(line);
+                    }
+                    // Only a client's line in the log names it; the person's own (app key) has none.
+                    if message.from.is_some() {
+                        state.retired.insert(conversation.id.clone(), old);
+                    }
+                }
+                Err(err) => eprintln!("torroworkplace: cannot keep the old conversation \"Voice\" by its date: {err}"),
+            }
         }
         let said = entry.seq;
         conversation.apply(Line::Entry { entry });
@@ -1017,6 +1052,12 @@ impl Assistant {
             state.running.remove(id);
         }
         true
+    }
+
+    /// The "Voice" a client's voice message that started `conversation` renamed (issue #859), for that
+    /// message's line in the log; taken once.
+    pub async fn take_retired(&self, conversation: &str) -> Option<String> {
+        self.state().await.retired.remove(conversation)
     }
 
     /// `assistant.cancel`: stops the running answer of `id`, keeps what the model wrote so far as
@@ -1650,6 +1691,43 @@ struct Message {
     from: Option<String>,
     /// The person spoke it (issue #747): the answer is short, to be read aloud.
     spoken: bool,
+    /// A voice message (issue #859): the core picks the conversation "Voice" itself ([`voice_for`]),
+    /// with this pause in minutes after which a new one starts (0 never). `None`: no voice message.
+    voice: Option<u16>,
+}
+
+/// Where a voice message goes (issue #859, [`voice_for`]).
+#[derive(Debug, PartialEq)]
+enum VoiceTarget {
+    /// On in this conversation "Voice".
+    Continue(String),
+    /// Into a new "Voice"; `retire` is the old one with the title it keeps its date by, renamed once the
+    /// new one stands.
+    New { retire: Option<(String, String)> },
+}
+
+/// Where a voice message goes (issue #859): the newest conversation titled "Voice" with the assistant and
+/// about no mail, unless it rested `minutes` or longer without an entry (0: never) and does not answer now;
+/// then, or without one, a new "Voice", and the old one is renamed to "Voice · <date it began>".
+fn voice_for(state: &State, minutes: u16, now: DateTime<Utc>) -> VoiceTarget {
+    let title = tr("Voice");
+    let newest = state
+        .conversations
+        .values()
+        .filter(|conversation| {
+            conversation.title == title && conversation.bot.is_none() && conversation.about.is_none()
+        })
+        .max_by_key(|conversation| conversation.updated());
+    let Some(old) = newest else { return VoiceTarget::New { retire: None } };
+    let rested = minutes > 0
+        && !state.running.contains_key(&old.id)
+        && now - old.updated() >= TimeDelta::minutes(i64::from(minutes));
+    if !rested {
+        return VoiceTarget::Continue(old.id.clone());
+    }
+    let date = old.created.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
+    let dated = trf("{title} · {date}", &[("title", &title), ("date", &date)]);
+    VoiceTarget::New { retire: Some((old.id.clone(), dated)) }
 }
 
 /// Why a message for `bot` (`None`: the assistant) cannot go into `conversation` (task B.1): a
@@ -1725,7 +1803,19 @@ pub async fn answer_from(
         // The core answers it with the caller's scope (issue #704); this is the app key's.
         Request::SearchConversations { query, limit } => assistant.search(&query, limit, &Scope::all()).await,
         Request::GetConversation { id, after } => assistant.get(&id, after).await,
-        Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot, about, spoken } => {
+        Request::SendMessage {
+            conversation,
+            engine,
+            model,
+            effort,
+            text,
+            without,
+            mode,
+            bot,
+            about,
+            spoken,
+            voice,
+        } => {
             let bot = match bot {
                 Some(id) => match assistant.bots.get(&id).await {
                     Some(bot) => Some(bot),
@@ -1743,8 +1833,24 @@ pub async fn answer_from(
                 Ok(kind) => kind,
                 Err(refused) => return refused,
             };
-            let message =
-                Message { conversation, engine, model, effort, text, without, mode, bot, on_behalf, from, spoken };
+            // The pause as the settings say now (issue #859); without a core the default.
+            let voice = voice.then(|| {
+                assistant.host().map_or(torro_core::settings::VOICE_NEW_AFTER_DEFAULT, |host| host.voice_new_after())
+            });
+            let message = Message {
+                conversation,
+                engine,
+                model,
+                effort,
+                text,
+                without,
+                mode,
+                bot,
+                on_behalf,
+                from,
+                spoken,
+                voice,
+            };
             // A chat about a mail (issue #605): refused before anything is stored.
             let about = match assistant.about_for(&message, about, kind).await {
                 Ok(about) => about,
@@ -1777,6 +1883,7 @@ pub async fn answer_from(
                 on_behalf,
                 from,
                 spoken: false,
+                voice: None,
             };
             assistant.send(message, kind, Utc::now()).await
         }
@@ -1904,6 +2011,7 @@ pub(crate) mod tests {
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         }
     }
 
@@ -1947,6 +2055,132 @@ pub(crate) mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         panic!("the answer of {id} never finished");
+    }
+
+    /// A message the person spoke (issue #859): with `minutes` a voice message, whose conversation the core
+    /// picks; without, a message for a new conversation.
+    fn spoken(text: &str, minutes: Option<u16>) -> Message {
+        Message {
+            conversation: None,
+            engine: TEST_ENGINE.into(),
+            model: None,
+            effort: None,
+            text: text.into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+            on_behalf: None,
+            from: None,
+            spoken: true,
+            voice: minutes,
+        }
+    }
+
+    /// Sends `message` at `at` and waits for its answer; the conversation it went to.
+    async fn voiced(assistant: &Arc<Assistant>, ai: &AiAccounts, message: Message, at: DateTime<Utc>) -> String {
+        let (summary, _) = opened(assistant.send(message, EngineKind::Test, at).await);
+        finished(assistant, ai, &summary.id).await;
+        summary.id
+    }
+
+    /// The title of conversation `id` as the core keeps it.
+    async fn title_of(assistant: &Assistant, id: &str) -> String {
+        assistant.state().await.conversations.get(id).map(|conversation| conversation.title.clone()).unwrap_or_default()
+    }
+
+    /// The title an old "Voice" keeps after a pause: its date and time.
+    async fn dated(assistant: &Assistant, id: &str) -> String {
+        let created = assistant.state().await.conversations.get(id).map(|conversation| conversation.created);
+        let date = created.unwrap_or_default().with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string();
+        trf("{title} · {date}", &[("title", &tr("Voice")), ("date", &date)])
+    }
+
+    #[tokio::test]
+    async fn a_voice_message_goes_on_in_voice_until_the_pause_then_starts_a_new_one() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (assistant, ai) = (Arc::new(assistant_in(dir.path(), Duration::ZERO)), no_ai(dir.path()));
+        let start = Utc::now();
+
+        // No "Voice" yet: a new one, named before its answer.
+        let first = voiced(&assistant, &ai, spoken("What time is it?", Some(30)), start).await;
+        assert_eq!(title_of(&assistant, &first).await, tr("Voice"));
+        // Within the pause: the same.
+        let again = voiced(&assistant, &ai, spoken("And tomorrow?", Some(30)), start + TimeDelta::minutes(10)).await;
+        assert_eq!(again, first);
+        // After the pause: a new "Voice", the old one keeps its date.
+        let later = voiced(&assistant, &ai, spoken("Good morning", Some(30)), start + TimeDelta::minutes(45)).await;
+        assert_ne!(later, first);
+        assert_eq!(title_of(&assistant, &later).await, tr("Voice"));
+        assert_eq!(title_of(&assistant, &first).await, dated(&assistant, &first).await);
+        // The renaming is stored: read anew, the titles stay.
+        let reread = Arc::new(assistant_in(dir.path(), Duration::ZERO));
+        assert_eq!(title_of(&reread, &first).await, dated(&assistant, &first).await);
+        assert_eq!(title_of(&reread, &later).await, tr("Voice"));
+    }
+
+    /// The old "Voice" a client's voice message renamed is kept once for its line in the log; the person's
+    /// own (app key) keeps none.
+    #[tokio::test]
+    async fn a_clients_voice_message_tells_the_log_which_voice_it_renamed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (assistant, ai) = (Arc::new(assistant_in(dir.path(), Duration::ZERO)), no_ai(dir.path()));
+        let start = Utc::now();
+        let by_client = |text: &str| Message { from: Some("0123456789abcdef".into()), ..spoken(text, Some(30)) };
+        let first = voiced(&assistant, &ai, by_client("Hello"), start).await;
+        assert_eq!(assistant.take_retired(&first).await, None, "nothing renamed");
+        let second = voiced(&assistant, &ai, by_client("Later"), start + TimeDelta::minutes(45)).await;
+        assert_eq!(assistant.take_retired(&first).await, None, "only by the new conversation");
+        assert_eq!(assistant.take_retired(&second).await, Some(first.clone()));
+        assert_eq!(assistant.take_retired(&second).await, None, "taken once");
+        let own = voiced(&assistant, &ai, spoken("Mine", Some(30)), start + TimeDelta::minutes(90)).await;
+        assert_ne!(own, second);
+        assert_eq!(assistant.take_retired(&own).await, None, "the person's own message is not logged");
+    }
+
+    #[tokio::test]
+    async fn a_voice_message_never_starts_anew_with_no_pause() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (assistant, ai) = (Arc::new(assistant_in(dir.path(), Duration::ZERO)), no_ai(dir.path()));
+        let start = Utc::now();
+        let first = voiced(&assistant, &ai, spoken("Hello", Some(0)), start).await;
+        let days = voiced(&assistant, &ai, spoken("Still there?", Some(0)), start + TimeDelta::days(10)).await;
+        assert_eq!(days, first);
+        assert_eq!(title_of(&assistant, &first).await, tr("Voice"));
+    }
+
+    #[tokio::test]
+    async fn a_voice_message_stays_while_voice_answers() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (assistant, ai) = (Arc::new(assistant_in(dir.path(), Duration::from_secs(60))), no_ai(dir.path()));
+        let start = Utc::now();
+        let (first, _) = opened(assistant.send(spoken("Plan my week", Some(30)), EngineKind::Test, start).await);
+        assert!(first.running);
+        // Long after, but the answer still runs: no new "Voice", the conversation is busy.
+        let busy = assistant.send(spoken("Hurry", Some(30)), EngineKind::Test, start + TimeDelta::hours(2)).await;
+        assert_eq!(code(&busy), "busy");
+        assert_eq!(assistant.state().await.conversations.len(), 1);
+        assert_eq!(title_of(&assistant, &first.id).await, tr("Voice"));
+        let _ = answer(&assistant, &ai, Request::CancelAnswer { conversation: first.id.clone() }).await;
+    }
+
+    #[tokio::test]
+    async fn a_voice_message_leaves_a_renamed_voice_and_takes_the_newest() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (assistant, ai) = (Arc::new(assistant_in(dir.path(), Duration::ZERO)), no_ai(dir.path()));
+        let start = Utc::now();
+        // The person renamed the "Voice" of the morning: it is theirs now.
+        let morning = voiced(&assistant, &ai, spoken("Good morning", Some(30)), start).await;
+        assert_eq!(assistant.rename(&morning, "Morning").await, Response::Ok);
+        let next = voiced(&assistant, &ai, spoken("Hello", Some(30)), start + TimeDelta::minutes(1)).await;
+        assert_ne!(next, morning);
+        assert_eq!(title_of(&assistant, &morning).await, "Morning");
+        assert_eq!(title_of(&assistant, &next).await, tr("Voice"));
+        // Two "Voice": the one used last counts.
+        let typed = voiced(&assistant, &ai, spoken("Typed", None), start + TimeDelta::minutes(2)).await;
+        assert_eq!(assistant.rename(&typed, tr("Voice")).await, Response::Ok);
+        let newest = voiced(&assistant, &ai, spoken("Which one?", Some(30)), start + TimeDelta::minutes(3)).await;
+        assert_eq!(newest, typed);
+        assert_eq!(title_of(&assistant, &next).await, tr("Voice"), "the older one stays as it was");
     }
 
     #[tokio::test]
@@ -2021,6 +2255,7 @@ pub(crate) mod tests {
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert_eq!(code(&answer(&assistant, &ai, other).await), "not-found", "no such engine");
         assert_eq!(code(&answer(&assistant, &ai, send(None, " ")).await), "error", "limits first");
@@ -2084,6 +2319,7 @@ pub(crate) mod tests {
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert_eq!(code(&answer(&assistant, &ai, to_ollama).await), "unsupported");
         assert_eq!(

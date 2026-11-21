@@ -4657,6 +4657,8 @@ impl Core {
         };
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
         ids.extend(self.holder_ids(&request));
+        // A voice message (issue #859) names no conversation: the line names the one the core picked.
+        let by_voice = matches!(request, Request::SendMessage { voice: true, .. });
         // A key lent to an agent that drives the assistant (task C.7): the log names the engine,
         // as for the assistant's own tools (decision 5 in `docs/assistent.md`).
         let mut scope = None;
@@ -4687,12 +4689,28 @@ impl Core {
         if matches!(answer, Ok(Response::RecipientSuggestions { .. })) {
             ids.extend(read);
         }
+        if by_voice && let Ok(answer) = &answer {
+            ids.extend(self.voice_log_ids(answer).await);
+        }
         let shown = match &answer {
             Ok(response) => crate::audit::entry(client, command, ids, response, Utc::now()),
             Err(refused) => crate::audit::entry(client, command, ids, &refused.response(), Utc::now()),
         };
         self.audit.record(&shown);
         answer
+    }
+
+    /// The ids of a voice message that ran (issue #859, [`crate::audit::voice_ids`]): the conversation the core
+    /// picked, and the old "Voice" it renamed when this message started the new one (its first entry is `1`).
+    /// Nothing for any other answer.
+    async fn voice_log_ids(&self, answer: &Response) -> Vec<String> {
+        let Response::Conversation { conversation, entries } = answer else { return Vec::new() };
+        let started = entries.first().is_some_and(|entry| entry.seq == 1);
+        let renamed = match started {
+            true => self.assistant.take_retired(&conversation.id).await,
+            false => None,
+        };
+        crate::audit::voice_ids(&conversation.id, renamed.as_deref())
     }
 
     /// The client of `key` and why it may not come in `door` now (#231,
@@ -6754,8 +6772,9 @@ impl Core {
             }
             Err(err) => return err.response(),
         };
-        let (command, ids) =
+        let (command, mut ids) =
             (request.operation().name(), [decided_ids(&request, &origin), self.holder_ids(&request)].concat());
+        let by_voice = matches!(request, Request::SendMessage { voice: true, .. });
         // Boxed: the run goes through `handle_within` again, deep in the stack already, and the
         // checks of the tools (#225) and of the models' switches (#231) made this frame too big.
         let response = match origin.terminal.is_some() {
@@ -6767,6 +6786,10 @@ impl Core {
             },
             false => Box::pin(self.run_approved(&client, request, pin, fingerprint.as_deref(), &origin)).await,
         };
+        // A voice message (issue #859): the conversation the core picked, as when it runs at once.
+        if by_voice {
+            ids.extend(self.voice_log_ids(&response).await);
+        }
         // The run is the client's request, logged with the approval it ran with; the answer
         // itself stays out of the log (it holds titles).
         let mut ran = crate::audit::entry(Some(client), command, ids, &response, Utc::now());
@@ -15532,6 +15555,10 @@ impl crate::assistant::Host for Core {
         self.backend.name()
     }
 
+    fn voice_new_after(&self) -> u16 {
+        self.settings.current().voice.new_after_or_default()
+    }
+
     /// First the model, then where it runs (task S.23): the model asked or "Automatic" among the
     /// account's models as last listed ([`AiAccounts::known_models`], asked anew only for a model
     /// the list lacks), then [`torro_core::ai::place_of`] for that model. Only models turned on
@@ -21389,6 +21416,7 @@ done"#,
             bot: None,
             about: None,
             spoken: true,
+            voice: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         conversation.id
@@ -31471,6 +31499,7 @@ done"#,
                 bot: None,
                 about: None,
                 spoken: false,
+                voice: false,
             },
             Request::CancelAnswer { conversation: id.into() },
             Request::RenameConversation { id: id.into(), title: "Renamed".into() },
@@ -31667,6 +31696,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         let Response::Conversation { conversation, entries } = ask(&core, Some(&app_key), send).await else {
             panic!("the person starts a conversation")
@@ -31703,6 +31733,63 @@ done"#,
         assert!(lines.iter().all(|line| line.client.as_deref() == Some(id.as_str())));
     }
 
+    /// Issue #859: a client's voice message names no conversation, so its line in the log names the one the
+    /// core picked, by id only.
+    #[tokio::test]
+    async fn a_voice_message_of_a_client_logs_the_conversation_the_core_picked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let by_voice = || Request::SendMessage {
+            conversation: None,
+            engine: torro_ipc::assistant::TEST_ENGINE.into(),
+            model: None,
+            effort: None,
+            text: "Dinner with Anna".into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+            about: None,
+            spoken: true,
+            voice: true,
+        };
+        let Response::Conversation { conversation, .. } = ask(&core, Some(&key), by_voice()).await else {
+            panic!("the voice message is taken")
+        };
+        assert_eq!(conversation.title, tr("Voice"));
+        let line = audit_lines(dir.path()).pop().expect("a line");
+        assert_eq!(line.command, "assistant.send_message");
+        assert!(line.ids.contains(&format!("conversation:{}", conversation.id)), "{:?}", line.ids);
+        assert!(!line.ids.iter().any(|id| id.starts_with("renamed:")), "nothing renamed: {:?}", line.ids);
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("Dinner") && !log.contains(tr("Voice")), "{log}");
+
+        // The first answer ends first, else "Voice" is busy when the approved one runs.
+        for _ in 0..200 {
+            let get = Request::GetConversation { id: conversation.id.clone(), after: None };
+            match ask(&core, Some(&app_key), get).await {
+                Response::Conversation { conversation, .. } if !conversation.running => break,
+                _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
+        // One that waited for the person: the line of its run names the conversation as well.
+        let mut asking = RightsTemplate::ReadAndWrite.rights();
+        asking.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, waiting) = client(&core, asking).await;
+        let asked = waits(ask(&core, Some(&waiting), by_voice()).await);
+        assert!(asked.summary.contains(tr("Voice")), "{}", asked.summary);
+        let decided = ask(&core, Some(&app_key), decide(&asked.id, true)).await;
+        assert!(matches!(decided, Response::Approval { .. }), "{decided:?}");
+        let ran = audit_lines(dir.path()).pop().expect("the line of the run");
+        assert_eq!(ran.approval.as_deref(), Some(asked.id.as_str()));
+        assert!(ran.ids.contains(&format!("conversation:{}", conversation.id)), "{:?}", ran.ids);
+    }
+
     /// Decision 7: no template opens the area `assistant` for an agent, *Full access* neither; a
     /// person switches it on, then it works like any area: deleting waits for approval, an unknown
     /// conversation is `not-found` before anyone is asked, and the log names the engine.
@@ -31737,6 +31824,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         let Response::Conversation { conversation, entries } = ask(&core, Some(&key), send).await else {
             panic!("the agent starts a conversation")
@@ -31764,6 +31852,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "not-found", "no such engine");
         let bot = Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::Bot("travel".into()) };
@@ -31847,6 +31936,7 @@ done"#,
             bot: Some(bot.into()),
             about: None,
             spoken: false,
+            voice: false,
         }
     }
 
@@ -34791,6 +34881,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         match core.handle(send).await {
             Response::Conversation { conversation, .. } => conversation.id,
@@ -34984,6 +35075,7 @@ done"#,
                     bot: None,
                     about: None,
                     spoken: false,
+                    voice: false,
                 };
                 let Response::Conversation { conversation, .. } = core.handle(send).await else {
                     panic!("a conversation")
@@ -35356,6 +35448,7 @@ done"#,
             bot: Some(bot.id.clone()),
             about: None,
             spoken: false,
+            voice: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         conversation_until(&core, &conversation.id, |running, _| !running).await;
@@ -35436,6 +35529,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert!(matches!(core.handle(send).await, Response::Conversation { .. }), "sent");
     }
@@ -35680,6 +35774,7 @@ done"#,
             bot: Some(bot.id.clone()),
             about: None,
             spoken: false,
+            voice: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         let asked = waiting_approval(&core).await;
@@ -35805,6 +35900,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         let entries = conversation_until(&core, &conversation.id, |running, _| !running).await;
@@ -36428,6 +36524,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
         conversation_until(core, &conversation.id, |running, _| !running).await;
@@ -36509,6 +36606,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert!(matches!(core.handle(named).await, Response::Conversation { .. }));
         let entries = conversation_until(&core, &first, |running, _| !running).await;
@@ -36855,6 +36953,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         assert!(matches!(ask(&core, Some(&agent_key), by_agent).await, Response::Conversation { .. }));
         conversation_until(&core, &named, |running, _| !running).await;
@@ -37257,6 +37356,7 @@ done"#,
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         let label = core.ai.label_of(&account.id).await.expect("a label");
         let off = trf("Turn on a model of {provider} in Settings › AI.", &[("provider", &label)]);
@@ -37692,6 +37792,7 @@ done"#,
                     bot: None,
                     about,
                     spoken: false,
+                    voice: false,
                 };
             // Without the assistant's own client nobody reads the mail for it.
             assert_eq!(code(&ask(&core, Some(&app_key), send(None, Some(mail.clone()))).await), "forbidden");
@@ -37855,6 +37956,7 @@ done"#,
                 bot: None,
                 about: Some(mail.clone()),
                 spoken: false,
+                voice: false,
             };
             // Every change of these clients waits for the person.
             let careful = |account: &str| {

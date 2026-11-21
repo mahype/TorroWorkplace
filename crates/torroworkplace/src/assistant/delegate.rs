@@ -145,6 +145,7 @@ impl Assistant {
             from: Some(delegation.caller.clone()),
             on_behalf: Some(delegation),
             spoken: false,
+            voice: None,
         };
         let started = self.send(message, kind, Utc::now()).await;
         let Response::Conversation { conversation: summary, entries } = &started else { return started };

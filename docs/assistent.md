@@ -892,11 +892,16 @@ höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent �
   Einstellung „New conversation after a pause“ (Assistant › Voice › Conversation, `voice_new_after`, 0 bis 240
   Minuten in Viertelstunden, ohne Wahl 30, „Never“ = 0), beginnt „Hey Torro“ ein neues „Voice“. Das alte bleibt in der
   Liste und heißt danach „Voice · 2026-11-15 09:12“ (Datum und Uhrzeit seines Beginns); gibt es mehrere „Voice“,
-  zählt das neueste. Umbenannt wird das alte erst, wenn das neue angelegt ist; scheitert das Senden, bleibt es, wie
-  es war. Läuft dort noch eine Antwort, geht es weiter wie bisher; ein Gespräch, das die Person selbst
-  umbenannt hat, heißt nicht mehr „Voice“ und bleibt unberührt.
+  zählt das neueste (nur Gespräche mit dem Assistenten, ohne Bot und ohne Mail). Umbenannt wird das alte erst, wenn
+  das neue angelegt ist; scheitert das Speichern, bleibt es, wie es war. Läuft dort noch eine Antwort, geht es weiter
+  wie bisher; ein Gespräch, das die Person selbst umbenannt hat, heißt nicht mehr „Voice“ und bleibt unberührt.
+  Entschieden wird das im Kern (Issue #859): Der Hörer schickt den Satz mit `voice: true` an
+  `assistant.send_message` und nennt kein Gespräch; der Kern wählt „Voice“, setzt es fort oder legt nach der Pause
+  ein neues an, unter derselben Sperre wie das Speichern. So bekommt jedes Programm, das per Sprache schreibt, dasselbe
+  Verhalten. `voice` zusammen mit `conversation`, `bot` oder `about` ist `error`.
 - **Technisch:** Das Lauschen läuft als eigener Prozess `torroassistant --listen` (Mikrofon und
-  Modelle getrennt vom Dienst), erkannter Text geht als `assistant.send_message` an den Kern.
+  Modelle getrennt vom Dienst), erkannter Text geht als `assistant.send_message` an den Kern, nach dem Weckwort mit
+  `voice: true` (Issue #859), im Sprachchat an dessen Unterhaltung.
 - **Diktieren** (Issue #699): Das Mikrofon im Eingabefeld nimmt auf, bis man zwei Sekunden schweigt,
   es noch einmal drückt oder eine Minute um ist, und schreibt den Text an die Schreibmarke, ohne zu
   senden. Es braucht kein Weckwort und geht auch, wenn „Hey Torro“ aus ist. Aufgenommen wird über
@@ -1051,6 +1056,7 @@ Anbieter und der Stimme aus Einstellungen › Assistent › Voice, Gruppe „Rea
 | Wer vorlesen kann | Voice › Read aloud | `settings.speech_status` · Read | `settings_speech_status` |
 | An/aus, Anbieter, Stimmen, wie die Stimme spricht | Voice › Read aloud, Lautsprecher im Chatfenster | `settings.set_setting` `read_aloud`, `speech_provider`, `pocket_voice`, `openai_voice`, `pocket_speed`, `pocket_pause`, `openai_style` · Admin | `settings_set_setting` (OpenAI als Anbieter nur Menschen) |
 | Pause bis zum neuen Gespräch „Voice“ (Issue #831) | Voice › Conversation › New conversation after a pause | `settings.set_setting` `voice_new_after` · Admin | `settings_set_setting` |
+| Sprachsatz in „Voice“, nach der Pause ein neues (Issue #859) | „Hey Torro“ | `assistant.send_message` (`voice`) · Write | `assistant_send_message` |
 | Ansagen beim Nachdenken an/aus (Issue #837) | Voice › Conversation › Say what it does while it works | `settings.set_setting` `voice_announcements` · Admin | `settings_set_setting` |
 | Pausen am Satzende (Issue #836) | Voice › Conversation › End of a sentence | `settings.set_setting` `voice_pause_done`, `voice_pause_open`, `voice_hold` · Admin | `settings_set_setting` (frei für Agenten, sie geben nichts frei) |
 | Abgewartete Pausen (Issue #836) | Voice › Conversation › Response times › Pauses waited out | `settings.voice_timings` (`held`) · Read | `settings_voice_timings` |

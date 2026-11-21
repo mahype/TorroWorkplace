@@ -3237,6 +3237,14 @@ fn assistant_summary(request: &Request, facts: &Facts) -> String {
                 ),
             }
         }
+        // A voice message (issue #859): the core picks "Voice", may go on there or rename the old one.
+        (Request::SendMessage { engine, voice: true, .. }, _) => {
+            let engine = quote(facts.engine.as_deref().unwrap_or(engine));
+            trf(
+                "Send the assistant a voice message in \"{voice}\" (a new one after the pause, the old one keeps its date), answered by \"{engine}\"",
+                &[("voice", &tr("Voice")), ("engine", &engine)],
+            )
+        }
         (Request::SendMessage { engine, conversation, .. }, title) => {
             let engine = quote(facts.engine.as_deref().unwrap_or(engine));
             match (conversation, title) {
@@ -6335,6 +6343,7 @@ pub(crate) mod tests {
             bot: None,
             about: None,
             spoken: false,
+            voice: false,
         };
         let with_engine = Facts { engine: Some("Ollama".into()), ..held.clone() };
         // Issue #852: the engine by the core's name, never the model the client names.
@@ -6382,6 +6391,18 @@ pub(crate) mod tests {
             trf(
                 "Send the assistant a message in an unknown conversation, answered by \"{engine}\"",
                 &[("engine", &"Ollama")]
+            )
+        );
+        // Issue #859: a voice message says it goes to "Voice", not into a new conversation.
+        let mut by_voice = send(None);
+        if let Request::SendMessage { voice, .. } = &mut by_voice {
+            *voice = true;
+        }
+        assert_eq!(
+            summary(&by_voice, &with_engine),
+            trf(
+                "Send the assistant a voice message in \"{voice}\" (a new one after the pause, the old one keeps its date), answered by \"{engine}\"",
+                &[("voice", &tr("Voice")), ("engine", &"Ollama")]
             )
         );
     }
