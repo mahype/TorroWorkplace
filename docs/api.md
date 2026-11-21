@@ -1233,7 +1233,10 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Ausnahme: Der Schlüssel eines **neuen Clients** geht einmal an die Steuerzentrale (Antwort auf
    `clients.create_client` bzw. `clients.new_key`, nur App-Schlüssel), die ihn in die Konfiguration
    des Agenten oder in eine Schlüsseldatei (0600, unter `<config>/hooks/`) schreibt oder bei
-   „Script“ einmal zum Kopieren zeigt. Danach kennt ihn nur noch der Client.
+   „Script“ einmal zum Kopieren zeigt. Ebenso druckt `torroworkplace ctl clients add` bzw. `new-key` ihn
+   einmal ins Terminal. Danach kennt ihn nur noch der Client. Ohne Hauptanwendung soll ein eigenes Fenster
+   desselben Programms `torroworkplace` diese Rolle übernehmen, nie ein App-Prozess (Vorschlag zu #538, offen:
+   [einzelne-apps.md](einzelne-apps.md), „API-Schlüssel und MCP-Clients ohne Hauptanwendung“).
 2. **Agenten und ihre Rechte verwalten** (`clients.*`): nur mit dem App-Schlüssel. Sonst könnte
    sich ein Agent selbst mehr Rechte geben.
 3. **Freigaben entscheiden** (`approvals.decide_approval`): nur mit dem App-Schlüssel, also nur
@@ -1504,7 +1507,8 @@ ihrem eigenen Bereich (Kalender `calendar`, Aufgaben `tasks` und `github`, Notif
 Mail `mail` und mit #556 `workflows`, Assistent `assistant` und `bots`) und ändert sie dort. Es sind dieselben Rechte desselben Clients,
 einmal im Dienst gespeichert; die Steuerzentrale zeigt sie gesammelt. Die App sendet nur `clients.update_client`
 (App-Schlüssel, `Mcp::Never`), nur für die Arten `script` und die MCP-Arten, nie für Assistent, Bots oder Hooks.
-Schlüssel anlegen und Clients verbinden bleibt in der Steuerzentrale (in einer einzelnen App: #538). Es gibt kein
+Schlüssel anlegen und Clients verbinden bleibt in der Steuerzentrale; ohne Hauptanwendung schlägt #538 ein eigenes
+Fenster von `torroworkplace` vor ([einzelne-apps.md](einzelne-apps.md), noch offen). Es gibt kein
 MCP-Tool dafür: Agenten ändern nie Rechte („Was nie nach außen geht“, Punkt 2).
 
 ### Je Client
@@ -1774,6 +1778,11 @@ clients“ nur „API“, und beide Abschnitte hatten einen Schalter („Allow A
   bestätigt; entfernt den Schlüssel aus dem Client, wenn möglich). Unter MCP zusätzlich die Gruppe „Notification
   Hub“: Schalter „Report when waiting or done“ legt den Hook-Client an und schreibt die Hooks bzw. nimmt beides
   heraus.
+- **Ohne Hauptanwendung** (Vorschlag zu #538, noch nicht entschieden): Dieselbe Seite „API clients“ bzw. „MCP
+  clients“ öffnet sich allein in einem Fenster von `torroworkplace` (`ui --clients=api` bzw. `mcp`), aus dem Fuß von
+  Zahnrad › API and MCP jeder App. Gleiche Requests, kein neuer Befehl, der Schlüssel bleibt einmal sichtbar und im
+  Programm `torroworkplace`. Gründe, Verworfenes und offene Fragen: [einzelne-apps.md](einzelne-apps.md),
+  „API-Schlüssel und MCP-Clients ohne Hauptanwendung (#538)“.
 - **Abschnitt „Approvals“** (oder Gruppe in Overview, solange es wenige sind): offene Freigaben mit
   „Allow“/„Deny“, darunter die zuletzt entschiedenen.
 

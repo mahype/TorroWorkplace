@@ -90,11 +90,104 @@ Hyprland-Konfiguration. Wer so arbeitet, setzt `TORRO_MAIN_APP=1` dort, wo der D
 | Was nur eine App betrifft (Kalender, Listen, Erinnerungen, Quellen …) | hinter dem Zahnrad der App ([settings.md](settings.md)) | ebenso |
 | Aussehen, Sprache, Start beim Anmelden | Steuerzentrale › Appearance bzw. General | in jeder App, Zahnrad › Appearance bzw. General |
 | Hintergrunddienst beenden | Tray › Quit | in jeder App, Zahnrad › General › Background service › „Quit…“ |
-| Rechte von API-Schlüsseln und MCP-Clients im Bereich einer App | in der App, Zahnrad › API and MCP; die Steuerzentrale zeigt alle Rechte gesammelt (#531) | in der App, Zahnrad › API and MCP; Schlüssel und Clients anlegen klärt #538 |
-| API und MCP anlegen, Freigaben, Workspaces | nur Steuerzentrale | gibt es nicht ohne Hauptanwendung (Anlegen: #538) |
+| Rechte von API-Schlüsseln und MCP-Clients im Bereich einer App | in der App, Zahnrad › API and MCP; die Steuerzentrale zeigt alle Rechte gesammelt (#531) | in der App, Zahnrad › API and MCP |
+| API-Schlüssel anlegen, MCP-Clients verbinden | nur Steuerzentrale › API clients bzw. MCP clients | heute nur `torroworkplace ctl clients add` bzw. `new-key` (ohne Eintrag in den Client); Vorschlag: eigenes Fenster des Dienstprogramms, siehe „API-Schlüssel und MCP-Clients ohne Hauptanwendung (#538)“ |
+| Freigaben, Workspaces | nur Steuerzentrale | gibt es nicht ohne Hauptanwendung |
 
 Die Seiten Appearance und General stehen einmal in `torro-settings-ui` (`suite.rs`); Steuerzentrale und Apps
 nutzen dieselben Seiten.
+
+## API-Schlüssel und MCP-Clients ohne Hauptanwendung (#538)
+
+**Stand: Vorschlag, wartet auf Entscheidung** (offene Fragen am Ende des Abschnitts). Bis dahin gilt der heutige
+Stand.
+
+### Heute
+
+- Seit #531 zeigt jede App unter Zahnrad › **API and MCP** die Rechte der Schlüssel und MCP-Clients in ihrem
+  Bereich und ändert sie (`clients.update_client`). Unten stehen mit Hauptanwendung „API clients ↗“ und
+  „MCP clients ↗“ (`torro_gui::connect::open_section`), ohne sie nur der Satz „Keys and clients are created in the
+  control centre.“ – eine Sackgasse, denn eine Steuerzentrale gibt es dann nicht. Dieselbe Sackgasse steht am Fuß
+  der Detailseite eines Clients („Other rights of this client are set in the control centre.“, `outside.rs`,
+  `foot`).
+- Anlegen und Verbinden stecken ganz im Programm `torroworkplace`: Seiten „API clients“ (`ui/api.rs`) und „MCP
+  clients“ (`ui/mcp.rs`), der Assistent „Connect client“ (`ui/agent_wizard.rs`) und das Eintragen in Claude Code,
+  Codex usw. (`client_setup.rs`). Das läuft im Prozess der Steuerzentrale, nicht im Dienst und nicht in den Apps.
+- Das Programm `torroworkplace` ist auch ohne Hauptanwendung da (außer bei den alten Programmarchiven ohne Dienst,
+  die es ohnehin brauchen): Jede App bringt es als Dienst mit (macOS im Bündel „Torro Workplace Service.app“, Linux
+  und Windows als Paket bzw. im Manifest, siehe „Pakete je App“). Die Hauptanwendung ist nur Starter-Eintrag, Icon
+  bzw. das Bündel „Torro Workplace.app“.
+- Ohne Oberfläche geht es schon: `torroworkplace ctl clients add <name>` legt einen Client an und druckt den
+  Schlüssel einmal ins Terminal (`new-key` ebenso, dazu `list` und `remove`). Es trägt aber nichts in Claude Code,
+  Codex usw. ein; auch `add --kind claude-code` legt nur den Client an.
+
+### Vorschlag
+
+1. **Ein eigenes Fenster des Dienstprogramms, nur für Clients.** Ohne Hauptanwendung zeigt der Fuß von
+   „API and MCP“ statt des Satzes zwei Zeilen, die ein kleines Fenster von `torroworkplace` öffnen, wie das Fenster
+   eines App-Auftrags (`ui --app-job`): `torroworkplace ui --clients=api` mit der vorhandenen Seite „API clients“
+   und `torroworkplace ui --clients=mcp` mit „MCP clients“ samt „Connect client“. Darin gibt es nur diese eine
+   Seite mit allem, was sie in der Steuerzentrale kann (Liste, „Create key“, „Connect client“, Detailseite mit
+   Rechten, „Create new key“, „Revoke…“ bzw. „Disconnect…“, „Report when waiting or done“), keine Seitenleiste,
+   keine anderen Abschnitte. Es ist derselbe Code wie in der Steuerzentrale; nichts wird in die Apps verschoben.
+   Mit Hauptanwendung bleibt alles, wie es ist (Abgrenzung im Issue): Die Zeilen öffnen die Steuerzentrale.
+   Der Fuß der Detailseite eines Clients öffnet ohne Hauptanwendung dasselbe Fenster auf diesem Client (dort sind
+   seine übrigen Rechte zu sehen, siehe offene Frage 4).
+2. **Der Schlüssel bleibt einmal sichtbar, und nur im Programm `torroworkplace`.** Die Ausnahme in
+   [api.md](api.md), „Was nie nach außen geht“, Punkt 1, gilt dann für die Steuerzentrale **und** dieses Fenster,
+   beide Prozesse von `torroworkplace`. Kein App-Prozess (Kalender, Mail, Assistent …) bekommt je einen neuen
+   Schlüssel zu sehen; die Seite „API and MCP“ der Apps sendet weiter nur `clients.update_client`, ihre Tests
+   wachen darüber (`outside.rs`). Das ist eine Regel des Codes, keine technische Grenze: Die Apps haben den
+   App-Schlüssel selbst ([api.md](api.md), „Was der Schlüssel schützt und was nicht“). Wer einen Schlüssel
+   verliert, legt mit „Create new key“ einen neuen an, wie heute.
+3. **Kein neuer Befehl.** Das Fenster nutzt dieselben Requests wie die Seiten der Steuerzentrale:
+   `clients.list_clients`, `clients.activity` (letzte Aktionen), `clients.create_client`, `clients.new_key`,
+   `clients.update_client`, `clients.remove_client`, alle nur mit dem App-Schlüssel und `Mcp::Never` („Was nie nach
+   außen geht“, Punkt 2), dazu für den Rechte-Editor die Lesebefehle, die er schon heute schickt (Konten,
+   Sammlungen, Werkzeuge, MCP-Server). Die App öffnet das Fenster lokal wie heute `open_section`, ohne Request; sie
+   liest und ändert dabei nichts.
+4. **Das Programm finden.** `open_section` sucht `torroworkplace` heute neben der App bzw. auf macOS nur in
+   „Torro Workplace.app“ und sonst im `PATH` (`torro_gui::source::sibling`). Ohne Hauptanwendung muss es auf macOS
+   das Dienst-Bündel der eigenen App nehmen (`source::service_in`), wie beim Start des Dienstes.
+
+Verworfen (vorbehaltlich der Entscheidung):
+
+- **Anlegen und Verbinden in jede App einbauen** (`torro-settings-ui`): Der neue Schlüssel ginge an jeden
+  App-Prozess statt nur an `torroworkplace`, `client_setup` mit dem Schreiben fremder Konfigurationen
+  (`~/.claude.json`, Hooks, Skill) müsste in eine gemeinsame Crate wandern, und die Ausnahme aus Punkt 1 würde
+  breiter. Viel Code für dieselbe Funktion.
+- **Ohne Hauptanwendung die ganze Steuerzentrale öffnen** (`torroworkplace ui --section api`): Sie brächte
+  Workspaces, Freigaben, Konten und Aussehen mit, also Einstellungen an zwei Orten (Entscheidung 2) und eine
+  Hauptanwendung durch die Hintertür.
+- **Nur das Terminal** (`ctl clients add`): bleibt als Weg für Skripte, ist aber für „nur eine App installiert“
+  keine Oberfläche und verbindet keinen MCP-Client.
+
+### Oberfläche, API, MCP
+
+| Funktion | Oberfläche | API | MCP |
+|---|---|---|---|
+| Schlüssel anlegen, neuer Schlüssel | mit Hauptanwendung Steuerzentrale › API clients, ohne sie Fenster `ui --clients=api` | `clients.create_client`, `clients.new_key` (nur App-Schlüssel) | keins, „Was nie nach außen geht“, Punkte 1 und 2 |
+| MCP-Client verbinden, trennen | Steuerzentrale › MCP clients bzw. Fenster `ui --clients=mcp` | `clients.create_client`, `clients.remove_client` (nur App-Schlüssel); das Eintragen in den Client macht das Programm `torroworkplace` selbst | keins, ebenso |
+| Liste der Clients, letzte Aktionen, widerrufen | Steuerzentrale bzw. Fenster `ui --clients=api` oder `mcp` | `clients.list_clients`, `clients.activity`, `clients.remove_client` (nur App-Schlüssel) | keins, ebenso |
+| Rechte im Bereich einer App | App › Zahnrad › API and MCP (#531) | `clients.update_client` (nur App-Schlüssel) | keins, ebenso |
+
+### Offene Fragen
+
+1. **Weg:** eigenes Fenster des Dienstprogramms (Vorschlag), Anlegen in jeder App oder die ganze Steuerzentrale?
+2. **Schlüssel einmal sichtbar:** beibehalten und nur im Programm `torroworkplace` zeigen (Vorschlag)? Oder soll
+   ein Schlüssel später noch einmal sichtbar sein (dann läge er im Klartext im Schlüsselbund und ginge über eine
+   Antwort hinaus; das widerspräche Punkt 1)?
+3. **Umfang des Fensters:** die ganze Seite wie in der Steuerzentrale (Vorschlag, sonst kann man ohne
+   Hauptanwendung nichts widerrufen oder trennen) oder nur „Create key“ und „Connect client“?
+4. **Bereiche im Rechte-Editor:** alle Bereiche wie in der Steuerzentrale (Vorschlag: eine später installierte App
+   findet ihre Rechte schon vor) oder nur die der installierten Apps?
+5. **macOS:** Das Fenster käme aus „Torro Workplace Service.app“, einem Agenten-Bündel ohne Dock-Icon
+   (`LSUIElement`). Reicht ein Fenster ohne Dock-Eintrag, oder braucht es eine andere Lösung? Zu prüfen auf einem
+   Mac; unter Linux und Windows ist es ein gewöhnliches Fenster von `torroworkplace`. Gefunden wird das Programm
+   über das Dienst-Bündel der eigenen App (Punkt 4 des Vorschlags).
+6. **Gestaltung** (nur beschrieben, nicht entworfen): Wortlaut und Aussehen der beiden Zeilen im Fuß von
+   „API and MCP“ ohne Hauptanwendung, Größe und Titel des Fensters; das klärt die Design-Prüfung nach der
+   Umsetzung.
 
 ## Pakete je App (#411)
 
