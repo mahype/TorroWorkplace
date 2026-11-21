@@ -7,15 +7,19 @@
         "Torro Assistant on its own (issue #411): its release zip and the background service's (torroworkplace)",
         "land in this app's folder, where the app finds the service.",
         "Only the app's own program goes on the PATH and into the Start menu; the main application is the",
-        "manifest torroworkplace. The hashes are filled in per release (checkver/autoupdate)."
+        "manifest torroworkplace. The hashes are filled in per release (checkver/autoupdate).",
+        "The third zip holds sherpa-onnx-c-api.dll and onnxruntime.dll (issue #773): the assistant loads them",
+        "from its own folder, so they land beside torroassistant.exe and go with the app."
     ],
     "architecture": {
         "64bit": {
             "url": [
                 "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torroassistant-x86_64-pc-windows-msvc.zip",
-                "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torroworkplace-x86_64-pc-windows-msvc.zip"
+                "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torroworkplace-x86_64-pc-windows-msvc.zip",
+                "https://github.com/mahype/TorroWorkplace/releases/download/v0.1.0/torroassistant-runtime-x86_64-pc-windows-msvc.zip"
             ],
             "hash": [
+                "TODO-sha256-of-the-zip",
                 "TODO-sha256-of-the-zip",
                 "TODO-sha256-of-the-zip"
             ]
@@ -36,7 +40,8 @@
             "64bit": {
                 "url": [
                     "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torroassistant-x86_64-pc-windows-msvc.zip",
-                    "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torroworkplace-x86_64-pc-windows-msvc.zip"
+                    "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torroworkplace-x86_64-pc-windows-msvc.zip",
+                    "https://github.com/mahype/TorroWorkplace/releases/download/v$version/torroassistant-runtime-x86_64-pc-windows-msvc.zip"
                 ]
             }
         }

@@ -7,16 +7,6 @@ runner = "scripts/macos-dev-run.sh"
 [target.x86_64-apple-darwin]
 runner = "scripts/macos-dev-run.sh"
 
-# Windows: the C runtime linked in statically. sherpa-onnx, the assistant's built-in speech (issue #762), comes
-# for Windows only as libraries built against the static runtime (`static-MT`); with Rust's default, the
-# dynamic one, linking fails on undefined `__imp_` symbols of the runtime. Every program of the suite then needs
-# no Visual C++ runtime installed.
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
-
-[target.aarch64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+crt-static"]
-
 # Every test thread (and a debug `cargo run`) gets 8 MiB of stack: in a debug build, where no frame is
 # shrunk, a command that waits for approval runs through the core twice and nests deeper than the
 # 2 MiB of a test thread hold (issue #643; several core tests overflowed on main already).
