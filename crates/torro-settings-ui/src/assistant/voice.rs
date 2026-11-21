@@ -1025,6 +1025,10 @@ fn engine_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let button = state.menus.button(Choice::Engine, label, Message::Menus);
     let row = setting_row(None, tr("Conversation engine"), detail, button);
     let footer = match (chosen, option) {
+        // Without a key the engine does not start (issue #838): this computer answers, nothing goes out.
+        (Some(_), Some(option)) if option.missing.is_some() => {
+            tr("This engine's account has no API key on this device, so this computer answers.").to_string()
+        }
         (Some(_), Some(option)) => trf(
             "While you talk, everything the microphone hears goes to {provider}, with the conversation so far and what the \
              assistant's tools read, and {provider} bills each minute. “Hey Torro” itself stays on this computer.",
