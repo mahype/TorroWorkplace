@@ -16,6 +16,7 @@ Die vier offenen Fragen des Issues, im Review von #945 entschieden (Sven, 21.11.
 | F3: Eigener Schalter, damit Agenten die Statistik lesen? | Nein, die Rechte an den Aufgaben genügen. |
 | F4: Aufbewahrung fest oder einstellbar? | Einstellbar, `postpone_retention`: 30 bis 1095 Tage, Standard 365. |
 | F5: Oberfläche? | Kommt als eigenes Issue mit dem Designer. |
+| F6: Aufbewahrung ändern nur durch Menschen? | Nein. Clients mit Admin-Recht dürfen; die Änderung wartet wie jeder Admin-Befehl auf die Freigabe eines Menschen, das schützt vor unbemerktem Löschen. |
 
 ### 1. Wo liegen die Daten? Nur lokal im Dienst
 
@@ -91,8 +92,9 @@ erneuten Senden ohnehin gezählt.
   - Ältere Ereignisse fallen beim Schreiben und Lesen weg. Wird die Zahl **gesenkt**, fallen sie sofort weg, auch
     aus der Datei, nicht erst mit der nächsten Verschiebung. Wird sie erhöht, kommt nichts zurück, was schon
     gelöscht ist.
-  - Kein Vorbehalt für Menschen: Länger aufbewahren zeichnet nichts Neues auf. Wie jeder Admin-Befehl eines
-    Clients wartet die Änderung durch einen Agenten auf Freigabe.
+  - Kein Vorbehalt für Menschen (F6): Länger aufbewahren zeichnet nichts Neues auf, und Senken löscht nie
+    unbemerkt, weil die Änderung durch einen Agenten wie jeder Admin-Befehl eines Clients auf die Freigabe eines
+    Menschen wartet.
 - Ereignisse gelöschter Aufgaben bleiben bis zum Ablauf, damit „nach Liste“ und „nach Priorität“ nicht
   schöner aussehen, wenn man aufgeschobene Aufgaben einfach löscht. Sie erscheinen ohne Titel.
 
