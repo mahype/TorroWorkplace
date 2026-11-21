@@ -737,7 +737,7 @@ impl Assistant {
     /// conversation keeps it for good; one that goes on keeps its own, and `error` when `about` names another.
     async fn send_about(
         self: &Arc<Self>,
-        mut message: Message,
+        message: Message,
         about: Option<MailRef>,
         kind: EngineKind,
         now: DateTime<Utc>,
@@ -769,6 +769,7 @@ impl Assistant {
             on_behalf: None,
             from: None,
             spoken: true,
+            voice: None,
         };
         self.send_with(message, None, EngineKind::Ai, Utc::now(), Some(turn)).await
     }
@@ -812,7 +813,7 @@ impl Assistant {
 
     async fn send_with(
         self: &Arc<Self>,
-        message: Message,
+        mut message: Message,
         about: Option<MailRef>,
         kind: EngineKind,
         now: DateTime<Utc>,
