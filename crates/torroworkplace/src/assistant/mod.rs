@@ -507,6 +507,14 @@ impl Assistant {
     /// ([`Assistant::bot_refusal`]), the window of a bot that is not there (`not-found`), a choice of the model
     /// that [`Assistant::choose_refusal`] refuses (issue #852). `None` when it may run.
     pub async fn refusal(&self, ai: &AiAccounts, request: &Request) -> Option<Response> {
+        self.refusal_from(ai, request, None).await
+    }
+
+    /// [`Assistant::refusal`] for the client `from` that sent `request` (issue #753; `None`: the app key). A bot
+    /// that a client chats with or asks runs with what both may ([`Actor::Delegated`], issue #698), so its engine
+    /// is checked for that actor, as [`answer_from`] does: a caller that is missing gets its error now, not a
+    /// `not-found` after an approval.
+    pub async fn refusal_from(&self, ai: &AiAccounts, request: &Request, from: Option<&str>) -> Option<Response> {
         if let Some(refused) =
             torro_ipc::assistant::limit_refusal(request).or_else(|| torro_ipc::bots::limit_refusal(request))
         {
@@ -546,7 +554,12 @@ impl Assistant {
                 return Some(refused);
             }
         }
-        let actor = Actor::of(bot.as_ref());
+        let delegation = bot.as_ref().and_then(|bot| match request {
+            Request::SendMessage { without, mode, .. } => for_caller(bot, from, without, *mode),
+            Request::AskBot { .. } => for_caller(bot, from, &[], torro_ipc::assistant::Mode::Default),
+            _ => None,
+        });
+        let actor = delegation.map_or_else(|| Actor::of(bot.as_ref()), Actor::Delegated);
         match (request, &bot) {
             (Request::SendMessage { .. }, _) => self.message_refusal(ai, request, bot.clone(), &actor).await,
             (Request::CheckAbout { engine, model, about }, _) => {
@@ -746,6 +759,14 @@ impl Assistant {
                     // Checked before, again under the lock: the mail a conversation is about never changes.
                     None if about.is_some() && about != conversation.about => {
                         return failure("this conversation is about another mail or none; start a new one for it");
+                    }
+                    // A client that writes to a bot (issue #752) goes on only with a conversation it started itself: the
+                    // history holds what the bot read with its full rights, and the bot could tell it again.
+                    None if message.on_behalf.as_ref().is_some_and(|via| !conversation.started_by(&via.caller)) => {
+                        return refusal(
+                            "forbidden",
+                            "this key may continue only a conversation with a bot that it started itself",
+                        );
                     }
                     None => (conversation.clone(), false),
                 },
@@ -1773,7 +1794,7 @@ pub async fn answer_from(
     request: Request,
     from: Option<String>,
 ) -> Response {
-    if let Some(refused) = assistant.refusal(ai, &request).await {
+    if let Some(refused) = assistant.refusal_from(ai, &request, from.as_deref()).await {
         return refused;
     }
     match request {

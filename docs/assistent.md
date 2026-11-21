@@ -1225,7 +1225,9 @@ Einen Bot dagegen, den ein fremder Client fragt (`bots.ask_bot`) oder dem er sch
 Assistenten, Issue #698): Server, Werkzeuge und Bereiche, die der Client nicht hat, bleiben auch dem Bot zu; die
 Websuche braucht das Ja des Menschen in der Unterhaltung des Bots, und das Protokoll nennt den Client als
 Auftraggeber (`for:<client>`). Schreibt ein Client einen Bot um, öffnet ihm das also nichts. Chats des Menschen mit
-einem Bot laufen weiter mit den Rechten des Bots.
+einem Bot laufen weiter mit den Rechten des Bots. Eine Unterhaltung mit einem Bot setzt ein Client nur fort, wenn er sie
+selbst begonnen hat (`forbidden` bei der des Menschen oder eines anderen Clients, Issue #752): Ihr Verlauf enthält, was
+der Bot mit seinen vollen Rechten gelesen hat, und ginge sonst ans Modell.
 
 ## Reihenfolge
 

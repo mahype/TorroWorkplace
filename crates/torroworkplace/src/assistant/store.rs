@@ -262,6 +262,16 @@ impl Conversation {
             .is_ok_and(|at| matches!(self.entries[at].content, EntryContent::Tool { .. }))
     }
 
+    /// Whether `client` wrote the conversation's first message (issue #752): a person's message, from the app key,
+    /// has no client and is no client's.
+    pub fn started_by(&self, client: &str) -> bool {
+        let first = self.entries.iter().find_map(|entry| match &entry.content {
+            EntryContent::Message { from, .. } => Some(from.as_deref()),
+            _ => None,
+        });
+        first == Some(Some(client))
+    }
+
     /// The number of the newest entry, 0 without one.
     pub fn last(&self) -> u64 {
         self.entries.last().map_or(0, |entry| entry.seq)
