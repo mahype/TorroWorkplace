@@ -20,6 +20,14 @@ Konzept: `docs/core.md`. Arbeit läuft über GitHub-Issues; `docs/tasks/` ist di
 - Ohne Plan: Bei `issue-small` ist die Issue-Beschreibung die Aufgabe, bei `quick-fix` die
   Kurzbeschreibung (siehe unten).
 
+## Arbeitsweise und Akzeptanzprüfungen
+
+Entscheidung von Sven, 2026-11-21: [`docs/tasks/akzeptanzpruefungen.md`](docs/tasks/akzeptanzpruefungen.md).
+
+- Umsetzen, umsetzen, umsetzen: Issues konsequent abarbeiten und PRs erstellen, statt lange zu planen.
+- Prüfungen von Hand (Label `manual-check` und gleichartige Prüflisten) arbeitet Sven später gesammelt ab. Sie
+  blockieren die weitere Umsetzung nicht.
+
 ## Issue-Workflow
 
 Änderungen laufen über GitHub-Issues, mit den Skills des Plugins **enon-tools** (dieselben wie im
