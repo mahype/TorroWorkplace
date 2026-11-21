@@ -1,0 +1,13 @@
+{"type":"session.updated","event_id":"e0","session":{"type":"realtime"}}
+{"type":"input_audio_buffer.speech_started","event_id":"e1","audio_start_ms":400,"item_id":"item_1"}
+{"type":"input_audio_buffer.speech_stopped","event_id":"e2","audio_end_ms":1840,"item_id":"item_1"}
+{"type":"input_audio_buffer.committed","event_id":"e3","item_id":"item_1"}
+{"type":"response.created","event_id":"e4","response":{"id":"resp_1","status":"in_progress"}}
+{"type":"conversation.item.input_audio_transcription.delta","event_id":"e5","item_id":"item_1","content_index":0,"delta":"What's"}
+{"type":"response.output_audio_transcript.delta","event_id":"e6","item_id":"item_2","delta":"Let me "}
+{"type":"response.output_audio.delta","event_id":"e7","item_id":"item_2","delta":"AQD+/w=="}
+{"type":"response.output_audio_transcript.delta","event_id":"e8","item_id":"item_2","delta":"look."}
+{"type":"conversation.item.input_audio_transcription.completed","event_id":"e9","item_id":"item_1","content_index":0,"transcript":"What's on today?"}
+{"type":"error","event_id":"e10","error":{"type":"invalid_request_error","code":"response_cancel_not_active","message":"Cancellation failed: no active response found"}}
+{"type":"response.function_call_arguments.delta","event_id":"e11","call_id":"call_1","delta":"{}"}
+{"type":"response.done","event_id":"e12","response":{"id":"resp_1","status":"completed","output":[{"type":"message","id":"item_2"},{"type":"function_call","id":"item_3","call_id":"call_1","name":"calendar_list_events","arguments":"{}"}]}}

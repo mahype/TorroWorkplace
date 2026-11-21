@@ -2062,6 +2062,10 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                 &[("key", &quote(&format!("{key:?}"))), ("value", &quote(&shown))],
             )
         }
+        // Issue #838: the one value a client may send; the cloud engines are a person's.
+        Request::SetSetting { key: torro_ipc::SettingKey::LiveEngine, value } if value.is_null() => {
+            tr("Talk through this computer again").to_string()
+        }
         Request::SetSetting { key, value } => trf(
             "Change the setting {key} to {value}",
             &[("key", &quote(&format!("{key:?}"))), ("value", &quote(&value.to_string()))],

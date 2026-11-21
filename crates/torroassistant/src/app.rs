@@ -851,11 +851,13 @@ impl App {
                     conversation: Some(demo::TOOLS.to_string()),
                     state: torro_ipc::VoiceState::Conversing,
                     tool: None,
+                    live: false,
                 }),
                 Some(Open::TalkTool) => Some(torro_ipc::Talk {
                     conversation: Some(demo::TOOLS.to_string()),
                     state: torro_ipc::VoiceState::UsingTool,
                     tool: Some("calendar.list_events".into()),
+                    live: false,
                 }),
                 _ => None,
             },

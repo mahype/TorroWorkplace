@@ -70,6 +70,7 @@ pub fn chat_body_for(provider: AiProvider, request: &ChatRequest, stream: bool) 
             // Not documented for their OpenAI-compatible APIs, and an unknown field may be refused:
             // these think as their models do.
             AiProvider::Mistral
+            | AiProvider::Xai
             | AiProvider::DeepSeek
             | AiProvider::Qwen
             | AiProvider::Kimi

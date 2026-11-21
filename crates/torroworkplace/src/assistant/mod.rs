@@ -73,6 +73,7 @@ pub(crate) mod cards;
 mod compact;
 mod delegate;
 mod engines;
+pub mod live;
 mod model;
 pub(crate) mod profile;
 mod prompt;
@@ -741,6 +742,82 @@ impl Assistant {
         kind: EngineKind,
         now: DateTime<Utc>,
     ) -> Response {
+        self.send_with(message, about, kind, now, None).await
+    }
+
+    /// What the person said to a conversation engine in the cloud (issue #838, `crate::core::live`): `text` goes to
+    /// `conversation` (a new one with `None`) as their message, sent with the app key, and the engine's turn `turn`
+    /// answers it; its answer names the engine's model. The message names `named` (engine and model of the chat), so
+    /// a message typed later goes to the chat model. `busy` while an answer runs there: what was said is dropped.
+    pub async fn send_live(
+        self: &Arc<Self>,
+        conversation: Option<String>,
+        text: String,
+        named: (String, Option<String>),
+        turn: Arc<live::LiveTurn>,
+    ) -> Response {
+        let (engine, model) = named;
+        let message = Message {
+            conversation,
+            engine,
+            model,
+            effort: None,
+            text,
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+            on_behalf: None,
+            from: None,
+            spoken: true,
+        };
+        self.send_with(message, None, EngineKind::Ai, Utc::now(), Some(turn)).await
+    }
+
+    /// The instructions and tools a conversation engine of `engine` starts with in `conversation` (issue #838), as
+    /// the assistant's answer would give them ([`model::live_setup`]); `None` before the core is there.
+    pub async fn live_setup(
+        self: &Arc<Self>,
+        conversation: Option<String>,
+        engine: &torro_ipc::LiveEngine,
+        turn: Arc<live::LiveTurn>,
+    ) -> Option<(String, Vec<torro_core::ai::ToolSpec>)> {
+        let host = self.host()?;
+        let (history, results, untrusted, about) = {
+            let state = self.state().await;
+            match conversation.as_ref().and_then(|id| state.conversations.get(id)) {
+                Some(held) => (held.entries.clone(), held.results.clone(), held.untrusted, held.about.clone()),
+                None => (Vec::new(), std::collections::BTreeMap::new(), false, None),
+            }
+        };
+        let job = model::Job {
+            conversation: conversation.unwrap_or_default(),
+            run: 0,
+            engine: engine.account.clone(),
+            model: Some(engine.model.clone()),
+            effort: None,
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            history,
+            results,
+            untrusted,
+            partial: Arc::default(),
+            actor: Actor::Assistant,
+            bot: None,
+            about,
+            spoken: true,
+            live: Some(turn),
+        };
+        Some(model::live_setup(Arc::clone(self), host, job).await)
+    }
+
+    async fn send_with(
+        self: &Arc<Self>,
+        message: Message,
+        about: Option<MailRef>,
+        kind: EngineKind,
+        now: DateTime<Utc>,
+        live: Option<Arc<live::LiveTurn>>,
+    ) -> Response {
         let mut state = self.state().await;
         // A voice message (issue #859): decided under the same lock, so two of them pick the same "Voice".
         let voice =
@@ -858,6 +935,7 @@ impl Assistant {
             bot: message.bot,
             about,
             spoken,
+            live,
         };
         match kind {
             EngineKind::Test => self.start_test_answer(&mut state, &id, engine),
@@ -965,6 +1043,18 @@ impl Assistant {
         let (engine, partial) = (job.engine.clone(), Arc::clone(&job.partial));
         let task = tokio::spawn(engines::answer(Arc::clone(self), host, job, agent));
         state.running.insert(id.to_string(), Run { id: state.next_run, task: task.abort_handle(), engine, partial });
+    }
+
+    /// Adds an error entry with `code` and `message` (for people) to conversation `id` now (issue #838): the
+    /// connection to a conversation engine was lost outside an answer. Nothing while an answer runs there: its own
+    /// error says it.
+    pub async fn note_error(&self, id: &str, code: &str, message: &str) {
+        let mut state = self.state().await;
+        if state.running.contains_key(id) {
+            return;
+        }
+        let error = EntryContent::Error { code: code.into(), message: message.into() };
+        self.add_now(&mut state, id, error).await;
     }
 
     /// Ends the run `run` of conversation `id` without another entry, while it is still the

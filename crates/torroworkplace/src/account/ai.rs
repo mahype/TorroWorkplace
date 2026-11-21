@@ -1889,9 +1889,106 @@ impl AiAccounts {
         Some(OpenAiCompatible::new(http, AiProvider::OpenAi, &slot.account.server, slot.key.clone()))
     }
 
+    /// The conversation engines of the accounts (issue #838, `settings.list_live_engines`): one per account and
+    /// model of [`ai::live_models`], in the order of the accounts, with `missing: key` for an account without a key
+    /// on this device. Never the key.
+    pub async fn live_engines(&self) -> Vec<torro_ipc::LiveEngineOption> {
+        let slots = self.slots.read().await;
+        slots
+            .iter()
+            .flat_map(|slot| {
+                let missing = slot.key.is_none().then_some(torro_ipc::LiveMissing::Key);
+                ai::live_models(slot.provider()).iter().map(move |model| torro_ipc::LiveEngineOption {
+                    account: slot.account.id.clone(),
+                    account_name: label(&slot.account),
+                    provider: slot.provider(),
+                    model: model.id.to_string(),
+                    name: model.name.to_string(),
+                    missing,
+                })
+            })
+            .collect()
+    }
+
+    /// How many minutes one live connection of `engine` may last at its provider (issue #838); 60 when unknown.
+    pub async fn live_minutes(&self, engine: &torro_ipc::LiveEngine) -> u32 {
+        let provider = self.server(&engine.account).await.map(|(provider, _)| provider);
+        provider
+            .and_then(|provider| ai::live_models(provider).iter().find(|model| model.id == engine.model))
+            .map_or(60, |model| model.minutes)
+    }
+
+    /// Opens the live connection of the conversation engine `model` of the account `account` (issue #838): a
+    /// WebSocket to `wss://<host>/v1/realtime?model=<model>` (the account's address with `ws` for `http`), the key
+    /// in its `Authorization` header. Only where a key may travel ([`ai::key_may_travel`]); errors never repeat it
+    /// ([`openai::scrub`]). The key stays here: the caller gets the connection, never the key.
+    pub async fn live_socket(&self, account: &str, model: &str) -> Result<LiveSocket, AiError> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+        let (base, key) = {
+            let slots = self.slots.read().await;
+            let slot = slots.iter().find(|slot| slot.account.id == account).ok_or_else(|| no_account(account))?;
+            if ai::live_models(slot.provider()).iter().all(|live| live.id != model) {
+                return Err(AiError::NotFound(format!("no conversation engine {model:?}")));
+            }
+            (slot.account.server.trim_end_matches('/').to_string(), slot.key.clone().ok_or(AiError::NoKey)?)
+        };
+        if !ai::key_may_travel(&base) {
+            return Err(AiError::Invalid(
+                tr("An API key is only sent over https or to this computer. Use an https address.").into(),
+            ));
+        }
+        let address = match base.split_once("://") {
+            Some(("https", rest)) => format!("wss://{rest}/realtime?model={model}"),
+            Some((_, rest)) => format!("ws://{rest}/realtime?model={model}"),
+            None => {
+                return Err(AiError::Invalid(
+                    tr("Enter the address of the server, like http://localhost:11434.").into(),
+                ));
+            }
+        };
+        let scrub = |error: AiError| openai::scrub(error, Some(key.expose()));
+        let mut request = address.into_client_request().map_err(|err| scrub(AiError::Format(err.to_string())))?;
+        let bearer = format!("Bearer {}", key.expose())
+            .parse()
+            .map_err(|_| AiError::Invalid(tr("The API key holds characters that cannot be sent.").into()))?;
+        request.headers_mut().insert("Authorization", bearer);
+        let connector = match torro_mail_imap::tls::client_config(&torro_mail_imap::tls::Trust::System) {
+            Ok((config, _)) => tokio_tungstenite::Connector::Rustls(Arc::new(config)),
+            Err(err) => return Err(AiError::Format(err.to_string())),
+        };
+        let connecting = tokio_tungstenite::connect_async_tls_with_config(request, None, true, Some(connector));
+        match tokio::time::timeout(LIVE_CONNECT, connecting).await {
+            Ok(Ok((socket, _))) => Ok(socket),
+            Ok(Err(err)) => Err(scrub(live_error(&err))),
+            Err(_) => Err(AiError::Offline),
+        }
+    }
+
     /// The HTTP client of the AI accounts, also for downloads of models ([`super::pull`]).
     pub(crate) fn http(&self) -> Result<&reqwest::Client, AiError> {
         self.http.as_ref().ok_or_else(|| AiError::Format(tr("No HTTP client to ask AI servers with.").into()))
+    }
+}
+
+/// The live connection of a conversation engine (issue #838, [`AiAccounts::live_socket`]).
+pub type LiveSocket = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// How long opening a live connection may take (issue #838).
+const LIVE_CONNECT: Duration = Duration::from_secs(10);
+
+/// What a failed live connection means (issue #838): the server's refusal of the key, another status, or no
+/// connection. Never the server's words beyond a status.
+fn live_error(error: &tokio_tungstenite::tungstenite::Error) -> AiError {
+    use tokio_tungstenite::tungstenite::Error;
+    match error {
+        Error::Http(response) => match response.status().as_u16() {
+            401 | 403 => AiError::Auth,
+            402 | 429 => AiError::Busy(tr("The provider refused: too many requests or no credit left.").into()),
+            404 => AiError::NotFound(tr("The provider does not offer this conversation engine.").into()),
+            status => AiError::Server { status, message: String::new() },
+        },
+        Error::Io(_) | Error::Tls(_) | Error::ConnectionClosed | Error::AlreadyClosed => AiError::Offline,
+        other => AiError::Format(other.to_string()),
     }
 }
 

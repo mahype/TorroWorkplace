@@ -50,6 +50,7 @@ use torro_core::AppId;
 pub use torro_core::account::{NtfyTopic, Secret};
 use torro_core::ai::{AiModel, AiProvider};
 use torro_core::paths::AppPaths;
+pub use torro_core::settings::LiveEngine;
 use torro_core::settings::Settings;
 pub use torro_core::settings::SpeechProvider;
 pub use torro_core::voice_models::VoiceModelKind;
@@ -833,8 +834,8 @@ pub enum Request {
     #[serde(rename = "accounts.connect_ai")]
     ConnectAi {
         /// Which kind of server: `ollama`, `lm_studio`, `strata`, `openrouter`, `ollama_cloud`, `openai_compatible`, or a cloud
-        /// provider with a key of its own (tasks W.3, KI.1b): `anthropic`, `openai`, `gemini`,
-        /// `mistral`, `deepseek`, `qwen`, `kimi`, `glm`, `minimax`, and `jev` (issue #323, TypeSafe's
+        /// provider with a key of its own (tasks W.3, KI.1b): `anthropic`, `openai`, `gemini`, `xai`
+        /// (issue #838), `mistral`, `deepseek`, `qwen`, `kimi`, `glm`, `minimax`, and `jev` (issue #323, TypeSafe's
         /// decision model, which only sorts mail and is checked with one small decision). A cloud
         /// provider's usual address is its international API; for its platform for mainland China
         /// pass that address as `server`.
@@ -5289,6 +5290,12 @@ pub enum Request {
     /// the last 20 answers read aloud, empty after a restart of the service.
     #[serde(rename = "settings.voice_timings")]
     VoiceTimings,
+    /// The conversation engines in the cloud the voice chat can talk through (issue #838,
+    /// [`Response::LiveEngines`]): one per AI account and model that hears and speaks itself (OpenAI
+    /// Realtime, Grok Voice), with what keeps it from working, and the one chosen. Choosing one is
+    /// `settings.set_setting live_engine`, for a person only; never a key.
+    #[serde(rename = "settings.list_live_engines")]
+    ListLiveEngines,
     /// Records one sentence from the microphone and turns it into text, for "Say something" in the
     /// assistant's settings ([`Response::Transcript`]): up to 15 seconds, ending at a pause. Nothing is
     /// sent to the assistant and nothing is kept. Only with the app key: it opens the microphone
@@ -5467,6 +5474,10 @@ pub struct Talk {
     /// never what it reads or finds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<String>,
+    /// A conversation engine in the cloud hears and answers (issue #838): the listener sends it the microphone. `false`
+    /// for the local chain, also when an engine is chosen but cannot run (its account has no key or is gone).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live: bool,
 }
 
 /// One part the listener needs, found or not (`settings.voice_status`). Every part is built into the
@@ -5562,7 +5573,7 @@ impl VoiceStatus {
 
 /// One spoken round, timed step by step ([`Request::VoiceTimings`], issue #828). Only durations,
 /// never text or sound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VoiceRound {
     /// When the round was timed (its first sound).
     pub at: DateTime<Utc>,
@@ -5580,6 +5591,10 @@ pub struct VoiceRound {
     /// went on after it, and the sentence arrived whole. Rounds from before #836 have `false`.
     #[serde(default)]
     pub held: bool,
+    /// The conversation engine in the cloud that answered (issue #838): its model, like
+    /// `gpt-realtime-2.1`; `None` for the local chain. Its rounds have no [`VoiceRound::recognize_ms`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
 }
 
 impl VoiceRound {
@@ -5652,6 +5667,39 @@ pub struct TodoRef {
     pub href: String,
     /// `etag` of the task.
     pub etag: String,
+}
+
+/// One conversation engine in the cloud (`settings.list_live_engines`, issue #838).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct LiveEngineOption {
+    /// The id of the AI account it talks through.
+    pub account: String,
+    /// The account's name, as the person gave it.
+    pub account_name: String,
+    /// The account's provider: where everything heard goes.
+    pub provider: torro_core::ai::AiProvider,
+    /// The model, as the provider names it (`gpt-realtime-2.1`).
+    pub model: String,
+    /// Its name in the settings ("OpenAI Realtime").
+    pub name: String,
+    /// What keeps it from working; `None` when it can.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<LiveMissing>,
+}
+
+impl LiveEngineOption {
+    /// The engine as `settings.set_setting live_engine` takes it.
+    pub fn engine(&self) -> LiveEngine {
+        LiveEngine { account: self.account.clone(), model: self.model.clone() }
+    }
+}
+
+/// What keeps a conversation engine from working (issue #838).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveMissing {
+    /// The account has no API key in the keychain.
+    Key,
 }
 
 /// What keeps a [`SpeechProvider`] from reading aloud here (`settings.speech_status`, issue #745).
@@ -5926,6 +5974,13 @@ pub enum SettingKey {
     /// like the voice: the style only travels once a person chose OpenAI ([`SettingKey::SpeechProvider`]).
     #[serde(rename = "openai_style")]
     OpenAiStyle,
+    /// The conversation engine in the cloud the voice chat talks through (issue #838): `{"account":
+    /// "<id>", "model": "<id>"}` from `settings.list_live_engines`, or `null` for the local chain on this
+    /// computer (the default). An engine no account offers is refused with `not-found`. Anything but
+    /// `null` only with the app key: everything the microphone hears in a conversation then goes to the
+    /// provider, and only a person chooses where data goes (point 6 of "Was nie nach außen geht",
+    /// `docs/api.md`); a client gets `forbidden`. A running conversation ends when it changes.
+    LiveEngine,
     /// What a new chat of the assistant starts with (issue #131): `{"engine": "<id from
     /// assistant.list_engines>", "model": "<model id>", "effort": "low" | "medium" | "high"}`, model
     /// and effort optional; `null` for the engine and model used last (`torro_core::ai::SlotModel`).
@@ -7060,6 +7115,15 @@ pub enum Response {
     /// How long the last spoken answers took, step by step ([`Request::VoiceTimings`]).
     VoiceTimings {
         timings: VoiceTimings,
+    },
+    /// The conversation engines in the cloud ([`Request::ListLiveEngines`], issue #838).
+    LiveEngines {
+        /// The engine the voice chat talks through; `None` for the local chain on this computer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current: Option<LiveEngine>,
+        /// One per AI account and model, in the order of the accounts.
+        #[serde(default)]
+        engines: Vec<LiveEngineOption>,
     },
     /// Who can read aloud on this computer ([`Request::SpeechStatus`], issue #745).
     Speech {
@@ -8624,6 +8688,7 @@ mod tests {
             first_word_ms: 1000,
             first_sound_ms: 500,
             held: false,
+            engine: None,
         };
         let held = VoiceRound { held: true, ..round(1200, 600) };
         let timings = VoiceTimings { rounds: vec![round(1000, 800), held] };
@@ -8633,7 +8698,8 @@ mod tests {
         // A round of an older core has no `held`.
         let old = serde_json::json!({"at": "2026-11-18T09:00:00Z", "pause_ms": 1, "recognize_ms": 2,
             "first_word_ms": 3, "first_sound_ms": 4});
-        assert!(!serde_json::from_value::<VoiceRound>(old).expect("an old round").held);
+        let old = serde_json::from_value::<VoiceRound>(old).expect("an old round");
+        assert!(!old.held && old.engine.is_none(), "issue #838: an old round came from the local chain");
         assert_eq!((average.first_word_ms, average.first_sound_ms, average.total_ms), (1000, 500, 3300));
         assert_eq!(round(1000, 800).total_ms(), 3300);
     }

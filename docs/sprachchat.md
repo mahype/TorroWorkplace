@@ -102,7 +102,12 @@ hundert Millisekunden, aber jedes Wort geht in die Cloud und kostet je Minute. D
   verlässt ihn nie.
 - **Werkzeuge laufen als Funktionsaufrufe durch den Kern**, mit denselben Rechten, Freigaben und Protokoll wie bei
   Weg A. Echo-Unterdrückung und Unterbrechen gelten auch hier; Verlauf und Anzeige wie bei Weg A.
-- **Offen für #838:** Der Ton des Mikrofons läuft heute nicht über `core.sock`; der Plan legt den Weg fest.
+- **Entschieden in #838:** Der Ton des Mikrofons läuft nicht über `core.sock`, sondern über die Leitung, die Dienst
+  und Hörer schon verbindet (`{"mic": …}` auf der Ausgabe des Hörers); kein Programm erreicht ihn. Erste Module sind
+  OpenAI Realtime (auch mini) und Grok Voice über dasselbe Protokoll; Gemini Live (#918), GPT-Live (#919) und Nova 2
+  Sonic (#920) folgen als weitere Adapter. Das Modul denkt selbst und ruft die Werkzeuge auf; Satzende und
+  Unterbrechen erkennt der Anbieter, Torro rechnet vorher die eigene Stimme heraus. Einzelheiten:
+  [assistent.md](assistent.md), „Gesprächsmodul in der Cloud“.
 
 Weg B startet erst nach Stufe 2 von Weg A, weil er dieselbe Echo-Unterdrückung und dasselbe Unterbrechen braucht und
 sein Gewinn nur an Weg A gemessen werden kann (Vergleich über die Zeitmessung #828).

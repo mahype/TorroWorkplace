@@ -1493,6 +1493,7 @@ impl PimService {
             | Request::OpenChatWindow { .. }
             | Request::VoiceStatus
             | Request::VoiceTimings
+            | Request::ListLiveEngines
             | Request::TestVoice
             | Request::Dictate
             | Request::StopDictation

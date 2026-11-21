@@ -30,6 +30,9 @@
 //!   per line, numbered from 0 for each helper; a number left out marks reference that was lost. The
 //!   core passes these lines to the listener, which takes this sound out of the microphone
 //!   ([`super::echo`]); they belong to no job. They stay in memory, nothing goes to the disk.
+//! - `{"stream": {}}` opens a job for sound only (issue #838): a conversation engine in the cloud speaks itself, and
+//!   the core sends its sound as `pcm` lines, each naming its sentence (`"text"`), then `"end"`. Nothing is computed
+//!   here and no pieces are named; the job answers like OpenAI's (`playing`, `said`, `done`).
 //! - `"mark"` marks the start of what follows in the job (issue #837): the next `add` of a local job, the
 //!   next `pcm` of OpenAI. The helper answers `"marked"` once the device plays its first sound, so the core
 //!   times an answer that follows a short note by its own sound, not the note's.
@@ -106,6 +109,8 @@ pub enum Input {
     Stop,
     /// The sound of what follows is marked (issue #837): [`Output::Marked`] once it is heard.
     Mark,
+    /// A job of sound only, sent as [`Input::Pcm`] until [`Input::End`] (issue #838).
+    Stream,
 }
 
 /// What to read and how ([`Input::Say`]).
@@ -156,6 +161,9 @@ impl Input {
                 more: say.get("more").and_then(Value::as_bool).unwrap_or(false),
             }));
         }
+        if value.get("stream").is_some() {
+            return Some(Input::Stream);
+        }
         if let Some(add) = value.get("add") {
             return Some(Input::Add(text(add, "text").unwrap_or_default()));
         }
@@ -190,6 +198,7 @@ impl Input {
             Input::End => json!("end").to_string(),
             Input::Stop => json!("stop").to_string(),
             Input::Mark => json!("mark").to_string(),
+            Input::Stream => json!({"stream": {}}).to_string(),
         }
     }
 }
@@ -829,6 +838,14 @@ impl<W: FnMut(Output)> Helper<W> {
                 }
                 self.say(say, sender);
             }
+            Event::Input(Input::Stream) => {
+                if !matches!(self.job, Job::Idle) {
+                    self.tell_said();
+                    self.stop();
+                    (self.write)(Output::Done);
+                }
+                self.stream();
+            }
             Event::Input(Input::Add(text)) => self.add(&text, sender),
             Event::Input(Input::Mark) => match &self.job {
                 Job::Local { .. } => {
@@ -999,6 +1016,14 @@ impl<W: FnMut(Output)> Helper<W> {
                 }
             }
         }
+    }
+
+    /// Opens a job of sound only (issue #838): what a conversation engine says, as the core sends it.
+    fn stream(&mut self) {
+        self.left = 0;
+        (self.texts, self.computed, self.marking) = (0, 0, Marking::None);
+        self.given = 0;
+        self.job = Job::Stream { sound: None, ended: false, more: true };
     }
 
     /// `text` as it is read, within what the job may still read ([`MOST_READ`] for all its texts).
@@ -1342,6 +1367,7 @@ mod tests {
             Input::End,
             Input::Stop,
             Input::Mark,
+            Input::Stream,
         ] {
             assert_eq!(Input::parse(&input.line()), Some(input.clone()), "{}", input.line());
         }
@@ -1828,6 +1854,29 @@ mod tests {
         played.borrow_mut().heard = 2;
         unnamed.look_at_the_end();
         assert!(!said.borrow().iter().any(|output| matches!(output, Output::Said(_))), "{:?}", said.borrow());
+    }
+
+    /// Issue #838: a job of sound only plays what the core sends, says which sentence was heard and is done once its
+    /// end has played; a new job stops it.
+    #[test]
+    fn a_stream_plays_the_sound_of_a_conversation_engine() {
+        let (sender, _events) = mpsc::channel();
+        let pcm = |text| Event::Input(Input::Pcm { rate: 24_000, data: vec![0; 4], text });
+        let (mut helper, said, played) = helper(None, true, Duration::ZERO);
+        helper.handle(Event::Input(Input::Stream), &sender);
+        assert!(said.borrow().is_empty(), "no pieces to fetch: {:?}", said.borrow());
+        helper.handle(pcm(Some(0)), &sender);
+        helper.handle(pcm(Some(1)), &sender);
+        assert_eq!(said.borrow().first(), Some(&Output::Playing));
+        played.borrow_mut().heard = 2;
+        helper.look_at_the_end();
+        assert_eq!(said.borrow().last(), Some(&Output::Said(1)));
+        played.borrow_mut().heard = 5;
+        helper.look_at_the_end();
+        assert_eq!(said.borrow().last(), Some(&Output::Said(2)));
+        helper.handle(Event::Input(Input::Stream), &sender);
+        assert_eq!(said.borrow().last(), Some(&Output::Done), "a new stream ends the one before");
+        assert!(matches!(helper.job, Job::Stream { ended: false, more: true, .. }));
     }
 
     /// Issue #837: with OpenAI the mark stands where the next sound comes; before any sound it is the first.

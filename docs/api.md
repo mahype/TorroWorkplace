@@ -1272,7 +1272,12 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    (`Mcp::Never`), ebenso das Diktieren ins Eingabefeld (`assistant.dictate`,
    `assistant.stop_dictation`, Issue #699) und das Gespräch (`assistant.start_talk`, Issue #747), das das
    Mikrofon nach jeder Antwort offen hält, auch wenn „Hey Torro“ aus ist. Beenden (`assistant.end_talk`)
-   darf jeder mit Schreibrecht im Assistenten. Dass die Einstellung im App-Fenster statt in der Steuerzentrale steht, ändert
+   darf jeder mit Schreibrecht im Assistenten. Ebenso wählt nur ein Mensch ein **Gesprächsmodul in der Cloud**
+   (`settings.set_setting live_engine`, Issue #838): Alles, was das Mikrofon im Gespräch hört, geht dann an den
+   Anbieter. Ein Client bekommt für jeden Wert außer `null` `forbidden`; `settings.update_settings` behält das
+   gespeicherte Modul. Der Ton des Mikrofons hat bewusst keinen Befehl: Er läuft über die Leitung zwischen Dienst und
+   Hörer, damit kein Programm ihn erreicht, und der Dienst hält Verbindung und Schlüssel.
+   Dass die Einstellung im App-Fenster statt in der Steuerzentrale steht, ändert
    die Zusage nicht: Jedes Fenster der Suite hält den App-Schlüssel, und ein Mensch drückt den
    Schalter.
 
