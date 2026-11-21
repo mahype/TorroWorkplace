@@ -231,6 +231,12 @@ in this version of Torro Workplace yet: it has no client ID from the provider.�
 früher vergebene Client-ID zählt dann nicht. Die Selbstregistrierung, die OpenAI Open-Source-Apps erlaubt, nutzt Torro
 bewusst nicht; das Gerüst kennt sie weiter (`Registration::Dynamic`) für Anbieter, bei denen sie gewollt ist.
 
+**Die Client-ID wird beim Bauen eingestellt** (Entscheidung zu #324, 21.11.2026): Dienst und Steuerzentrale lesen sie
+jeder für sich (`SignIn::offered`). Mit `TORRO_CHATGPT_CLIENT_ID` beim Bauen haben beide dieselbe ID. Die Variable zur
+Laufzeit ist nur zum Ausprobieren da und muss dann in der Umgebung beider Programme stehen; steht sie nur beim Dienst,
+fehlt die Zeile in der Oberfläche. Bewusst so, ohne Änderung an der Schnittstelle: Der Dienst meldet der Oberfläche
+nicht, welche Anmeldungen er anbietet.
+
 **Der offizielle Weg** (OpenAI, „Sign in with ChatGPT“, Vorschau seit dem DevDay am 29.09.2026; geprüft am 21.11.2026
 an <https://developers.openai.com/siwc/token-sharing-open-source> und
 <https://auth.openai.com/.well-known/openid-configuration>):
@@ -301,8 +307,9 @@ eine Anmeldung im Browser an, kommt sie so dazu.
    der Suite.
 6. Torro braucht eine eigene Client-ID von OpenAI (Formular, Warteliste); wann und ob es sie gibt, ist offen. Bis dahin
    ist ChatGPT nicht im Angebot.
-7. Ob OpenAI `ext_agent_host_id` auch mit einer beantragten Client-ID erwartet, sagt die Doku nur für den
-   Open-Source-Weg. Torro schickt die Kennung immer mit (`SignIn::sends_host_id`); mit der echten Client-ID prüfen.
+7. **Offener Prüfpunkt für den Test mit der echten Client-ID** (Entscheidung zu #324): Ob OpenAI `ext_agent_host_id`
+   auch mit einer beantragten Client-ID erwartet oder annimmt, beschreibt die Doku nur für den Open-Source-Weg. Torro
+   schickt die Kennung immer mit (`SignIn::sends_host_id`); lehnt OpenAI sie ab, ist das ein Feld in `oauth::CHATGPT`.
 
 ## Empfehlung je Rechner
 
