@@ -79,8 +79,13 @@ Vor neuem Code immer diese Dateien lesen und wiederverwenden (z. B. `http_client
 - **Schreiben:** neu mit `If-None-Match: *`, ändern/löschen mit `If-Match: <etag>`. 412 = jemand
   anderes war schneller → neu laden, Konflikt dem Nutzer zeigen, nichts überschreiben.
 - **Sync:** `REPORT sync-collection` (RFC 6578) mit `sync-token` liefert nur Änderungen; Nextcloud
-  unterstützt das für Kalender, Adressbücher und Dateien. Fallback `getctag`/`getetag`-Vergleich.
+  unterstützt das **nur für Kalender und Adressbücher**. Fallback `getctag`/`getetag`-Vergleich.
   Abgelaufenes Token (Fehler `valid-sync-token`) → einmal vollständig neu laden.
+- **Sync für Dateien:** kein `sync-collection` (`Directory` implementiert `ISyncCollection` nicht).
+  Stattdessen Ordner-ETags vergleichen, sie ändern sich, wenn sich darunter etwas ändert: `PROPFIND`
+  mit `Depth: 0` auf den Wurzelordner, bei geändertem ETag `Depth: 1` und nur in Unterordner mit
+  geändertem ETag absteigen. `notify_push` (`notify_file_id`) meldet geänderte Datei-IDs. Belege:
+  `docs/notizen.md`, „Nachgeprüft am 2026-11-09“ (Quellen [29]–[31]).
 - **Wiederholungen:** `calendar-query` mit `time-range`; mit `<c:expand>` liefert der Server
   (Sabre) einzelne Vorkommen. Beim Ändern immer das Master-Objekt + `RECURRENCE-ID` beachten.
 - Aufgaben: Nextcloud **Tasks** ist nur eine Oberfläche; die Daten sind VTODO über CalDAV
