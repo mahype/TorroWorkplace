@@ -9956,7 +9956,13 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // The menu bar on macOS (issue #894).
     ("Hide others", "Andere ausblenden"),
     // A conversation engine in the cloud (issue #838).
-    ("Voice engine", "Sprachmodul"),
+    ("Who answers", "Wer antwortet"),
+    ("Engine unavailable", "Modul nicht verfügbar"),
+    ("Speech recognition and voice of this computer", "Spracherkennung und Stimme dieses Rechners"),
+    (
+        "Say “Hey Torro” and your question. Approvals are only given with a click, never by voice.",
+        "Sag „Hey Torro“ und deine Frage. Freigaben gibt es nur per Klick, nie per Sprache.",
+    ),
     ("Conversation engine", "Gesprächsmodul"),
     ("Talk through this computer again", "Wieder über diesen Rechner sprechen"),
     ("(not understood)", "(nicht verstanden)"),
@@ -9979,8 +9985,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Der API-Schlüssel enthält Zeichen, die sich nicht senden lassen.",
     ),
     (
-        "While you talk, everything the microphone hears goes to {provider}, with the conversation so far and what the assistant's tools read, and {provider} bills each minute. “Hey Torro” itself stays on this computer.",
-        "Während du sprichst, geht alles, was das Mikrofon hört, an {provider}, dazu das bisherige Gespräch und was die Werkzeuge des Assistenten lesen, und {provider} berechnet jede Minute. „Hey Torro“ selbst bleibt auf diesem Rechner.",
+        "While you talk, everything the microphone hears goes to {provider}, with the conversation so far and what the assistant's tools read, and {provider} bills each minute. “Hey Torro” itself stays on this computer; speech recognition, the voice and the pauses below are not used.",
+        "Während du sprichst, geht alles, was das Mikrofon hört, an {provider}, dazu das bisherige Gespräch und was die Werkzeuge des Assistenten lesen, und {provider} berechnet jede Minute. „Hey Torro“ selbst bleibt auf diesem Rechner; Spracherkennung, Stimme und Pausen unten werden nicht benutzt.",
     ),
     (
         "The account of this engine is gone. Talking falls back to this computer.",
@@ -9991,10 +9997,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Verbinde ein OpenAI- oder xAI-Konto unter Einstellungen › KI, um über ein Modul in der Cloud zu sprechen.",
     ),
     ("Everything you say stays on this computer.", "Alles, was du sagst, bleibt auf diesem Rechner."),
-    ("No API key on this device", "Kein API-Schlüssel auf diesem Gerät"),
+    ("No API key on this computer", "Kein API-Schlüssel auf diesem Rechner"),
     ("No account offers the conversation engine {model}.", "Kein Konto bietet das Gesprächsmodul {model} an."),
     (
-        "This engine's account has no API key on this device, so this computer answers.",
-        "Das Konto dieses Moduls hat auf diesem Gerät keinen API-Schlüssel, darum antwortet dieser Rechner.",
+        "Add a key to this engine's account in Settings › AI; until then this computer answers.",
+        "Hinterlege unter Einstellungen › KI einen Schlüssel für das Konto dieses Moduls; bis dahin antwortet dieser Rechner.",
     ),
 ];

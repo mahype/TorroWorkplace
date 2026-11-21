@@ -996,9 +996,16 @@ fn voice_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Elemen
         false => heard_text(state),
     };
     let test = setting_row(None, tr("Test the microphone"), Some(heard), test_button);
-    let footer = tr(
-        "Say “Hey Torro” and your question. Everything stays on this computer. Approvals are only given with a click, never by voice.",
-    );
+    // With an engine in the cloud (issue #838) not everything stays here: the group above says what goes out.
+    let cloud = data.settings.voice.live_engine.as_ref().is_some_and(|engine| {
+        data.live_engines.iter().any(|option| option.engine() == *engine && option.missing.is_none())
+    });
+    let footer = match cloud {
+        true => tr("Say “Hey Torro” and your question. Approvals are only given with a click, never by voice."),
+        false => tr(
+            "Say “Hey Torro” and your question. Everything stays on this computer. Approvals are only given with a click, never by voice.",
+        ),
+    };
     let recognizer = marked(recognizer_name(settings.recognizer), settings.recognizer == Recognizer::Whisper);
     let recognizer = state.menus.button(Choice::Recognizer, recognizer, Message::Menus);
     let recognizer = setting_row(None, tr("Speech recognition"), None, recognizer);
@@ -1010,16 +1017,18 @@ fn voice_group<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Elemen
     widgets::group(tr("Conversation"), rows, Some(footer.to_string()))
 }
 
-/// "Engine" (issue #838): who hears and answers in a conversation by voice, this computer (the default) or an engine
-/// in the cloud of an AI account. Choosing one in the cloud says where the sound goes and that it is billed; without
-/// an account that offers one, the line says how to get one. No voices and no prices: the engine speaks in its own.
+/// "Who answers" (issue #838): who hears and answers in a conversation by voice, this computer (the default) or an
+/// engine in the cloud of an AI account. Choosing one in the cloud says where the sound goes, that it is billed and
+/// what below no longer applies; without an account that offers one, the line says how to get one. No voices and no
+/// prices: the engine speaks in its own. A dropdown although there are few choices today (#529): they grow with the
+/// accounts, and each needs a line with its provider.
 fn engine_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let chosen = data.settings.voice.live_engine.as_ref();
     let option = chosen.and_then(|engine| data.live_engines.iter().find(|option| option.engine() == *engine));
     let label = match (chosen, option) {
         (None, _) => tr("On this computer").to_string(),
         (Some(_), Some(option)) => option.name.clone(),
-        (Some(engine), None) => engine.model.clone(),
+        (Some(_), None) => tr("Engine unavailable").to_string(),
     };
     let detail = option.map(engine_detail);
     let button = state.menus.button(Choice::Engine, label, Message::Menus);
@@ -1027,11 +1036,12 @@ fn engine_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let footer = match (chosen, option) {
         // Without a key the engine does not start (issue #838): this computer answers, nothing goes out.
         (Some(_), Some(option)) if option.missing.is_some() => {
-            tr("This engine's account has no API key on this device, so this computer answers.").to_string()
+            tr("Add a key to this engine's account in Settings › AI; until then this computer answers.").to_string()
         }
         (Some(_), Some(option)) => trf(
             "While you talk, everything the microphone hears goes to {provider}, with the conversation so far and what the \
-             assistant's tools read, and {provider} bills each minute. “Hey Torro” itself stays on this computer.",
+             assistant's tools read, and {provider} bills each minute. “Hey Torro” itself stays on this computer; speech \
+             recognition, the voice and the pauses below are not used.",
             &[("provider", &option.provider.name())],
         ),
         (Some(_), None) => tr("The account of this engine is gone. Talking falls back to this computer.").to_string(),
@@ -1040,13 +1050,13 @@ fn engine_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         }
         (None, _) => tr("Everything you say stays on this computer.").to_string(),
     };
-    widgets::group(tr("Voice engine"), vec![row], Some(footer))
+    widgets::group(tr("Who answers"), vec![row], Some(footer))
 }
 
 /// "OpenAI · Cloud · US" under an engine: its provider and where its servers are, or that its key is missing.
 fn engine_detail(option: &torro_ipc::LiveEngineOption) -> String {
     match option.missing {
-        Some(torro_ipc::LiveMissing::Key) => tr("No API key on this device").to_string(),
+        Some(torro_ipc::LiveMissing::Key) => tr("No API key on this computer").to_string(),
         None => format!("{} · {}", option.provider.name(), option.provider.seat().label()),
     }
 }
@@ -1054,7 +1064,9 @@ fn engine_detail(option: &torro_ipc::LiveEngineOption) -> String {
 /// The entries of "Conversation engine": this computer first, then each engine of the accounts.
 fn engine_items(data: &Data) -> Vec<MenuItem<'_, Message>> {
     let chosen = data.settings.voice.live_engine.as_ref();
-    let here = MenuItem::plain(tr("On this computer"), Message::Engine(None)).current(chosen.is_none());
+    let here = MenuItem::plain(tr("On this computer"), Message::Engine(None))
+        .detail(tr("Speech recognition and voice of this computer"))
+        .current(chosen.is_none());
     std::iter::once(here)
         .chain(data.live_engines.iter().map(|option| {
             let engine = option.engine();
