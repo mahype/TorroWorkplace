@@ -66,7 +66,7 @@ Die ersten beiden Gründe sehen für die Mitteilungszentrale gleich aus: Die Que
   [eingang.md](eingang.md), [settings.md](settings.md), [github.md](github.md).
 - Kein neuer Request, keine neue Oberfläche.
 
-**Als Folge-Issue (Vorschlag, nicht umgesetzt):** Der Kern kennt die Scopes des Tokens schon
+**Als Folge-Issue [#947](https://github.com/mahype/TorroWorkplace/issues/947) (nicht umgesetzt):** Der Kern kennt die Scopes des Tokens schon
 (`AccountInfo::scopes` aus `X-OAuth-Scopes`). Fehlt `repo`, sagt die Quelle GitHub das selbst, an zwei Stellen:
 
 - in der Steuerzentrale bei der Quelle (Notification Hub › Settings › Sources, Gruppe des GitHub-Kontos) als
@@ -105,12 +105,11 @@ diese Seite über `crate::inbox` von `torro-settings-ui` ohnehin mit.
 - Bei „Only selected“ eine Liste der Repos zum Abhaken, aus `tasks.list_github_repos`, private kenntlich gemacht,
   mit Suche, weil es Hunderte sein können. Oben die Repos, aus denen in letzter Zeit Benachrichtigungen kamen.
 - Ganze Besitzer wählbar (`Immoticket24/*`), damit neue Repos einer Organisation von selbst dazukommen.
-- Die Fußzeile sagt, was nicht kommt: „Notifications from other repositories are marked done on GitHub“ oder
-  „… stay on GitHub“, je nach Entscheidung unten.
+- Die Fußzeile sagt, was nicht kommt, etwa „Notifications from other repositories stay on GitHub.“ (F3).
 
 **Standardverhalten:** „All repositories“. Ein neues Konto bringt alles, was das Token erreicht, wie heute.
 Eine Auswahl wirkt nur auf neue Benachrichtigungen; offene Einträge aus abgewählten Repos werden erledigt wie
-bei `mute_source` (Vorschlag) und nicht auf GitHub „done“ gesetzt.
+bei `mute_source` und nicht auf GitHub „done“ gesetzt (entschieden, F3).
 
 **Wo gefiltert wird:** im Kern, in `sources/github.rs` beim Ablegen (`file`), bevor `inbox.file_remote` gerufen
 wird. GitHubs `/notifications` kennt keinen Filter nach mehreren Repos (nur `/repos/{owner}/{repo}/notifications`
@@ -134,16 +133,22 @@ Kein Geheimnis berührt, also kein `Never`. Agenten-Schlüssel, die nur einige R
 Repo-Namen verrät.
 
 **Aufwand:** ein Request mit Katalogeintrag, ein Feld in `SourceInfo`, Filter in `file`, eine Zeile mit Liste in
-`torro-settings-ui`. Das ist mehr als klein und kommt nicht in diesen PR.
+`torro-settings-ui`. Das ist mehr als klein und kommt nicht in diesen PR, sondern in #946.
+
+## Entschieden durch Projekt-Bot (delegiert von Sven)
+
+Stand: 2026-11-21.
+
+- **F2, Zulassliste:** „Only selected“ kommt wie oben vorgeschlagen (Sources › GitHub-Konto, Standard „All
+  repositories“, `owner/*` wählbar, Request `inbox.set_source_repos`, MCP-Tool, Filter im Kern) als eigenes
+  Issue [#946](https://github.com/mahype/TorroWorkplace/issues/946). Die Gestaltung klärt der Designer.
+- **F3, abgewählte Repos:** bleiben auf GitHub unberührt, kein „done“ dort.
+- **F4, Hinweis „nur öffentliche Repos“:** Folge-Issue [#947](https://github.com/mahype/TorroWorkplace/issues/947).
+  Ob ein neuer `SourceHealth`-Wert oder ein eigenes Feld, bleibt dort offen.
 
 ## Offene Fragen
 
 1. Welcher der vier Gründe trifft bei Frank Staude zu? Die Zeile „Private repositories“ auf seiner Kontoseite und
    die Einstellungen der Organisation Immoticket24 (Third-party access, PAT-Richtlinie, SSO) entscheiden es.
-2. Reicht für die Auswahl die vorhandene Sperrliste (Glocke → „Everything from {repo}“ → Hide), oder braucht es
-   die Zulassliste „Only selected“? Die Zulassliste ist das, was das Issue wünscht.
-3. Abgewählte Repos: auf GitHub unberührt lassen (Vorschlag) oder dort „done“ setzen, damit GitHubs eigener
-   Eingang auch leer wird?
-4. Soll der Hinweis „nur öffentliche Repos“ ein neuer `SourceHealth`-Wert werden oder ein eigenes Feld? Beides
-   ändert `torro-ipc` und braucht Freigabe.
-5. Gestaltung der Zeile „Repositories“ und der Liste: Sven mit dem Designer.
+   Geht an staude.
+2. Gestaltung der Zeile „Repositories“ und der Liste: Sven mit dem Designer.
