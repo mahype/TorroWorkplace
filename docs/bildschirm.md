@@ -71,28 +71,35 @@ Installations-Kennung an und meldet Installation und Version an den Hersteller, 
 Testrechner ist das geschehen (`registration_recorded`, `current_release_recorded`). Torro empfiehlt das Skript darum
 nicht und verlinkt es nicht.
 
-Zu prüfen sind zwei Wege ohne Meldung (Folge-Issue 1, offene Frage 17):
+**Torro lädt eine feste Version selbst** (entschieden von Sven am 21. November 2026):
 
-- **Eigener Build aus einem Fork:** Der Code für Nutzungsdaten ist fest eingebaut; einen Schalter beim Bauen
-  (Cargo-Feature) gibt es nicht (Abschnitt „Kein Netzverkehr“). Ein eigener Build entfernt ihn also nur über einen
-  Fork (MIT) mit einem Patch, der `telemetry.rs`, die Update-Abfrage, die Installationsmeldung und die Downloads
-  (Erweiterungen, ffmpeg, Skills) herausnimmt, möglichst samt der HTTP-Bibliothek `ureq`. Torro zöge den Patch bei
-  jeder neuen Version nach; der Treiber erscheint oft (0.34.0 bis 0.56.5 in wenigen Wochen).
-- **Fertiges Release ohne Skript:** das Archiv einer festgelegten Version von GitHub laden, Prüfsumme und
-  Sigstore-Signatur selbst prüfen, entpacken. Das Herunterladen ist der einzige Kontakt nach außen und geschieht wie
-  bei jedem anderen Programm. Das Programm enthält dann weiter den Sendecode; es meldet beim ersten Start
-  `cua_driver_installation_registered`. **Die Netzsperre muss darum schon beim allerersten Start greifen**, auch für
-  `--version`, `list-tools` und `telemetry status`.
+- **Feste Version:** Jede Version von Torro legt genau eine Version des Treibers fest, je Plattform mit Adresse des
+  Release-Archivs, SHA-256-Summe und der erwarteten Sigstore-Identität des Herstellers. Diese Angaben kommen mit
+  Torro, nicht aus dem Netz.
+- **Herunterladen und prüfen:** Ein Mensch stößt das Herunterladen auf der Seite „Screen“ an („Download driver“).
+  Torro lädt das Archiv, prüft Summe und Sigstore-Signatur und legt den Treiber in einem eigenen Ordner der Suite ab,
+  nicht unter `~/.cua-driver`. Unter macOS prüft Torro zusätzlich die Signatur der App (`com.trycua.driver`,
+  Team des Herstellers), wie Hermes. Schlägt eine Prüfung fehl, bleibt nichts liegen und das Werkzeug aus.
+- **Kein Installationsskript** des Herstellers, auch nicht als Rückfall; ein `curl … | bash` aus der Suite heraus wäre
+  genau das Muster, das das Terminal als gefährlich einstuft.
+- **Keine Update-Abfrage des Treibers:** `CUA_DRIVER_RS_UPDATE_CHECK=false` bei jedem Start, `check_for_update` nie
+  angeboten, und die Netzsperre hält sie ohnehin auf. Eine neue Version des Treibers kommt nur mit einer neuen
+  Version von Torro, die sie festlegt; Torro zeigt dann „Driver update available“ und lädt erst nach dem Klick.
+- **Der Download ist die einzige bewusste Verbindung nach außen**, ausgelöst von Torro, nicht vom Treiber: eine
+  Abfrage des Archivs bei GitHub (und der Sigstore-Daten, soweit sie nicht im Archiv liegen), ohne Kennung und ohne
+  Angaben über den Rechner außer dem, was jeder Download verrät. Danach läuft der Treiber nur noch ohne Netz.
+- **Feste Werkzeugliste:** Torro prüft beim Start die Werkzeugliste gegen die Fingerabdrücke, die zur festgelegten
+  Version gehören, wie bei MCP-Servern (#302). Weicht sie ab, bleibt das Werkzeug aus.
+- **Die Seite in der Steuerzentrale** nennt Version, Herkunft, Ergebnis der Prüfungen, Bedienhilfen-Bus und den
+  Stand der Netzsperre. Ein Treiber, den die Person selbst anders installiert hat, wird nicht benutzt.
 
-Weiter gilt:
-
-- **Torro ruft nie ein Installationsskript aus dem Netz auf.** Ein `curl … | bash` aus der Suite heraus wäre genau
-  das Muster, das das Terminal als gefährlich einstuft. Die Seite in der Steuerzentrale prüft, ob ein Treiber da ist,
-  und nennt Version, Herkunft (eigener Build oder Release), Bedienhilfen-Bus und den Stand der Netzsperre.
-- **Feste Version** im Kern. Torro prüft beim Start die Werkzeugliste gegen bekannte Fingerabdrücke wie bei
-  MCP-Servern (#302): Ändert eine andere Version Name, Beschreibung oder Schema eines genutzten Werkzeugs, bleibt das
-  Werkzeug aus, bis Torro dafür gebaut ist. Updates prüft und holt nie der Treiber selbst.
-- **macOS:** zusätzlich die Signatur der App prüfen, wie Hermes; bei einem eigenen Build ist es Torros Signatur.
+**Release oder Fork:** Das Release des Herstellers enthält den Sendecode weiter (fest eingebaut, kein Cargo-Feature,
+Abschnitt „Kein Netzverkehr“); es meldet beim ersten Start `cua_driver_installation_registered`. **Die Netzsperre
+muss darum schon beim allerersten Start greifen**, auch für `--version`, `list-tools` und `telemetry status`. Die
+Alternative ist ein Fork (MIT) mit einem Patch, der `telemetry.rs`, die Update-Abfrage, die Installationsmeldung und
+die Downloads (Erweiterungen, ffmpeg, Skills) herausnimmt, möglichst samt `ureq`; dann lädt Torro den eigenen Build
+mit eigener Signatur, und der Patch muss bei jeder Version nachgezogen werden (0.34.0 bis 0.56.5 in wenigen Wochen).
+Was davon, ist offene Frage 17.
 
 ### Wie er angebunden wird
 
@@ -448,6 +455,10 @@ Installationsmeldungen, keine Downloads. Das Abschalten der Nutzungsdaten genüg
 Treiber gar nicht nach außen verbinden kann. Kann Torro das auf einer Plattform nicht sicherstellen, gibt es dort kein
 Bildschirm-Werkzeug.
 
+**Einzige bewusste Verbindung ist der Download** der festgelegten Version durch Torro (Abschnitt „Wie er auf den
+Rechner kommt“): ausgelöst von einem Menschen in Torro, nicht vom Treiber, ohne Kennung. Danach läuft der Treiber
+nur noch ohne Netz.
+
 ### Was der Treiber sonst senden würde
 
 Nach den Quellen von `trycua/cua` (HEAD `20ddc59`, Recherche von Sven am 21. November 2026):
@@ -529,7 +540,7 @@ Grenze des Modells (Abschnitt „Ausgangslage“), nicht Teil dieser Anforderung
 Auf dem Testrechner hat das Installationsskript Installation und Version bereits gemeldet; die Kennung liegt unter
 `~/.cua-driver/.telemetry_id`. Das lässt sich nicht zurücknehmen. Für diesen Rechner: den Treiber aus dem Skript
 entfernen (`cua-driver uninstall --purge` löscht Kennung und lokalen Stand, laut Hersteller), dann über einen der
-beiden Wege ohne Meldung neu aufsetzen. Damit `uninstall` dabei nichts sendet, läuft auch das ohne Netz.
+über Torros eigenen Download neu aufsetzen. Damit `uninstall` dabei nichts sendet, läuft auch das ohne Netz.
 
 Die Erweiterung `cua-perception` (Bilderkennung, zum Teil AGPL, vom Hersteller eingefroren) und das Aufzeichnen
 bleiben aus.
@@ -610,7 +621,7 @@ Nicht Teil der ersten Stufe:
 0. **Test unter Hyprland** (`task`, von Hand): der Testplan oben, Ergebnis in dieses Dokument. **Vor allem anderen**;
    fällt er schlecht aus, wird die Reihenfolge neu entschieden.
 1. **Anbindung ohne Netz und Stand:** Requests und Katalog (`tools.screen_*`, `settings.set_setting screen`,
-   `ai.set_model_screenshots`, Punkt 16 in [api.md](api.md)), Installationsweg ohne Meldung (geprüftes Release oder
+   `ai.set_model_screenshots`, Punkt 16 in [api.md](api.md)), Download der festgelegten Version mit Sigstore-Prüfung (Release oder
    Fork), Startprogramm mit Netzsperre und Selbsttest, Kindprozess mit Umgebung, Prüfung der Werkzeugliste, Seite
    „Screen“ mit Schalter (aus) und Stand der Sperre. Ohne Sperre kein Werkzeug.
 2. **Sehen:** Fenster auflisten, Baum und Bild, Ausschnitt; gesperrte Programme; `untrusted` und
@@ -630,7 +641,8 @@ Nicht Teil der ersten Stufe:
 `cua-driver` übernehmen und als eingebautes Werkzeug „Screen“ anbinden, nicht selbst bauen und nicht nur als
 fremden MCP-Server. **Der Treiber hat nie Netz:** Torro startet ihn nur über ein eigenes Startprogramm mit
 Netzsperre (unter Linux seccomp), prüft die Sperre vor jedem Start und lässt das Werkzeug sonst aus; das
-Installationsskript des Herstellers fällt weg, weil es meldet. Ob dazu ein Fork ohne Sendecode kommt, ist offen.
+Installationsskript des Herstellers fällt weg, weil es meldet; Torro lädt eine festgelegte Version selbst und prüft
+die Signatur, der Download ist die einzige bewusste Verbindung. Ob dazu ein Fork ohne Sendecode kommt, ist offen.
 Bildschirmfotos bekommt ein Modell nur, wenn die Person es an der Modellwahl erlaubt, ab Werk nur lokale. Torro bietet
 dem Modell nur zwölf Befehle an und hält alle Sperren im Kern: keine Fenster der Suite, keine Passwort-Manager,
 Rechte-Dialoge und Terminals, keine Passwortfelder, keine Super-Tasten. **Standardarbeit ist der Hintergrund-Modus:**
@@ -651,6 +663,9 @@ allein genug kann, oder ob macOS zuerst kommt.
 - **Bildschirmfotos an Modelle entscheidet die Person**, je Modell an der Modellwahl.
 - **Bots** bekommen das Werkzeug später, mit eigenem Schalter, ab Werk aus (nicht in der ersten Stufe).
 - **MCP:** Die Befehle sind `Mcp::Tool` und werden für fremde Clients abgelehnt, wie beim Terminal.
+- **Installation und Updates:** Torro legt eine feste Version fest und lädt sie selbst, mit Sigstore-Prüfung (unter
+  macOS zusätzlich `com.trycua.driver`); kein Installationsskript, keine Update-Abfrage des Treibers. Der Download ist
+  die einzige bewusste Verbindung.
 - **Modus `bounded`** des Treibers mit Torros Manifest als zweite Sicherung, sobald der Test zeigt, dass er trägt;
   bis dahin `standard` mit allen Prüfungen im Kern.
 
@@ -658,8 +673,7 @@ Noch zu entscheiden:
 
 1. Treiber übernehmen statt selbst bauen?
 2. Eingebautes Werkzeug statt nur eigener MCP-Server über #302?
-3. Installation ohne das Skript des Herstellers (geprüftes Release oder Fork), Torro ruft nie ein Skript aus dem Netz
-   auf?
+3. *(entschieden, siehe oben: Torro lädt eine feste Version selbst, mit Signaturprüfung)*
 4. Hintergrund-Modus als Standardarbeit: der Kern setzt `background` fest und lehnt ab, statt still Maus und Fokus
    zu übernehmen?
 5. Vordergrund-Modus zum Zeigen und für Aktionen, die im Hintergrund nicht gehen: nur als Vorführung über
@@ -697,9 +711,8 @@ Noch zu entscheiden:
     „Drei Wege“).
 11. **Rechte-Modus `bounded`** – entschieden: ja, mit Torros Manifest als zweite Sicherung, sobald der Test zeigt,
     dass er trägt (Abschnitt „Zweite Sicherung“).
-12. **Updates des Treibers:** Wer holt eine neue Version, wenn der Treiber selbst nie nachfragen darf: die Person von
-    Hand, oder Torro mit einer neuen eigenen Version, die eine geprüfte Version des Treibers festlegt (bzw. den Fork
-    nachzieht)?
+12. **Updates des Treibers** – entschieden: Torro legt eine feste Version fest und lädt sie selbst mit
+    Signaturprüfung; keine Update-Abfrage des Treibers (Abschnitt „Wie er auf den Rechner kommt“).
 13. **Grenze des Hintergrunds unter Hyprland:** Genügt zum Start, was über Bedienhilfen geht (Knöpfe, Menüs, Werte,
     keine Tastenkürzel), oder soll Torro anbieten, ein Programm unter XWayland neu zu starten, damit mehr im Hintergrund
     geht?
