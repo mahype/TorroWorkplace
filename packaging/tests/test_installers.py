@@ -459,6 +459,35 @@ class Installers(unittest.TestCase):
         rt.write_zip(dict(reversed(list(RUNTIME_FILES.items()))), second)
         self.assertEqual(first.read_bytes(), second.read_bytes())
 
+    def test_the_powershell_installer_brings_the_assistants_dlls_checked(self):
+        sys.path.insert(0, str(pkg.ROOT))
+        import assistant_runtime as rt
+        script = self.root / "torroassistant-installer.ps1"
+        body = "function Download($download_url, $platforms, $arch) {\n  $bin_paths = @()\n" + rt.ANCHOR + "  }\n}\n"
+        script.write_text(body)
+        rt.patch_powershell(script)
+        text = script.read_text()
+        step = text[text.index(rt.MARKER):text.index(rt.ANCHOR)]
+        self.assertIn('"$download_url/$runtime_name.sha256"', step)
+        self.assertIn("Get-FileHash -Path $runtime_zip", step)
+        for name, digest in rt.pinned()["files"].items():
+            self.assertIn(f'"{name}" = "{digest}"', step)
+        self.assertIn("$bin_paths += $dll_path", step)
+        with self.assertRaises(ValueError):
+            rt.patch_powershell(script)
+        for layout in ["function Download() {}\n", rt.ANCHOR * 2 + "function Download(\n", rt.ANCHOR + "function Download(\n"]:
+            with self.subTest(layout=layout):
+                script.write_text(layout)
+                with self.assertRaises(ValueError):
+                    rt.patch_powershell(script)
+
+    def test_the_global_release_job_patches_the_powershell_installer_before_the_upload(self):
+        workflow = (pkg.ROOT.parent / ".github/workflows/release.yml").read_text()
+        job = workflow[workflow.index("  build-global-artifacts:"):workflow.index("  custom-publish-macos-app:")]
+        patch = "python3 packaging/assistant_runtime.py --patch-powershell target/distrib/torroassistant-installer.ps1"
+        self.assertLess(job.index('--artifacts=global'), job.index(patch))
+        self.assertLess(job.index(patch), job.index("name: artifacts-build-global"))
+
 
 if __name__ == "__main__":
     unittest.main()
