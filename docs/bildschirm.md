@@ -203,7 +203,9 @@ Den Vordergrund gibt es nur in einer Vorführung, die die Person freigibt (näch
   eine Vorführung vor.
 - **Nicht blockierend auch im Chat:** Aktionen laufen, während die Person weiterschreibt; „Stop“ geht jederzeit. Die
   Karte im Modus „Bei jeder Aktion“ erscheint im Chat und holt kein Fenster nach vorn. Wer den Assistenten eine Weile
-  allein arbeiten lassen will, nimmt den Modus „Je Programm einmal“.
+  allein arbeiten lassen will, nimmt den Modus „Je Programm einmal“; eine Freigabe für einen ganzen Ablauf („Fülle
+  dieses Formular aus“) gibt es in der ersten Stufe nicht (Frage 14, entschieden durch Projekt-Bot, delegiert von Sven, 21. November 2026). Grund: Was ein Ablauf
+  tut, steht erst fest, wenn er läuft; eine Freigabe im Voraus deckte Schritte, die niemand gesehen hat.
 - **Sichtbar trotz Hintergrund:** Werkzeugzeile im Chat und Eintrag im Tray, solange bedient wird. Der Zeiger des
   Treibers ist ein eigener, eingeblendeter Zeiger (`move_cursor` bewegt den der Person nicht); geht er unter Hyprland
   nicht, genügen Chat und Tray.
@@ -219,20 +221,28 @@ kann die Person den Rechner nicht nebenher benutzen; darum ist der Vordergrund n
 
 - **Auslösen:** Das Modell ruft `tools.screen_show` mit Programm, Fenster und einem Satz, was es zeigen will. Es tut
   das, wenn die Person darum bittet, oder schlägt es vor (etwa nach `background_unavailable`). Von selbst wechselt
-  nichts in den Vordergrund.
+  nichts in den Vordergrund. Einen eigenen Knopf „Show me“ im Chat gibt es in der ersten Stufe nicht; die Person bittet
+  im Text darum, und die Karte erscheint (Frage 4, entschieden durch Projekt-Bot, delegiert von Sven, 21. November 2026).
 - **Freigeben:** eine eigene Karte im Chat, **„Show on screen“**: Programm und Fenster, der Satz des Modells als
   fremder Text gekennzeichnet, und deutlich „The assistant will take over the mouse and keyboard in this window. Don't
   type meanwhile. Press Esc twice or ‹Stop› to take back control.“ Antworten: „Deny“, „Show me“. Ein „In this
-  conversation“ oder „Always“ gibt es dafür nicht; jede Vorführung fragt neu, auch im Modus „Je Programm einmal“
-  und auch nach fremden Inhalten. Nur auf der Karte, nie per Stimme oder Benachrichtigung.
+  conversation“ oder „Always“ gibt es dafür nicht; **jede Vorführung fragt neu**, auch im Modus „Je Programm einmal“,
+  auch nach fremden Inhalten und auch, wenn kurz vorher eine Vorführung lief. Eine laufende Vorführung nimmt keine
+  neue Bitte ohne neue Karte auf. Grund: Wer die Maus abgibt, soll jedes Mal wissen, wofür. Nur auf der Karte, nie per
+  Stimme oder Benachrichtigung.
 - **Während der Vorführung:** Der Kern holt das Fenster nach vorn (über `torro-wm` bzw. `bring_to_front`) und setzt
   für Aktionen in genau diesem Fenster `delivery_mode: "foreground"`. Für jede Aktion gilt weiter der gewählte Modus:
   Im Modus „Bei jeder Aktion“ zeigt der Kern die Karte. Alle harten Grenzen und Muster gelten unverändert. Aktionen in
   einem anderen Fenster laufen im Hintergrund oder gar nicht.
-- **Grenzen:** eine Vorführung gilt für ein Fenster, höchstens 5 Minuten und 50 Aktionen (Vorschlag, fest im Kern).
+- **Grenzen** (Frage 16, entschieden durch Projekt-Bot, delegiert von Sven, 21. November 2026): eine Vorführung gilt für **genau ein Fenster**, höchstens 5 Minuten
+  und 50 Aktionen, fest im Kern. Öffnet das Programm einen Dialog oder ein zweites Fenster, endet die Vorführung dort
+  nicht still: Für das neue Fenster braucht es eine neue Karte. Grund: Ein Dialog kann genau der Schritt sein, der
+  löscht oder sendet.
 - **Ende:** wenn das Modell `tools.screen_show_end` ruft, bei der Zeit- oder Aktionsgrenze, bei „Stop“ im Chat, über
-  den Tray („Stop screen control“), mit einem Tastenkürzel zum Zurückholen, oder wenn das Fenster zugeht. Danach ist
-  wieder alles Hintergrund, und der Kern gibt den Fokus an das Fenster zurück, das ihn vorher hatte.
+  den Tray („Stop screen control“), mit zweimal Esc oder einem eigenen Kürzel in Hyprland, wenn das Fenster zugeht,
+  und **bei jeder eigenen Maus- oder Tastatureingabe der Person**, soweit Torro sie erkennt (Frage 15, entschieden durch Projekt-Bot, delegiert von Sven, 21. November 2026). Grund: Wer selbst eingreift, will die Kontrolle zurück; im Zweifel endet die Vorführung lieber zu früh. Ob
+  Torro eigene Eingaben unter Hyprland erkennt, klärt der Test. Danach ist wieder alles Hintergrund, und der Kern gibt
+  den Fokus an das Fenster zurück, das ihn vorher hatte.
 - **Sichtbar:** solange die Vorführung läuft, ein deutlicher Hinweis im Tray und am Chat („Showing in LibreOffice –
   Stop“).
 
@@ -256,7 +266,10 @@ Für Hyprland heißt das voraussichtlich: **Im Hintergrund geht, was ein Program
 also Knöpfe, Menüs, Häkchen und Textfelder, deren Wert sich setzen lässt (`set_value`, `type_text` in Felder mit
 AT-SPI-Bearbeitung). Tastenkürzel und Tippen in Felder ohne Bedienhilfe gehen nicht. Ob Bildschirmfotos und
 Bildpunkt-Klicks gehen, muss der Test klären. Ein Programm unter XWayland (`GDK_BACKEND=x11`, `QT_QPA_PLATFORM=xcb`)
-kann mehr, muss dafür aber so gestartet werden.
+kann mehr, muss dafür aber so gestartet werden. **Zum Start genügt, was über Bedienhilfen geht**; Torro bietet nicht
+an, Programme unter XWayland neu zu starten (Frage 13, entschieden durch Projekt-Bot, delegiert von Sven, 21. November 2026). Grund: Ein Neustart kann ungesicherte
+Arbeit verlieren, und Programme starten (`launch_app`) bietet Torro ohnehin nicht an. Wer mehr will, startet das
+Programm selbst so.
 
 ## Test unter Hyprland
 
@@ -313,7 +326,7 @@ sicher beenden?
 
 ## Befehle
 
-Bereich `tools`, ohne eigenes `ToolId`, wie das Terminal. Namen sind ein Vorschlag (offene Frage 1).
+Bereich `tools`, ohne eigenes `ToolId`, wie das Terminal; in der Oberfläche heißt das Werkzeug „Screen“ (Frage 1, entschieden durch Projekt-Bot, delegiert von Sven, 21. November 2026).
 
 | Befehl | Treiber-Werkzeug | Zweck |
 |---|---|---|
@@ -364,7 +377,7 @@ Wie beim Terminal:
   Muster und darunter einen kleinen Ausschnitt des Fensters um das Ziel. Dazu „No sandbox: Torro can't check what this
   click does in the program.“
 - **Antworten:** „Deny“, „Allow once“, „In this conversation“ (für dieses Programm). Ein „Always“ gibt es in der
-  ersten Stufe nicht (offene Frage 3): Was ein Klick bewirkt, hängt vom Fensterinhalt ab, nicht von einem Befehlstext.
+  ersten Stufe nicht (Frage 3, entschieden durch Projekt-Bot, delegiert von Sven, 21. November 2026): Was ein Klick bewirkt, hängt vom Fensterinhalt ab, nicht von einem Befehlstext.
 - **Nur auf der Karte**, nie über Benachrichtigung, Eingang oder Stimme; Bedienen nie in geplanten Läufen. Fehlt die
   Person, wird abgelehnt, nicht erlaubt (so auch Hermes).
 - **Nach dem Ja** prüft der Kern noch einmal: Werkzeug an, Unterhaltung nicht gestoppt oder gelöscht, dasselbe
@@ -386,7 +399,8 @@ der Liste.
   `pinentry`, KWallet, macOS `SecurityAgent`, Windows `CredentialUIBroker`), Rechte-Dialoge (polkit-Agenten wie
   `hyprpolkitagent`, macOS-Systemdialoge, Windows `consent.exe`), Terminals (kitty, Alacritty, foot, Ghostty,
   WezTerm, GNOME Terminal, Konsole, Terminal.app, iTerm2, Windows Terminal): Tippen in ein Terminal umginge alle Regeln
-  des Terminal-Werkzeugs. Erkannt am Programm (Prozessname, App-ID bzw. Bundle-ID), nicht am Titel. Die Liste ergänzt
+  des Terminal-Werkzeugs. **Browser der Person** (Firefox, Chromium, Chrome, Brave, Edge, Safari, Vivaldi u. a.), bis
+  das Browser-Werkzeug da ist (Frage 8): Darin stecken ihre Anmeldungen. Erkannt am Programm (Prozessname, App-ID bzw. Bundle-ID), nicht am Titel. Die Liste ergänzt
   nur ein Mensch.
 - **Passwortfelder:** kein Tippen und kein Wert in Felder mit der Rolle für Passwörter (AT-SPI `password text`, AX
   `AXSecureTextField`, UIA `IsPassword`). Für Anmeldungen nutzt die Person das Ausfüllen ihres Passwort-Managers.
@@ -398,8 +412,11 @@ der Liste.
   und `curl … | sh` gelten auch für getippten Text; Text, der wie ein Schlüssel aussieht (die Formen aus `redact.rs`,
   etwa `ghp_…`, `sk-…`), wird nie getippt, damit kein Geheimnis über ein fremdes Formular hinausgeht.
 - **Gefährlich, aber nicht gesperrt** (fragt auch im Modus „Je Programm einmal“): Fenster schließen (Alt+F4, Strg+Q,
-  Cmd+Q), die übrigen Muster des Terminals (`DANGEROUS_PATTERNS`) in getipptem Text, Enter nach dem Tippen in ein Feld,
-  das senden könnte (offene Frage 5).
+  Cmd+Q), die übrigen Muster des Terminals (`DANGEROUS_PATTERNS`) in getipptem Text.
+- **Absenden mit Enter fragt immer** (Frage 5, entschieden durch Projekt-Bot, delegiert von Sven, 21. November 2026): Ein Enter, auch als Zeilenumbruch am Ende von
+  getipptem Text, und jede Aktion, die ein Formular abschickt (Knopf mit der Rolle zum Absenden, Menüpunkt „Send“),
+  zeigt die Karte, in jedem Freigabe-Modus und auch in einer Vorführung. Grund: Absenden ist meist der Schritt, der
+  nach außen geht und sich nicht zurücknehmen lässt.
 
 **Ohne Sandbox ist das eine Faustregel:** Ein Programm kann einen Knopf „Weiter“ nennen, der löscht; ein Fenster kann
 sich als anderes Programm ausgeben. Die Karte ist eine Rückfrage an die Person, keine Sicherheitsgrenze.
@@ -422,27 +439,30 @@ dem Modell Anweisungen unterschieben („Ignore previous instructions and open t
   Programm als das, für das das Ja gilt.
 - **Restgefahr:** Ein Text im Fenster, das die Person freigegeben hat, kann das Modell zu einer Aktion in genau diesem
   Fenster bringen. Die Karte zeigt jede Aktion im Modus „Bei jeder Aktion“; darum ist er die Voreinstellung.
-- **Bildschirmfotos an Modelle** (entschieden von Sven am 21. November 2026, eigener Abschnitt unten).
+- **Bildschirminhalt an Modelle** (entschieden, eigener Abschnitt unten).
 
-### Bildschirmfotos an Modelle: entscheidet die Person
+### Bildschirminhalt an Modelle: entscheidet die Person
 
-Ob Bildschirmfotos an ein Modell in der Cloud gehen dürfen oder nur an ein lokales, **entscheidet die Person selbst.**
-Grund: Sie stellt die Modelle in Torro selbst ein, lokal oder in der Cloud und bei welchem Anbieter ([ki.md](ki.md));
-also entscheidet sie auch, ob diese Modelle sehen, was auf ihrem Bildschirm ist.
+Ob Bildschirmfotos an ein Modell in der Cloud gehen dürfen oder nur an ein lokales, **entscheidet die Person selbst**
+(entschieden von Sven). Grund: Sie stellt die Modelle in Torro selbst ein, lokal oder in der Cloud und bei welchem
+Anbieter ([ki.md](ki.md)); also entscheidet sie auch, ob diese Modelle sehen, was auf ihrem Bildschirm ist.
+**Voreinstellung und Reichweite** (Frage 7, entschieden durch Projekt-Bot, delegiert von Sven, 21. November 2026): ab Werk nur lokale Modelle, und der Schalter umfasst
+auch den Fenstertext. Grund: Der Baum enthält dieselben Inhalte wie das Bild (Texte, Namen, Zahlen); ein Schalter nur
+für Bilder schützte nichts.
 
 - **Wo:** an der Modellwahl, auf der Kontoseite in Steuerzentrale › AI, bei jedem Modell neben dem Schalter an/aus:
-  „May see screenshots“. Er erscheint nur bei Modellen, die Bilder verstehen. Im Chat zeigt die Werkzeugzeile, ob das
-  gewählte Modell Bilder bekommt, mit einem Verweis auf die Einstellung.
+  „May see the screen“. Im Chat zeigt die Werkzeugzeile, ob das gewählte Modell den Bildschirm sehen darf, mit einem
+  Verweis auf die Einstellung.
 - **Voreinstellung:** an für Modelle, die auf diesem Rechner rechnen (Loopback, wie „lokal“ in [ki.md](ki.md),
   `place_of`), **aus für alle Modelle anderswo**, auch im eigenen Netz. Das folgt Open First.
-- **Wirkung:** Darf das Modell keine Bilder sehen, holt der Kern nur den Baum (`include_screenshot: false`) und bietet
-  `tools.screen_zoom` nicht an; Klicks auf Bildpunkte entfallen damit. Wechselt die Person mitten in der Unterhaltung
-  das Modell (`assistant.choose_model`), gilt die Einstellung des neuen Modells ab dem nächsten Schritt.
+- **Wirkung:** Darf das Modell den Bildschirm nicht sehen, bekommt es kein Werkzeug, das Bildschirminhalt liefert:
+  weder Fensterliste (sie nennt Titel) noch Baum, Bild oder Ausschnitt, und damit auch kein Bedienen. Nur
+  `tools.screen_status` bleibt. Darf es sehen, versteht aber keine Bilder, bekommt es nur den Baum
+  (`include_screenshot: false`, kein `tools.screen_zoom`, keine Klicks auf Bildpunkte). Wechselt die Person mitten in
+  der Unterhaltung das Modell (`assistant.choose_model`), gilt die Einstellung des neuen Modells ab dem nächsten
+  Schritt.
 - **Wer schaltet:** Anschalten für ein Modell anderswo nur ein Mensch, wie das Anschalten des Modells selbst
   (`ai.set_model_enabled`, Grundsatz 4 in [ki.md](ki.md)); ausschalten darf jeder Client mit Rechten, mit Freigabe.
-- **Fenstertext** (der Baum) geht wie jeder andere Inhalt an das gewählte Modell, nach Grundsatz 4 in
-  [ki.md](ki.md) (keine Datenregel, die still etwas zurückhält). Ob der Schalter auch ihn umfassen soll, ist offene
-  Frage 7.
 - **Verhältnis zu #664:** Seit #664 gibt es keine Datenregeln je Quelle mehr. Dieser Schalter ist keine solche Regel,
   sondern eine Eigenschaft des Modells, die die Person bei der Modellwahl setzt; [ki.md](ki.md) bekommt ihn im
   Bau-Issue dazu.
@@ -485,7 +505,9 @@ Drei Schichten; die erste ist die Sperre, die anderen beiden verhindern, dass es
 2. **Kein Code, der sendet** (nur mit einem Fork): Nutzungsdaten, Update-Abfrage, Installationsmeldung und Downloads
    sind entfernt.
 3. **Schalter des Treibers aus:** alle Variablen aus der Tabelle bei jedem Start, auch für kurze Aufrufe wie
-   `telemetry status` und `list-tools`. Werkzeuge, die laden oder senden würden (`check_for_update`,
+   `telemetry status` und `list-tools`. **Nur je Start**, Torro schreibt nie in die Konfiguration des Treibers
+   (`config.toml`, `telemetry disable`) (Frage 6, entschieden durch Projekt-Bot, delegiert von Sven, 21. November 2026). Grund: Die Konfiguration gilt für alle Programme,
+   die den Treiber nutzen, und gehört der Person; die Sperre schützt ohnehin, egal was dort steht. Werkzeuge, die laden oder senden würden (`check_for_update`,
    `install_extension`, `install_ffmpeg`), bietet Torro nie an.
 
 ### Netzsperre unter Linux: Machbarkeit
@@ -555,7 +577,8 @@ ihre Anmeldungen.
   gesteuert über das Chrome DevTools Protocol, wie Hermes. Der Treiber hat dafür eigene Werkzeuge (`browser_*`, an eine
   ausdrücklich vorbereitete DevTools-Adresse gebunden); ob Torro sie nutzt oder selbst über CDP spricht, entscheidet
   jenes Konzept.
-- **Browser-Fenster der Person** sperrt das Bildschirm-Werkzeug in der ersten Stufe (offene Frage 8).
+- **Browser-Fenster der Person** sind gesperrt, bis das Browser-Werkzeug da ist (Frage 8, entschieden durch Projekt-Bot, delegiert von Sven, 21. November 2026). Grund: Im Browser
+  der Person stecken ihre Anmeldungen; ein Klick dort handelt mit ihren Konten.
 
 ## Plattformen
 
@@ -594,7 +617,7 @@ Wie beim Terminal:
 | Vorführung im Vordergrund erbitten und beenden | Karte „Show on screen“, Hinweis „Showing in … – Stop“ | `tools.screen_show` · Delete, `tools.screen_show_end` · Write | `tools_screen_show`, `tools_screen_show_end` (für fremde Clients immer abgelehnt) |
 | Aktion oder Vorführung freigeben | Karte im Chat | `approvals.decide_approval` mit `scope` | **Never** (Punkt 3) |
 | Schalter, Modus, gesperrte Programme | Steuerzentrale › MCP servers › Built-in › Screen | `settings.set_setting screen` | **Never** (neuer Punkt 16) |
-| Bildschirmfotos je Modell erlauben | Steuerzentrale › AI › Konto › Modellzeile „May see screenshots“ | `ai.set_model_screenshots` · Admin; anschalten für Modelle anderswo nur App-Schlüssel | `ai_set_model_screenshots` nur fürs Ausschalten (Punkt 16) |
+| Bildschirm je Modell erlauben (Bild und Fenstertext) | Steuerzentrale › AI › Konto › Modellzeile „May see the screen“ | `ai.set_model_screen` · Admin; anschalten für Modelle anderswo nur App-Schlüssel | `ai_set_model_screen` nur fürs Ausschalten (Punkt 16) |
 | Bedienen stoppen | „Stop“ im Chat, Tray „Stop screen control“ | `assistant.cancel` · Write (gibt es) | `assistant_cancel` |
 
 **MCP-Weg (entschieden von Sven am 21. November 2026):** Die Befehle sind `Mcp::Tool` im Katalog, und Torros
@@ -621,12 +644,12 @@ Nicht Teil der ersten Stufe:
 0. **Test unter Hyprland** (`task`, von Hand): der Testplan oben, Ergebnis in dieses Dokument. **Vor allem anderen**;
    fällt er schlecht aus, wird die Reihenfolge neu entschieden.
 1. **Anbindung ohne Netz und Stand:** Requests und Katalog (`tools.screen_*`, `settings.set_setting screen`,
-   `ai.set_model_screenshots`, Punkt 16 in [api.md](api.md)), Download der festgelegten Version mit Sigstore-Prüfung (Release oder
+   `ai.set_model_screen`, Punkt 16 in [api.md](api.md)), Download der festgelegten Version mit Sigstore-Prüfung (Release oder
    Fork), Startprogramm mit Netzsperre und Selbsttest, Kindprozess mit Umgebung, Prüfung der Werkzeugliste, Seite
    „Screen“ mit Schalter (aus) und Stand der Sperre. Ohne Sperre kein Werkzeug.
 2. **Sehen:** Fenster auflisten, Baum und Bild, Ausschnitt; gesperrte Programme; `untrusted` und
    `may_have_read_untrusted`; Frage einmal je Unterhaltung und Programm; keine Bilder im Verlauf; Schalter „May see
-   screenshots“ je Modell.
+   the screen“ je Modell.
 3. **Bedienen im Hintergrund:** Aktionen mit Karte, `delivery_mode` fest auf `background`, Ablehnen statt
    Vordergrund, eine Unterhaltung zur Zeit, zwei Freigabe-Modi, harte Grenzen und Muster, Prüfung nach dem Ja, Protokoll;
    Treiber im Modus `bounded` mit Torros Manifest, wenn der Test das trägt.
@@ -666,10 +689,13 @@ allein genug kann, oder ob macOS zuerst kommt.
 - **Installation und Updates:** Torro legt eine feste Version fest und lädt sie selbst, mit Sigstore-Prüfung (unter
   macOS zusätzlich `com.trycua.driver`); kein Installationsskript, keine Update-Abfrage des Treibers. Der Download ist
   die einzige bewusste Verbindung.
+**Entschieden durch Projekt-Bot (delegiert von Sven, 21. November 2026):** Fragen 1, 3, 4, 5, 6, 7, 8, 13, 14, 15, 16
+(siehe „Offene Fragen“, Begründungen an den Stellen im Text).
+
 - **Modus `bounded`** des Treibers mit Torros Manifest als zweite Sicherung, sobald der Test zeigt, dass er trägt;
   bis dahin `standard` mit allen Prüfungen im Kern.
 
-Noch zu entscheiden:
+**Grundsatzfragen für Sven** (noch zu entscheiden, nicht delegiert):
 
 1. Treiber übernehmen statt selbst bauen?
 2. Eingebautes Werkzeug statt nur eigener MCP-Server über #302?
@@ -687,48 +713,50 @@ Noch zu entscheiden:
 11. Reihenfolge der Bau-Issues, mit dem Test als Bedingung?
 12. Netzsperre unter Linux über seccomp in einem Startprogramm der Suite, und das Werkzeug bleibt aus, wo keine
     Sperre greift?
-13. Voreinstellung „May see screenshots“: an nur für lokale Modelle?
+13. Voreinstellung „May see the screen“: an nur für lokale Modelle? (Vom Projekt-Bot als Frage 7 so gesetzt, zur
+    Bestätigung.)
 
 ## Offene Fragen
 
-1. **Namen der Befehle:** `tools.screen_*` oder ein eigener Bereich `screen`? Und heißt das Werkzeug in der
-   Oberfläche „Screen“, „Computer“ oder „Control other apps“?
-2. **Test unter Hyprland:** Wer führt ihn aus und wann? Bis dahin ist offen, ob unter Hyprland mehr als der
-   Bedienhilfen-Baum geht.
-3. **„Always“ je Programm:** gebraucht, oder genügt „In this conversation“?
-4. **Wechsel in den Vordergrund:** Genügt die Karte „Show on screen“ je Vorführung, oder soll die Person eine
-   Vorführung auch selbst starten können (Knopf „Show me“ im Chat), und darf eine laufende Vorführung bei der
-   nächsten Bitte ohne neue Karte weiterlaufen?
-5. **Enter nach dem Tippen** und Absenden von Formularen: eigenes Muster, das immer fragt?
-6. **Schalter des Treibers:** Soll Torro zusätzlich zur Sperre `cua-driver telemetry disable` und
-   `update_check_enabled = false` dauerhaft in die Konfiguration des Treibers schreiben (wirkt dann auch für andere
-   Programme, die ihn nutzen), oder nur die Variablen je Start setzen?
-7. **Bildschirmfotos an Modelle** (entschieden: die Person, je Modell): Passt die Voreinstellung „nur lokale
-   Modelle“, und soll der Schalter auch den Fenstertext umfassen?
-8. **Browser-Fenster der Person:** ganz sperren, bis das Browser-Werkzeug da ist, oder bedienbar wie andere Programme?
-9. **Bots** – entschieden: später, mit eigenem Schalter, ab Werk aus (Abschnitt „Später“).
-10. **MCP-Weg** – entschieden: `Mcp::Tool`, für fremde Clients immer abgelehnt, wie beim Terminal (Abschnitt
-    „Drei Wege“).
-11. **Rechte-Modus `bounded`** – entschieden: ja, mit Torros Manifest als zweite Sicherung, sobald der Test zeigt,
-    dass er trägt (Abschnitt „Zweite Sicherung“).
-12. **Updates des Treibers** – entschieden: Torro legt eine feste Version fest und lädt sie selbst mit
-    Signaturprüfung; keine Update-Abfrage des Treibers (Abschnitt „Wie er auf den Rechner kommt“).
-13. **Grenze des Hintergrunds unter Hyprland:** Genügt zum Start, was über Bedienhilfen geht (Knöpfe, Menüs, Werte,
-    keine Tastenkürzel), oder soll Torro anbieten, ein Programm unter XWayland neu zu starten, damit mehr im Hintergrund
-    geht?
-14. **Allein arbeiten lassen:** Ist der Modus „Je Programm einmal“ der richtige Weg, damit der Assistent im
-    Hintergrund arbeitet, während die Person woanders ist, oder braucht es eine Freigabe für einen ganzen Ablauf
-    („Fülle dieses Formular aus“) mit Bericht am Ende?
-15. **Ende der Vorführung:** Welches Tastenkürzel holt die Kontrolle zurück (zweimal Esc, ein eigenes Kürzel in
-    Hyprland), und soll jede eigene Maus- oder Tastenbewegung der Person die Vorführung sofort beenden?
-16. **Grenzen der Vorführung:** Passen 5 Minuten und 50 Aktionen, und darf eine Vorführung bei Bedarf ein zweites
-    Fenster desselben Programms (etwa einen Dialog) mit einschließen?
-17. **Fork oder Netzsperre:** Genügt das geprüfte Release von `cua-driver` mit Netzsperre, oder braucht es zusätzlich
-    einen MIT-Fork ohne Sendecode (ohne `telemetry.rs`, Update-Abfrage und `ureq`), den Torro bei jeder Version
-    nachzieht?
-18. **macOS und Windows:** Lässt sich „kein Netzverkehr“ dort überhaupt prüfbar erreichen (macOS: Dienst in
-    `CuaDriver.app` außerhalb von Torro; Windows: Firewall-Regel mit Administratorrechten), oder gibt es das Werkzeug
-    dort erst mit eigenem Build?
+Stand: Sven hat 9 bis 12 entschieden, der Projekt-Bot (delegiert von Sven) 1, 3 bis 8 und 13 bis 16. **Offen sind nur
+noch die Grundsatzfragen 2, 17 und 18 für Sven**, dazu die Punkte unter „Grundsatzfragen für Sven“ oben.
+
+1. **Namen** – Projekt-Bot: Befehle `tools.screen_*` im Bereich `tools`, ohne eigenen Bereich, in der Oberfläche
+   „Screen“. Grund: wie das Terminal, kein neuer Bereich in Rechten und Vorlagen.
+2. **Test unter Hyprland** – **Grundsatzfrage für Sven, offen:** Wer führt ihn aus und wann? Er braucht einen Menschen
+   am Rechner; bis dahin ist offen, ob unter Hyprland mehr als der Bedienhilfen-Baum geht.
+3. **„Always“ je Programm** – Projekt-Bot: nein, „In this conversation“ genügt. Grund: Was ein Klick bewirkt, hängt
+   vom Fensterinhalt ab.
+4. **Wechsel in den Vordergrund** – Projekt-Bot: nur über die Karte „Show on screen“, jede Vorführung neu, kein
+   eigener Knopf, keine Fortsetzung ohne neue Karte. Grund: Wer die Maus abgibt, soll jedes Mal wissen, wofür.
+5. **Absenden mit Enter** – Projekt-Bot: fragt immer, in jedem Modus. Grund: Absenden geht meist nach außen und lässt
+   sich nicht zurücknehmen.
+6. **Schalter des Treibers** – Projekt-Bot: nur Umgebungsvariablen je Start, nie die globale Konfiguration. Grund: Sie
+   gehört der Person und gilt für andere Programme; die Sperre schützt ohnehin.
+7. **Bildschirminhalt an Modelle** – Sven: die Person entscheidet je Modell; Projekt-Bot: ab Werk nur lokale Modelle,
+   der Schalter umfasst auch den Fenstertext. Grund: Der Baum enthält dieselben Inhalte wie das Bild.
+8. **Browser-Fenster der Person** – Projekt-Bot: gesperrt, bis das Browser-Werkzeug da ist. Grund: Darin stecken ihre
+   Anmeldungen.
+9. **Bots** – Sven: später, mit eigenem Schalter, ab Werk aus (Abschnitt „Später“).
+10. **MCP-Weg** – Sven: `Mcp::Tool`, für fremde Clients immer abgelehnt, wie beim Terminal (Abschnitt „Drei Wege“).
+11. **Rechte-Modus `bounded`** – Sven: ja, mit Torros Manifest als zweite Sicherung, sobald der Test zeigt, dass er
+    trägt (Abschnitt „Zweite Sicherung“).
+12. **Updates des Treibers** – Sven: Torro legt eine feste Version fest und lädt sie selbst mit Signaturprüfung; keine
+    Update-Abfrage des Treibers (Abschnitt „Wie er auf den Rechner kommt“).
+13. **Grenze des Hintergrunds unter Hyprland** – Projekt-Bot: zum Start nur, was über Bedienhilfen geht; kein Angebot,
+    Programme unter XWayland neu zu starten. Grund: Ein Neustart kann ungesicherte Arbeit verlieren.
+14. **Allein arbeiten lassen** – Projekt-Bot: höchstens „Je Programm einmal“, keine Freigabe für ganze Abläufe in der
+    ersten Stufe. Grund: Eine Freigabe im Voraus deckte Schritte, die niemand gesehen hat.
+15. **Ende der Vorführung** – Projekt-Bot: zweimal Esc, ein eigenes Kürzel in Hyprland, „Stop“ und Tray; jede eigene
+    Eingabe der Person beendet sie, soweit erkennbar. Grund: Im Zweifel lieber zu früh enden.
+16. **Grenzen der Vorführung** – Projekt-Bot: ein Fenster, 5 Minuten, 50 Aktionen; ein Dialog oder zweites Fenster
+    braucht eine neue Karte. Grund: Ein Dialog kann der Schritt sein, der löscht oder sendet.
+17. **Fork oder Netzsperre** – **Grundsatzfrage für Sven, offen:** Genügt das geprüfte Release von `cua-driver` mit
+    Netzsperre, oder braucht es zusätzlich einen MIT-Fork ohne Sendecode (ohne `telemetry.rs`, Update-Abfrage und
+    `ureq`), den Torro bei jeder Version nachzieht?
+18. **macOS und Windows** – **Grundsatzfrage für Sven, offen:** Lässt sich „kein Netzverkehr“ dort überhaupt prüfbar
+    erreichen (macOS: Dienst in `CuaDriver.app` außerhalb von Torro; Windows: Firewall-Regel mit
+    Administratorrechten), oder gibt es das Werkzeug dort erst mit eigenem Build?
 
 ## Quellen
 
