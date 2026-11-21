@@ -104,13 +104,60 @@ Minuten ohne Aufruf, stderr nur im Speicher. Dazu kommt:
   aufbauen kann; geht das nicht, startet er gar nicht;
 - zusätzlich `CUA_DRIVER_RS_TELEMETRY_ENABLED=false`, `DO_NOT_TRACK=1`, `CUA_TELEMETRY=0` und
   `CUA_DRIVER_RS_UPDATE_CHECK=false`, damit der Treiber gar nicht erst versucht zu senden;
-- den Rechte-Modus `bounded` mit einem Manifest des Kerns, wenn der Test zeigt, dass das trägt; sonst `standard`
-  und alle Prüfungen nur im Kern.
+- der Rechte-Modus des Treibers: `bounded` mit einem Manifest des Kerns als zweite Sicherung, sobald der Test zeigt,
+  dass es trägt; bis dahin `standard` mit allen Prüfungen im Kern (Abschnitt „Zweite Sicherung: Modus `bounded`“).
 
 Unter Linux und Windows ist `cua-driver mcp` selbst der Treiber und endet mit seiner Standardeingabe. Unter macOS
 leitet er an den Dienst in `CuaDriver.app` weiter, weil nur diese App die Rechte für Bedienhilfen und Bildschirmaufnahme
 hat; diesen Dienst startet macOS, nicht Torro (Folgen im Abschnitt „Kein Netzverkehr“). Den HTTP-Weg des Treibers
 (`CUA_DRIVER_RS_MCP_HTTP_PORT`) nutzt Torro nicht.
+
+### Zweite Sicherung: Modus `bounded`
+
+**Entschieden von Sven am 21. November 2026:** Zusätzlich zu den Prüfungen im Kern läuft der Treiber im Rechte-Modus
+`bounded` mit einem Manifest, das Torro schreibt. Die Prüfungen im Kern bleiben die erste Sicherung und gelten
+unverändert; das Manifest fängt ab, was an ihnen vorbeikäme. Geplant ist `bounded`, sobald der Test unter Hyprland
+zeigt, dass es trägt; bis dahin `standard` mit allen Prüfungen im Kern.
+
+**Belegt** (Doku des Herstellers, lokale Ausgabe von `cua-driver manifest` für 0.34.0):
+
+- Drei Modi: `standard` (Voreinstellung, ohne Rückfrage), `bounded` (nur, was ein Manifest erlaubt; alles andere
+  abgelehnt), `unrestricted` (nur mit `--dangerously-bypass-approvals`). Der Modus gilt ab dem Start und lässt sich nur
+  durch einen Neustart ändern; ein Agent kann ihn nicht erweitern, für alle Wege gilt dieselbe Prüfung.
+- Das Manifest ist eine „narrow-only tool/resource ceiling“: Es engt ein, erweitert nie. In `bounded` ist es Pflicht,
+  dazu die Bestätigung, dass genau dieses Manifest geprüft wurde (`--approve-capability-manifest`, „trusted launcher“).
+  Fehlt eins von beiden, startet der Treiber nicht, statt auf `standard` zurückzufallen.
+- In 0.34.0 nimmt **`serve`** diese Angaben (`--permission-mode`, `--capability-manifest`,
+  `--approve-capability-manifest`), `mcp` nicht. Dazu nennt der Hersteller die Variablen
+  `CUA_DRIVER_PERMISSION_MODE`, `CUA_DRIVER_CAPABILITY_MANIFEST_FILE`, `CUA_DRIVER_CAPABILITY_MANIFEST_APPROVED`.
+- Format laut Beispielen: YAML, `version: 3`, `expires_after`, `idle_timeout`, eine Liste erlaubter Werkzeuge
+  (`allow.tools`) und Ressourcen, die ein Werkzeug treffen muss (Programme, unter macOS mit `bundle_id`; Browser mit
+  `origins`). Ein nicht gelistetes Werkzeug gibt `permission_denied`, ein erlaubtes Werkzeug an einem anderen
+  Programm `bounded_resource_outside_manifest`. Ältere Manifeste (Version 1 und 2) laden noch. Ein vollständiges
+  Schema hat der Hersteller nicht veröffentlicht.
+
+**Was Torros Manifest enthalten soll** (Vorschlag):
+
+- `allow.tools`: genau die Werkzeuge hinter Torros Befehlen (`list_apps`, `list_windows`, `get_window_state`, `zoom`,
+  `click`, `double_click`, `right_click`, `type_text`, `set_value`, `press_key`, `hotkey`, `scroll`, `drag`,
+  `invoke_menu`, dazu `start_session`, `end_session`, `set_agent_cursor_enabled`, `health_report`,
+  `check_permissions`). `bring_to_front` nur in einem Manifest für eine laufende Vorführung. Alles andere fehlt, also
+  auch `kill_app`, `launch_app`, Zwischenablage, `set_config`, Downloads, Aufzeichnung und `browser_*`.
+- Ressourcen: keine Browser-Ursprünge; Programme nur, wenn sich damit die gesperrten Programme ausschließen bzw. die
+  freigegebenen Programme einer Unterhaltung festlegen lassen.
+- `idle_timeout` passend zu Torros 10 Minuten ohne Aufruf, `expires_after` kurz (etwa eine Stunde), danach neues
+  Manifest beim nächsten Start.
+
+**Unbelegt, klärt der Test** (Folge-Issue 0):
+
+- Ob `cua-driver mcp` den Modus über die Variablen annimmt, oder ob Torro `serve` mit eigenem Pfad-Socket startet und
+  `mcp --socket` daran hängt, beides hinter der Netzsperre.
+- Wie Programme unter Linux und Windows im Manifest heißen (`bundle_id` ist macOS), und ob sich damit Programme
+  ausschließen oder nur einschließen lassen.
+- Ob das Manifest Tasten, Text oder `delivery_mode: "foreground"` einschränken kann. Bis das belegt ist, bleiben
+  gesperrte Tasten, Tippmuster und der Hintergrund allein Sache des Kerns.
+- Ob ein Neustart des Treibers mit neuem Manifest schnell genug ist, wenn die Person ein weiteres Programm freigibt
+  oder eine Vorführung beginnt.
 
 ## Zwei Modi zu bedienen: Hintergrund und Vordergrund
 
@@ -249,6 +296,8 @@ Treiber aus einem Weg ohne Meldung, und misst nach, dass keine Verbindung versuc
    Fenster landen, Fokus und Zeiger dürfen sich nicht ändern.
 7. Dasselbe Programm unter XWayland: Was geht dann zusätzlich, und verschwindet die Warnung von `doctor`?
 8. Erscheint der eigene Zeiger des Treibers unter Hyprland?
+
+**Für den Modus `bounded`:** die vier unbelegten Punkte aus dem Abschnitt „Zweite Sicherung“.
 
 **Für den Vordergrund-Modus** zusätzlich: Holt `bring_to_front` unter Hyprland das Fenster nach vorn, oder muss
 Torro das über `torro-wm` tun? Kommen Klicks und Tasten mit `delivery_mode: "foreground"` an (unter Wayland über
@@ -568,7 +617,8 @@ Nicht Teil der ersten Stufe:
    `may_have_read_untrusted`; Frage einmal je Unterhaltung und Programm; keine Bilder im Verlauf; Schalter „May see
    screenshots“ je Modell.
 3. **Bedienen im Hintergrund:** Aktionen mit Karte, `delivery_mode` fest auf `background`, Ablehnen statt
-   Vordergrund, eine Unterhaltung zur Zeit, zwei Freigabe-Modi, harte Grenzen und Muster, Prüfung nach dem Ja, Protokoll.
+   Vordergrund, eine Unterhaltung zur Zeit, zwei Freigabe-Modi, harte Grenzen und Muster, Prüfung nach dem Ja, Protokoll;
+   Treiber im Modus `bounded` mit Torros Manifest, wenn der Test das trägt.
 4. **Stopp und Anzeige:** Tray-Eintrag, Zeiger oder Rahmen am bedienten Fenster.
 5. **Vordergrund-Modus:** `tools.screen_show` mit Karte „Show on screen“, Grenzen, Ende und Rückgabe des Fokus,
    Tastenkürzel zum Zurückholen.
@@ -601,6 +651,8 @@ allein genug kann, oder ob macOS zuerst kommt.
 - **Bildschirmfotos an Modelle entscheidet die Person**, je Modell an der Modellwahl.
 - **Bots** bekommen das Werkzeug später, mit eigenem Schalter, ab Werk aus (nicht in der ersten Stufe).
 - **MCP:** Die Befehle sind `Mcp::Tool` und werden für fremde Clients abgelehnt, wie beim Terminal.
+- **Modus `bounded`** des Treibers mit Torros Manifest als zweite Sicherung, sobald der Test zeigt, dass er trägt;
+  bis dahin `standard` mit allen Prüfungen im Kern.
 
 Noch zu entscheiden:
 
@@ -643,7 +695,8 @@ Noch zu entscheiden:
 9. **Bots** – entschieden: später, mit eigenem Schalter, ab Werk aus (Abschnitt „Später“).
 10. **MCP-Weg** – entschieden: `Mcp::Tool`, für fremde Clients immer abgelehnt, wie beim Terminal (Abschnitt
     „Drei Wege“).
-11. **Rechte-Modus `bounded` des Treibers:** lohnt ein Manifest zusätzlich zu den Prüfungen im Kern?
+11. **Rechte-Modus `bounded`** – entschieden: ja, mit Torros Manifest als zweite Sicherung, sobald der Test zeigt,
+    dass er trägt (Abschnitt „Zweite Sicherung“).
 12. **Updates des Treibers:** Wer holt eine neue Version, wenn der Treiber selbst nie nachfragen darf: die Person von
     Hand, oder Torro mit einer neuen eigenen Version, die eine geprüfte Version des Treibers festlegt (bzw. den Fork
     nachzieht)?
@@ -666,6 +719,9 @@ Noch zu entscheiden:
 
 ## Quellen
 
+- Manifest und Modi: [Set permissions / bounded manifest](https://cua.ai/docs/how-to-guides/driver/write-a-bounded-manifest),
+  [Permission modes](https://cua.ai/docs/reference/cua-driver/permission-modes), abgerufen am 21. November 2026 (nur
+  über Suchauszüge gelesen); lokal `cua-driver manifest` (0.34.0), ohne Netz in eigenem Netzwerk-Namespace gestartet.
 - Treiber: [README von cua-driver](https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md),
   [How Cua Driver works](https://cua.ai/docs/explanation/the-no-foreground-contract),
   [Linux and Wayland / Troubleshoot](https://cua.ai/docs/explanation/linux-and-wayland),
