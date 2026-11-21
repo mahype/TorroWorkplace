@@ -253,6 +253,16 @@ fn main() -> ExitCode {
         }
     };
 
+    // A page that never says `ready` (script error, 404, no Squire) must not hang the checks forever.
+    if mode != Mode::Interactive {
+        let dog = proxy.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_secs(20));
+            eprintln!("editor-webview: no result after 20 s");
+            let _ = dog.send_event(UserEvent::Exit(1));
+        });
+    }
+
     let reply = std::fs::read_to_string(root().join("fixtures/reply.html")).unwrap_or_default();
     let quit_proxy = proxy.clone();
 

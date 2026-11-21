@@ -7,7 +7,7 @@ Ein tao/wry-Fenster mit dem Editor Squire (lokal in `assets/`, kein Netz). Ergeb
 cargo run --release                       # Fenster; jedes Ereignis als JSON-Zeile auf stdout
 cargo run --release -- --selftest         # HTML hin und zurück gegen torro_mail::html (Exit 0 = ok)
 cargo run --release -- --measure          # Startzeit und Speicher (PSS), fünf Läufe
-./auto-check.sh nodmabuf                  # Zeichnen, Tippen, Auswahl, Einfügen auf einem laufenden Hyprland
+WEBKIT_DISABLE_DMABUF_RENDERER=1 ./auto-check.sh nodmabuf                # Zeichnen, Tippen, Auswahl, Einfügen auf einem laufenden Hyprland
 ```
 
 **Auf NVIDIA unter Wayland** stürzt WebKitGTK ohne Umgehung ab (`Missing acquire timeline`). Starte mit

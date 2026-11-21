@@ -23,7 +23,7 @@ shot() { # name: screenshot of the window, then its pixel statistics
 import sys
 from PIL import Image
 im = Image.open(sys.argv[1]).convert("L")
-px = list(im.get_flattened_data())
+px = list(im.get_flattened_data() if hasattr(im, 'get_flattened_data') else im.getdata())
 dark = sum(1 for p in px if p < 128)
 print(f"shot {sys.argv[1].split('/')[-1]} window={sys.argv[2]} size={im.size} distinct_levels={len(set(px))} dark_pixels={dark}")
 PY
