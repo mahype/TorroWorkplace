@@ -51,6 +51,8 @@ Fälligkeitstag** bekommt, gleich auf welchem Weg:
 | Datum entfernt | nein (offene Frage, siehe unten) |
 | erledigte Aufgabe, Teilaufgabe | erledigte nein; Teilaufgaben ja, wenn sie über `save_todo` später fällig werden |
 | Änderung in anderen Apps (Nextcloud Web, Handy), die per Sync ankommt | nein |
+| Abhaken einer GitHub-Filterliste (eigener Weg, kein Fälligkeitstag in Torro) | nein |
+| Speichern mit Wechsel der Liste und späterem Tag | ja, über die UID, in der neuen Liste |
 
 Warum nicht nur „To tomorrow“: Ein Muster entsteht gerade dort, wo man eine Aufgabe in der Detailansicht auf
 nächste Woche legt. Warum nicht der Sync: Der Kern sieht dann nur, dass sich ein Datum geändert hat, nicht, ob
@@ -65,12 +67,15 @@ erneuten Senden ohnehin gezählt.
 - **Standard: aus.** Solange die Einstellung `postpone_stats` aus ist, wird **nichts** aufgezeichnet, und die
   Auswertung meldet `enabled: false` ohne Daten. Das Issue verlangt die Auswertung nur auf Wunsch; Verhalten
   aufzuzeichnen, das niemand sehen will, wäre Datensammeln auf Vorrat.
-- **Einschalten nur durch einen Menschen** (App-Schlüssel, wie das Präsenz-Signal): Ein Agent soll nicht
+- **Einschalten nur durch einen Menschen** (App-Schlüssel, wie das Präsenz-Signal; gilt für
+  `settings.set_setting` und für `settings.update_settings`): Ein Agent soll nicht
   beschließen, dass das Verhalten der Person ab jetzt aufgezeichnet wird. **Ausschalten** darf jeder Client mit
-  dem Recht, Einstellungen zu ändern.
+  Admin-Recht für Einstellungen beantragen; wie jeder Admin-Befehl eines Clients wartet es auf die Freigabe
+  eines Menschen.
 - **Ausschalten löscht nicht.** Die Oberfläche fragt beim Ausschalten, ob der Verlauf gleich mitgelöscht werden
   soll. Wieder eingeschaltet, zählt der alte Verlauf weiter, sofern er nicht abgelaufen ist.
 - **Löschen:** `tasks.clear_postponements` löscht den Verlauf, ein Client nur den der Listen, die er sehen darf.
+  Wartet ein Agent dafür auf Freigabe, liest der Mensch „Delete the history of postponed tasks“.
 - **Aufbewahrung: 365 Tage.** Ältere Ereignisse fallen beim Schreiben und Lesen weg. Ein Jahr reicht für Muster
   über Wochentage und Jahreszeiten, ohne ein Leben lang Buch zu führen.
 - Ereignisse gelöschter Aufgaben bleiben bis zum Ablauf, damit „nach Liste“ und „nach Priorität“ nicht
