@@ -269,9 +269,9 @@ pub mod sources {
     /// centre's account pages, task E5.1).
     pub fn health_text(kind: SourceKind, health: SourceHealth) -> &'static str {
         match (kind, health) {
-            (SourceKind::Github, SourceHealth::MissingScope) => {
-                tr("Notifications need a classic token with notifications or repo, or the GitHub CLI sign-in.")
-            }
+            (SourceKind::Github, SourceHealth::MissingScope) => tr(
+                "Notifications need a classic token with repo (notifications alone may leave out private repositories), or the GitHub CLI sign-in.",
+            ),
             (_, SourceHealth::MissingScope) => tr("This sign-in may not read notifications."),
             (SourceKind::Talk, SourceHealth::MissingApp) => tr("This Nextcloud has no Talk."),
             (_, SourceHealth::MissingApp) => tr("This Nextcloud has no notifications app, so nothing comes from it."),

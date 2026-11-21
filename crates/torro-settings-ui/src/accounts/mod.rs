@@ -4361,9 +4361,9 @@ fn source_health(data: &dyn Seen, source: &SourceRef) -> Option<SourceHealth> {
 /// Why a source of `kind` is quiet, in calm words that say what helps.
 pub fn health_text(kind: SourceKind, health: SourceHealth) -> &'static str {
     match (kind, health) {
-        (SourceKind::Github, SourceHealth::MissingScope) => {
-            tr("Notifications need a classic token with notifications or repo, or the GitHub CLI sign-in.")
-        }
+        (SourceKind::Github, SourceHealth::MissingScope) => tr(
+            "Notifications need a classic token with repo (notifications alone may leave out private repositories), or the GitHub CLI sign-in.",
+        ),
         (_, SourceHealth::MissingScope) => tr("This sign-in may not read notifications."),
         (SourceKind::Talk, SourceHealth::MissingApp) => tr("This Nextcloud has no Talk."),
         (_, SourceHealth::MissingApp) => tr("This Nextcloud has no notifications app, so nothing comes from it."),
@@ -5907,7 +5907,9 @@ mod tests {
     fn a_quiet_source_says_why_in_calm_words() {
         assert_eq!(
             health_text(SourceKind::Github, SourceHealth::MissingScope),
-            tr("Notifications need a classic token with notifications or repo, or the GitHub CLI sign-in.")
+            tr(
+                "Notifications need a classic token with repo (notifications alone may leave out private repositories), or the GitHub CLI sign-in."
+            )
         );
         assert_eq!(health_text(SourceKind::Talk, SourceHealth::MissingApp), tr("This Nextcloud has no Talk."));
         assert_ne!(
