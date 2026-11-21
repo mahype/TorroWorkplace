@@ -1705,8 +1705,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Talk", "Talk"),
     ("Unread conversations and mentions", "Ungelesene Unterhaltungen und Erwähnungen"),
     (
-        "Notifications need a classic token with notifications or repo, or the GitHub CLI sign-in.",
-        "Benachrichtigungen brauchen ein klassisches Token mit notifications oder repo oder die Anmeldung der GitHub CLI.",
+        "Notifications need a classic token with repo (notifications alone may leave out private repositories), or the GitHub CLI sign-in.",
+        "Benachrichtigungen brauchen ein klassisches Token mit repo (mit notifications allein fehlen eventuell private Repos) oder die Anmeldung der GitHub CLI.",
     ),
     ("This sign-in may not read notifications.", "Diese Anmeldung darf keine Benachrichtigungen lesen."),
     ("This Nextcloud has no Talk.", "Diese Nextcloud hat kein Talk."),
