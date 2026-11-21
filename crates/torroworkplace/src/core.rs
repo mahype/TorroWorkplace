@@ -31768,6 +31768,14 @@ done"#,
         let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
         assert!(!log.contains("Dinner") && !log.contains(tr("Voice")), "{log}");
 
+        // The first answer ends first, else "Voice" is busy when the approved one runs.
+        for _ in 0..200 {
+            let get = Request::GetConversation { id: conversation.id.clone(), after: None };
+            match ask(&core, Some(&app_key), get).await {
+                Response::Conversation { conversation, .. } if !conversation.running => break,
+                _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        }
         // One that waited for the person: the line of its run names the conversation as well.
         let mut asking = RightsTemplate::ReadAndWrite.rights();
         asking.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
