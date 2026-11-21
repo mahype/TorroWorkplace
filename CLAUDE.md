@@ -19,6 +19,8 @@ Konzept: `docs/core.md`. Arbeit läuft über GitHub-Issues; `docs/tasks/` ist di
   abarbeiten und abhaken (`- [x]`), wenn ihre Abnahme erfüllt ist.
 - Ohne Plan: Bei `issue-small` ist die Issue-Beschreibung die Aufgabe, bei `quick-fix` die
   Kurzbeschreibung (siehe unten).
+- **Detailfragen:** Zuerst [`docs/entscheidungsregeln.md`](docs/entscheidungsregeln.md) anwenden und die
+  Regelnummer im PR nennen, statt nachzufragen. Nur wenn keine Regel passt, fragen und eine neue vorschlagen.
 
 ## Issue-Workflow
 
