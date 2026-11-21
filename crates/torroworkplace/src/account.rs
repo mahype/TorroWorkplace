@@ -60,6 +60,7 @@ pub mod hardware;
 pub mod ntfy;
 pub mod pull;
 pub mod recommend;
+pub mod sign_in;
 pub mod torromail;
 
 /// How often the sign-in is polled while the user is in the browser.
