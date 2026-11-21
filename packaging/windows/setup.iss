@@ -180,6 +180,12 @@ begin
   end;
 end;
 
+function CheckFile(FileName: String): Boolean;
+begin
+  { A DLL beside a program (issue #773) is replaced like the programs, never through a folder of its name. }
+  Result := not DirExists(ExpandConstant('{app}\') + FileName);
+end;
+
 function Preflight(): Boolean;
 begin
   Result := True;
@@ -240,6 +246,17 @@ begin
     mandatory constant-expansion abort path, not escape as a swallowed callback exception. }
   try
     if GetSHA256OfFile(ExpandConstant('{app}\') + ProgramName + '.exe') <> ExpectedHash then
+      FailInstallation('An application file was not installed correctly. Setup was cancelled.');
+  except
+    FailInstallation('Could not verify an application file. Setup was cancelled.');
+  end;
+end;
+
+procedure VerifyFile(FileName, ExpectedHash: String);
+begin
+  { The assistant's DLLs (issue #773), checked like the programs before the next file is copied. }
+  try
+    if GetSHA256OfFile(ExpandConstant('{app}\') + FileName) <> ExpectedHash then
       FailInstallation('An application file was not installed correctly. Setup was cancelled.');
   except
     FailInstallation('Could not verify an application file. Setup was cancelled.');

@@ -50,6 +50,23 @@ def archive(folder, program, target, extra=None):
     return path
 
 
+RUNTIME_FILES = {"sherpa-onnx-c-api.dll": b"MZ sherpa", "onnxruntime.dll": b"MZ onnxruntime"}
+
+
+def runtime(folder, files=RUNTIME_FILES):
+    """The assistant's runtime archive (issue #773) as packaging/assistant_runtime.py writes it."""
+    path = folder / f"torroassistant-runtime-{pkg.WINDOWS}.zip"
+    with zipfile.ZipFile(path, "w") as zipped:
+        for name, body in files.items():
+            zipped.writestr(name, body)
+    pkg.checksum(path)
+    return path
+
+
+def runtime_pins():
+    return {name: pkg.hashlib.sha256(body).hexdigest() for name, body in RUNTIME_FILES.items()}
+
+
 def complete(folder, tag="v0.1.0"):
     groups = {"linux": [], "windows": []}
     ver = pkg.version(tag)
@@ -271,6 +288,7 @@ class Installers(unittest.TestCase):
         source_plan(self.root)
         for app in pkg.apps():
             archive(self.root, app["program"], pkg.WINDOWS)
+        runtime(self.root)
         out = self.root / "out"
         out.mkdir()
         compiled = []
@@ -291,7 +309,17 @@ class Installers(unittest.TestCase):
                 self.assertIn(f"VerifyProgram('{part}', '{pkg.digest(payload / (part + '.exe'))}')", files)
                 self.assertIn(f"VerifyVersion('{part}')", files)
                 self.assertIn(f"WriteMarker('{part}')", files)
-            self.assertEqual(files.count('DestDir: "{code:CopyDirectory}"'), 3 * len(pkg.windows_payload(app)))
+            dlls = len(RUNTIME_FILES) if pkg.ASSISTANT in pkg.windows_payload(app) else 0
+            for name, pin in runtime_pins().items():
+                if dlls:
+                    self.assertIn(f"VerifyFile('{name}', '{pin}')", files)
+                    self.assertIn(f"CheckFile('{name}')", (payload / "checks.iss").read_text())
+                    self.assertIn(f"CheckUnlocked('{name}')", (payload / "locks.iss").read_text())
+                    # The DLLs come before the program that loads them.
+                    self.assertLess(files.index(f"VerifyFile('{name}'"), files.index("VerifyProgram('torroassistant'"))
+                else:
+                    self.assertNotIn(name, files)
+            self.assertEqual(files.count('DestDir: "{code:CopyDirectory}"'), 3 * len(pkg.windows_payload(app)) + dlls)
             self.assertNotIn("Check: CanCopy", files)
             self.assertIn('Source: "{code:FinalInstallCheck}"', files)
             self.assertIn("external skipifsourcedoesntexist", files)
@@ -300,7 +328,7 @@ class Installers(unittest.TestCase):
             self.assertIn("ExternalSize: 0", final)
             for selector in ("Check:", "Components:", "Tasks:", "Languages:"):
                 self.assertNotIn(selector, final)
-            self.assertEqual(files.count("sharedfile uninsnosharedfileprompt 64bit"), 3 * len(pkg.windows_payload(app)))
+            self.assertEqual(files.count("sharedfile uninsnosharedfileprompt 64bit"), 3 * len(pkg.windows_payload(app)) + dlls)
             name = next(str(a)[2:] for a in args if str(a).startswith("/F"))
             (out / (name + ".exe")).write_bytes(b"fixture setup")
             compiled.append(defines["/DAppIdentity"])
@@ -310,10 +338,40 @@ class Installers(unittest.TestCase):
             self.assertEqual(args[1:], ["--version"])
             return subprocess.CompletedProcess(args, 0, "7.1.1\r\n", "")
 
-        with patch.object(pkg.subprocess, "run", side_effect=compiler_version), patch.object(pkg, "run", side_effect=compiler):
+        with patch.object(pkg.subprocess, "run", side_effect=compiler_version), patch.object(pkg, "run", side_effect=compiler), \
+                patch.object(pkg, "assistant_runtime", return_value=runtime_pins()):
             pkg.build_windows(self.root, out, "v0.1.0")
         self.assertEqual(len(set(compiled)), 9)
         self.assertEqual(len(list(out.glob("*-setup.exe"))), 9)
+
+    def test_the_assistants_runtime_holds_exactly_the_pinned_dlls(self):
+        scratch = self.root / "scratch"
+        scratch.mkdir()
+        with patch.object(pkg, "assistant_runtime", return_value=runtime_pins()):
+            runtime(self.root)
+            unpacked = pkg.unpack_runtime(self.root, scratch)
+            self.assertEqual(sorted(unpacked), sorted(RUNTIME_FILES))
+            for files in [{**RUNTIME_FILES, "extra.dll": b"MZ"}, {"onnxruntime.dll": RUNTIME_FILES["onnxruntime.dll"]},
+                          {**RUNTIME_FILES, "onnxruntime.dll": b"MZ other build"}]:
+                with self.subTest(files=sorted(files)):
+                    runtime(self.root, files)
+                    with self.assertRaises(ValueError):
+                        pkg.unpack_runtime(self.root, scratch)
+            runtime(self.root)
+            path = self.root / f"torroassistant-runtime-{pkg.WINDOWS}.zip"
+            path.write_bytes(path.read_bytes() + b"tampered")
+            with self.assertRaises(ValueError):
+                pkg.unpack_runtime(self.root, scratch)
+
+    def test_the_pinned_runtime_matches_the_locked_sherpa_onnx(self):
+        sys.path.insert(0, str(pkg.ROOT))
+        import assistant_runtime as rt
+        value = rt.pinned()
+        self.assertEqual(rt.locked_version(rt.LOCK), value["sherpa_onnx"])
+        self.assertEqual(value["target"], pkg.WINDOWS)
+        self.assertEqual(pkg.assistant_runtime(), value["files"])
+        self.assertIn(f'v{value["sherpa_onnx"]}/{value["archive"]}', value["url"])
+        self.assertEqual(sorted(value["files"]), ["onnxruntime.dll", "sherpa-onnx-c-api.dll"])
 
     def test_windows_builder_rejects_wrong_or_failed_compiler_version(self):
         source_plan(self.root)
@@ -381,6 +439,25 @@ class Installers(unittest.TestCase):
             self.assertNotIn("workflow_dispatch:", workflow)
             self.assertNotIn("pull_request:", workflow)
             self.assertNotIn("gh release", workflow)
+
+    def test_the_runtime_builder_checks_kfsas_archive_and_writes_the_same_zip_twice(self):
+        sys.path.insert(0, str(pkg.ROOT))
+        import assistant_runtime as rt
+        source = self.root / "k2.tar.bz2"
+        with tarfile.open(source, "w:bz2") as tar:
+            for name, body in [*RUNTIME_FILES.items(), ("onnxruntime_providers_shared.dll", b"MZ not needed")]:
+                member = tarfile.TarInfo(f"sherpa-onnx-lib/lib/{name}")
+                member.size = len(body)
+                tar.addfile(member, io.BytesIO(body))
+        value = {"sha256": pkg.digest(source), "files": runtime_pins()}
+        self.assertEqual(rt.dlls(value, source), RUNTIME_FILES)
+        for broken in [{**value, "sha256": "0" * 64}, {**value, "files": {**runtime_pins(), "onnxruntime.dll": "0" * 64}}]:
+            with self.subTest(broken=broken), self.assertRaises(ValueError):
+                rt.dlls(broken, source)
+        first, second = self.root / "a.zip", self.root / "b.zip"
+        rt.write_zip(RUNTIME_FILES, first)
+        rt.write_zip(dict(reversed(list(RUNTIME_FILES.items()))), second)
+        self.assertEqual(first.read_bytes(), second.read_bytes())
 
 
 if __name__ == "__main__":

@@ -12,7 +12,8 @@
 //! - **Windows**: the program from `<program>-<target>.zip` after its SHA-256, beside the service; a
 //!   running program is renamed to `.old` first (the next start of the service deletes it,
 //!   [`sweep_old`]); a Start menu shortcut in `Programs\Torro Workplace\` through PowerShell's
-//!   `WScript.Shell`.
+//!   `WScript.Shell`. The assistant also gets its DLLs ([`RUNTIME_FILES`], issue #773) from
+//!   `torroassistant-runtime-<target>.zip`, beside its program and removed with it.
 //!
 //! Removing moves to the system's trash ([`super::Env::discard`]).
 
@@ -25,9 +26,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::watch;
 use torro_core::AppId;
 
-use super::Platform;
 use super::installed::{self, Env};
 use super::releases::Asset;
+use super::{ASSISTANT_RUNTIME, Part, Platform};
 
 /// The team that signs the suite's bundles (Developer ID): a bundle signed by anyone else is refused.
 pub const TEAM: &str = "2GA7DQ3P3Z";
@@ -320,6 +321,18 @@ pub fn place_bundle(
     Ok(())
 }
 
+/// The DLLs sherpa-onnx needs beside the assistant on Windows (issue #773), the files of [`ASSISTANT_RUNTIME`].
+/// Both carry their own C runtime. `packaging/windows/assistant-runtime.json` pins the same two.
+pub const RUNTIME_FILES: &[&str] = &["sherpa-onnx-c-api.dll", "onnxruntime.dll"];
+
+/// The files `part` puts beside the service on Linux and Windows: its program, or the assistant's DLLs.
+pub fn part_files(part: Part, platform: Platform) -> Vec<String> {
+    match part == ASSISTANT_RUNTIME {
+        true => RUNTIME_FILES.iter().map(|file| (*file).to_owned()).collect(),
+        false => vec![platform.program_file(part.program)],
+    }
+}
+
 /// The plain file `program` in `folder` or in a folder directly below it (dist's archives hold one
 /// folder named like the archive).
 fn find_program(folder: &Path, program: &str) -> Option<PathBuf> {
@@ -416,16 +429,21 @@ fn move_aside(program: &Path) -> Result<PathBuf, Fail> {
 }
 
 /// Windows: deletes what updates renamed aside in `dir` ([`move_aside`]): `<program>.exe.old` and
-/// `<program>.exe.<n>.old` of the suite's programs, nothing else. One still running stays for the next time.
+/// `<program>.exe.<n>.old` of the suite's programs and the same of the assistant's DLLs ([`RUNTIME_FILES`]),
+/// nothing else. One still running stays for the next time.
 pub fn sweep_old(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let files: Vec<String> = AppId::ALL
+        .iter()
+        .map(|app| app.program_file())
+        .chain([super::REMINDER.program])
+        .map(|program| format!("{program}.exe"))
+        .chain(RUNTIME_FILES.iter().map(|file| (*file).to_owned()))
+        .collect();
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let ours = AppId::ALL
-            .iter()
-            .map(|app| app.program_file())
-            .chain([super::REMINDER.program])
-            .any(|program| name.strip_prefix(&format!("{program}.exe.")).is_some_and(|rest| rest.ends_with("old")));
+        let ours =
+            files.iter().any(|file| name.strip_prefix(&format!("{file}.")).is_some_and(|rest| rest.ends_with("old")));
         if ours {
             let _ = std::fs::remove_file(entry.path());
         }
@@ -740,6 +758,22 @@ pub(crate) mod tests {
         assert!(!aside.exists() && !dir.path().join("torrocalendar.exe.1.old").exists());
         assert!(dir.path().join("notes.old").exists(), "only the suite's programs");
         assert!(target.exists());
+    }
+
+    /// The assistant's DLLs renamed aside while it ran (issue #773) are swept like programs; a DLL in use is not.
+    #[test]
+    fn the_assistants_dlls_renamed_aside_are_swept_too() {
+        let dir = tempfile::tempdir().expect("dir");
+        for name in ["onnxruntime.dll", "onnxruntime.dll.old", "sherpa-onnx-c-api.dll.1.old", "other.dll.old"] {
+            std::fs::write(dir.path().join(name), "dll").expect("write");
+        }
+        sweep_old(dir.path());
+        assert!(dir.path().join("onnxruntime.dll").exists(), "the DLL in use stays");
+        assert!(
+            !dir.path().join("onnxruntime.dll.old").exists()
+                && !dir.path().join("sherpa-onnx-c-api.dll.1.old").exists()
+        );
+        assert!(dir.path().join("other.dll.old").exists(), "nothing of anyone else");
     }
 
     #[test]

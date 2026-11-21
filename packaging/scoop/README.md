@@ -11,7 +11,7 @@ its own and runs without the main application (issue #411, `docs/einzelne-apps.m
 | `torro-inbox-notifications.json` | `torro-inbox-notifications`, `torroinbox`, `torroworkplace` | `torro-inbox-notifications.exe`, "Torro App Feed" |
 | `torrocalendar.json` | `torrocalendar`, `torroworkplace` | `torrocalendar.exe`, "Torro Calendar" |
 | `torrotasks.json` | `torrotasks`, `torroworkplace` | `torrotasks.exe`, "Torro Tasks" |
-| `torroassistant.json` | `torroassistant`, `torroworkplace` | `torroassistant.exe`, "Torro Assistant" |
+| `torroassistant.json` | `torroassistant`, `torroworkplace`, `torroassistant-runtime` (its DLLs, issue #773) | `torroassistant.exe`, "Torro Assistant" |
 | `torro-suite.json` | nothing; `depends` on all seven | – |
 
 - **Each app brings the service.** Its folder gets the app's zip and the zip of `torroworkplace` (the

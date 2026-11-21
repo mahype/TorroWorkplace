@@ -56,6 +56,26 @@ Check the result: the file has seven entries, and each is a PNG of the size in i
 `build.rs` only does something when the build target is Windows; it needs a resource compiler there (`rc.exe` from the
 Windows SDK with MSVC, or `llvm-rc` when cross building).
 
+## The assistant's DLLs (#773)
+
+On Windows `torroassistant` links sherpa-onnx as a DLL (feature `shared`, `crates/torroassistant/Cargo.toml`):
+k2-fsa builds its static Windows libraries only against the static C runtime, which forced `+crt-static` on every
+program of the suite. Now only the assistant needs two files beside its program, `sherpa-onnx-c-api.dll` and
+`onnxruntime.dll`; both carry their own C runtime. The C runtime of the programs is as before #762 again: a plain
+`cargo build` links it dynamically (Rust's default), the release links it statically because dist 0.32 sets
+`msvc-crt-static` by default. The assistant links in both ways, since the DLLs bring their own.
+
+- **Build:** sherpa-onnx's build script copies the DLLs next to the program in `target/<target>/<profile>/`, so
+  `cargo run` works. Also when cross building with `cargo xwin build -p torroassistant --target x86_64-pc-windows-msvc`.
+- **Release:** dist packs only programs into an app's archive. The DLLs go out as an asset of their own,
+  `torroassistant-runtime-x86_64-pc-windows-msvc.zip` with its `.sha256`, built by `../assistant_runtime.py` from
+  k2-fsa's archive. `assistant-runtime.json` pins that archive and each DLL by SHA-256 and the sherpa-onnx version
+  against `Cargo.lock`; on an update of sherpa-onnx change it there. dist's global job builds the asset
+  (`[package.metadata.dist.extra-artifacts]`); the Windows job of `build-installers.yml` builds it again, because
+  it runs in parallel with that job.
+- **Setup, the service's app installer and Scoop** put the DLLs beside `torroassistant.exe` and remove them with
+  the assistant. dist's PowerShell installer copies only programs: it does not bring the DLLs.
+
 ## All-users Setup (#589)
 
 `setup.iss` is compiled with integrity-pinned Inno Setup **7.1.1** by `../installers.py build-windows`.
@@ -63,7 +83,8 @@ Nine stable AppIds (`io.github.mahype.<app-id>`), each with its own uninstall lo
 menu entry. Installation is x64/admin-only into the fixed `{autopf64}\TorroWorkplace` directory;
 Workplace's shortcut passes `ui`. Other apps do not silently add the control-centre shortcut.
 
-Each Setup includes its executable, the service and (Mail/App Feed) the Hub. Shared executables,
+Each Setup includes its executable, the service and (Mail/App Feed) the Hub; the assistant's Setup also its DLLs,
+each checked against its pinned SHA-256 after copying and kept as a shared file like the programs. Shared executables,
 native markers and SemVer companion files use `sharedfile uninsnosharedfileprompt 64bit`, with
 `UninstallLogMode=append`, so repeating/upgrading one app and uninstalling another retain components
 until the last owner goes. Preflight rejects downgrades, missing/inconsistent markers and foreign files
