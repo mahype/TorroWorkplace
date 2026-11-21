@@ -71,6 +71,9 @@ pub struct Settings {
     /// computer every move of an open task to a later due day it writes. Off unless turned on.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub postpone_stats: bool,
+    /// How many days the history of postponed tasks is kept (issue #623): 30 to 1095, 365 unless changed.
+    #[serde(default, skip_serializing_if = "PostponeRetention::is_default", deserialize_with = "lenient")]
+    pub postpone_retention: PostponeRetention,
     /// "Quiet during busy events" (task E3.4): while a busy event of a shown calendar runs (not
     /// all-day, not marked free), only urgent inbox entries pop up; the rest is told in one
     /// message when it ends. On unless turned off.
@@ -831,6 +834,7 @@ impl Default for Settings {
             list_orders: BTreeMap::new(),
             focus_slots: FocusSlots::default(),
             postpone_stats: false,
+            postpone_retention: PostponeRetention::default(),
             quiet_when_busy: on(),
             contacts_show_hidden_books: false,
             presence_heartbeat: false,
@@ -2813,6 +2817,65 @@ impl From<FocusSlots> for u8 {
     }
 }
 
+/// How many days the history of postponed tasks is kept (issue #623, `docs/aufschieben.md`, setting
+/// `postpone_retention`): a whole number from [`PostponeRetention::MIN`] to [`PostponeRetention::MAX`]. A
+/// number outside is clamped to the nearest end, from outside as in the file, so a typo never costs the
+/// whole history nor keeps it for good.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(from = "i64", into = "i64")]
+pub struct PostponeRetention(u16);
+
+impl PostponeRetention {
+    /// A month: less shows no pattern over weekdays.
+    pub const MIN: u16 = 30;
+    /// Three years: more is keeping books.
+    pub const MAX: u16 = 1095;
+    /// A year, patterns over weekdays and seasons.
+    pub const DEFAULT: PostponeRetention = PostponeRetention(365);
+
+    /// `days`, clamped into [`PostponeRetention::MIN`]..=[`PostponeRetention::MAX`].
+    pub fn clamped(days: i64) -> PostponeRetention {
+        let days = days.clamp(i64::from(PostponeRetention::MIN), i64::from(PostponeRetention::MAX));
+        PostponeRetention(u16::try_from(days).unwrap_or(PostponeRetention::MAX))
+    }
+
+    /// The number of days.
+    pub fn days(self) -> u16 {
+        self.0
+    }
+
+    /// The setting `postpone_retention` from outside: a whole number of days, clamped; anything else is
+    /// refused.
+    pub fn from_value(value: &serde_json::Value) -> Result<PostponeRetention, String> {
+        let days = value.as_i64().or_else(|| value.as_u64().map(|_| i64::MAX));
+        days.map(PostponeRetention::clamped).ok_or_else(|| {
+            format!("{value} is not a number of days: send a whole number from 30 to 1095 (others are clamped)")
+        })
+    }
+
+    fn is_default(&self) -> bool {
+        *self == PostponeRetention::DEFAULT
+    }
+}
+
+impl Default for PostponeRetention {
+    fn default() -> PostponeRetention {
+        PostponeRetention::DEFAULT
+    }
+}
+
+impl From<i64> for PostponeRetention {
+    fn from(days: i64) -> PostponeRetention {
+        PostponeRetention::clamped(days)
+    }
+}
+
+impl From<PostponeRetention> for i64 {
+    fn from(retention: PostponeRetention) -> i64 {
+        i64::from(retention.0)
+    }
+}
+
 /// The `value` of the setting `list_order` (`settings.set_setting`, task P.3a): one task list and
 /// how it is to be ordered.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -3553,6 +3616,7 @@ mod tests {
             list_orders: BTreeMap::new(),
             focus_slots: FocusSlots::DEFAULT,
             postpone_stats: false,
+            postpone_retention: PostponeRetention::DEFAULT,
             quiet_when_busy: true,
             contacts_show_hidden_books: false,
             presence_heartbeat: false,
@@ -3666,6 +3730,27 @@ mod tests {
             assert!(written.get(gone).is_none(), "{gone} is never written again: {written}");
         }
         assert!(written["tools"].get("enabled").is_none(), "{written}");
+    }
+
+    #[test]
+    fn postpone_retention_is_a_year_and_clamped_into_its_span() {
+        assert_eq!(Settings::default().postpone_retention.days(), 365);
+        assert_eq!(PostponeRetention::clamped(5).days(), PostponeRetention::MIN);
+        assert_eq!(PostponeRetention::clamped(-3).days(), PostponeRetention::MIN);
+        assert_eq!(PostponeRetention::clamped(5000).days(), PostponeRetention::MAX);
+        assert_eq!(PostponeRetention::clamped(90).days(), 90);
+        let value = |v: serde_json::Value| PostponeRetention::from_value(&v).map(PostponeRetention::days);
+        assert_eq!(value(serde_json::json!(10)), Ok(30));
+        assert_eq!(value(serde_json::json!(u64::MAX)), Ok(1095));
+        assert!(value(serde_json::json!(90.5)).is_err(), "whole days only");
+        assert!(value(serde_json::json!("a year")).is_err());
+        // The file clamps as well, and a value that does not read is the default.
+        let read = |text: &str| serde_json::from_str::<Settings>(text).expect("settings").postpone_retention.days();
+        assert_eq!(read(r#"{"postpone_retention": 4000}"#), 1095);
+        assert_eq!(read(r#"{"postpone_retention": "long"}"#), 365);
+        assert_eq!(read("{}"), 365);
+        let written = serde_json::to_value(Settings::default()).expect("written");
+        assert!(written.get("postpone_retention").is_none(), "the default is not written");
     }
 
     #[test]
@@ -3826,6 +3911,7 @@ mod tests {
             list_orders: BTreeMap::from([("work".to_string(), ListOrder::Manual)]),
             focus_slots: FocusSlots::new(4).expect("in range"),
             postpone_stats: true,
+            postpone_retention: PostponeRetention::clamped(90),
             quiet_when_busy: false,
             contacts_show_hidden_books: false,
             presence_heartbeat: false,

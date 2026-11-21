@@ -3,8 +3,9 @@
 //!
 //! It stays on this computer (`postponements.json` in the core's state directory, 0600) and never goes into
 //! the task: task lists are shared, and how a person puts things off is theirs alone. No title is stored;
-//! the evaluation takes titles from the core's cache when it is read. Entries older than [`KEPT_DAYS`] are
-//! dropped whenever the history is read or written.
+//! the evaluation takes titles from the core's cache when it is read. Entries older than the days the
+//! setting `postpone_retention` keeps ([`PostponeRetention`], 365 unless changed) are dropped whenever the
+//! history is read or written, and at once when the setting is lowered ([`Postponements::tidy`]).
 
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -15,16 +16,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
+use torro_core::settings::PostponeRetention;
 use torro_ipc::{PostponeCount, PostponeStats, PostponedTask};
 use torro_pim::source::due_day;
 use torro_pim::{Focus, Todo};
 
 /// The file in the core's state directory.
 const FILE: &str = "postponements.json";
-
-/// How long a postponement is kept: a year shows patterns over weekdays and seasons without keeping
-/// books for good.
-pub const KEPT_DAYS: i64 = 365;
 
 /// One move of an open task to a later due day.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,28 +94,52 @@ impl Postponements {
         Postponements { file, entries: Mutex::new(None) }
     }
 
-    /// Adds `found` and drops what is older than [`KEPT_DAYS`] at `now`. Nothing is written for nothing
-    /// found.
-    pub async fn record(&self, found: Vec<Postponement>, now: DateTime<Utc>) -> Result<(), PostponementsError> {
+    /// Adds `found` and drops what is older than `kept` at `now`. Nothing is written for nothing found.
+    pub async fn record(
+        &self,
+        found: Vec<Postponement>,
+        now: DateTime<Utc>,
+        kept: PostponeRetention,
+    ) -> Result<(), PostponementsError> {
         if found.is_empty() {
             return Ok(());
         }
         let mut entries = self.entries.lock().await;
         let mut list = self.loaded(&mut entries).await?;
         list.extend(found);
-        tidy(&mut list, now);
+        tidy(&mut list, now, kept);
         self.write(&list).await?;
         *entries = Some(list);
         Ok(())
     }
 
-    /// Every postponement kept at `now`, oldest first.
-    pub async fn list(&self, now: DateTime<Utc>) -> Result<Vec<Postponement>, PostponementsError> {
+    /// Every postponement kept for `kept` at `now`, oldest first.
+    pub async fn list(
+        &self,
+        now: DateTime<Utc>,
+        kept: PostponeRetention,
+    ) -> Result<Vec<Postponement>, PostponementsError> {
         let mut entries = self.entries.lock().await;
         let mut list = self.loaded(&mut entries).await?;
-        tidy(&mut list, now);
+        tidy(&mut list, now, kept);
         *entries = Some(list.clone());
         Ok(list)
+    }
+
+    /// Drops what is older than `kept` at `now` and writes the file when something went: for a lowered
+    /// `postpone_retention`, which takes effect at once and not only with the next postponement. Returns
+    /// how many went.
+    pub async fn tidy(&self, now: DateTime<Utc>, kept: PostponeRetention) -> Result<usize, PostponementsError> {
+        let mut entries = self.entries.lock().await;
+        let mut list = self.loaded(&mut entries).await?;
+        let before = list.len();
+        tidy(&mut list, now, kept);
+        let removed = before - list.len();
+        if removed > 0 {
+            self.write(&list).await?;
+        }
+        *entries = Some(list);
+        Ok(removed)
     }
 
     /// Deletes the postponements of the lists `lists` names, all of them for `None`; returns how many.
@@ -179,9 +201,9 @@ impl Postponements {
     }
 }
 
-/// Drops what is older than [`KEPT_DAYS`] at `now`.
-fn tidy(list: &mut Vec<Postponement>, now: DateTime<Utc>) {
-    let oldest = now - Duration::days(KEPT_DAYS);
+/// Drops what is older than `kept` at `now`.
+fn tidy(list: &mut Vec<Postponement>, now: DateTime<Utc>, kept: PostponeRetention) {
+    let oldest = now - Duration::days(i64::from(kept.days()));
     list.retain(|p| p.at >= oldest);
 }
 
@@ -313,6 +335,8 @@ mod tests {
     use super::*;
     use torro_pim::EventTime;
 
+    const YEAR: PostponeRetention = PostponeRetention::DEFAULT;
+
     fn day(d: u32) -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 11, d).expect("a day")
     }
@@ -442,10 +466,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let file = dir.path().join("state").join(FILE);
         let history = Postponements::new(Some(file.clone()));
-        let old = Postponement { at: at(1) - Duration::days(KEPT_DAYS + 1), ..moved("old", 1, 2) };
-        history.record(vec![old, moved("a", 16, 17)], at(20)).await.expect("recorded");
+        let old = Postponement { at: at(20) - Duration::days(366), ..moved("old", 1, 2) };
+        history.record(vec![old, moved("a", 16, 17)], at(20), YEAR).await.expect("recorded");
         let again = Postponements::new(Some(file.clone()));
-        assert_eq!(again.list(at(20)).await.expect("read"), vec![moved("a", 16, 17)], "the old one is gone");
+        assert_eq!(again.list(at(20), YEAR).await.expect("read"), vec![moved("a", 16, 17)], "the old one is gone");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -457,15 +481,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_lowered_retention_drops_the_older_ones_at_once_and_a_raised_one_keeps_them() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join(FILE);
+        let history = Postponements::new(Some(file.clone()));
+        let days_ago = |n: i64| Postponement { at: at(20) - Duration::days(n), ..moved(&format!("t{n}"), 16, 17) };
+        let three_years = PostponeRetention::clamped(1095);
+        history.record(vec![days_ago(400), days_ago(100), days_ago(10)], at(20), three_years).await.expect("recorded");
+        assert_eq!(history.list(at(20), three_years).await.expect("read").len(), 3, "all within three years");
+
+        // Lowered to 90 days: the two older ones go now, also from the file.
+        let quarter = PostponeRetention::clamped(90);
+        assert_eq!(history.tidy(at(20), quarter).await.expect("tidied"), 2);
+        let again = Postponements::new(Some(file));
+        assert_eq!(again.list(at(20), three_years).await.expect("read"), vec![days_ago(10)], "gone for good");
+        assert_eq!(again.tidy(at(20), quarter).await.expect("nothing to do"), 0);
+
+        // Below the span it is a month, not less.
+        let month = PostponeRetention::clamped(1);
+        let kept = history.list(at(20), month).await.expect("read");
+        assert_eq!(kept, vec![days_ago(10)], "ten days are within the 30 kept at least");
+    }
+
+    #[tokio::test]
     async fn clearing_removes_only_the_lists_named() {
         let history = Postponements::new(None);
         let work = Postponement { collection: "work".into(), ..moved("b", 18, 19) };
-        history.record(vec![moved("a", 16, 17), work.clone()], at(20)).await.expect("recorded");
+        history.record(vec![moved("a", 16, 17), work.clone()], at(20), YEAR).await.expect("recorded");
         let home = HashSet::from(["home".to_string()]);
         assert_eq!(history.clear(Some(&home)).await.expect("cleared"), 1);
-        assert_eq!(history.list(at(20)).await.expect("read"), vec![work]);
+        assert_eq!(history.list(at(20), YEAR).await.expect("read"), vec![work]);
         assert_eq!(history.clear(None).await.expect("cleared"), 1);
-        assert!(history.list(at(20)).await.expect("read").is_empty());
+        assert!(history.list(at(20), YEAR).await.expect("read").is_empty());
     }
 
     #[tokio::test]
@@ -475,7 +522,7 @@ mod tests {
         std::fs::write(&file, "not json").expect("written");
         let history = Postponements::new(Some(file.clone()));
         assert!(matches!(
-            history.record(vec![moved("a", 16, 17)], at(20)).await,
+            history.record(vec![moved("a", 16, 17)], at(20), YEAR).await,
             Err(PostponementsError::Parse { .. })
         ));
         assert_eq!(std::fs::read_to_string(&file).expect("kept"), "not json");

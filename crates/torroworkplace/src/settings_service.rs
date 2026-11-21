@@ -32,8 +32,8 @@ use torro_core::privacy::{ForeignContent, ProviderChange};
 use torro_core::settings::{
     self, AssistantDefault, AttachmentClick, ComponentSwitch, ComposePaper, FocusSlots, FolderChange, Language,
     ListOrderEntry, MailAppearance, MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId,
-    QWEN_BUILT, Recognizer, Reminders, Retention, SearchProviderSwitch, Settings, SetupState, Voice, WebSearch,
-    WorkingHours, Zoom,
+    PostponeRetention, QWEN_BUILT, Recognizer, Reminders, Retention, SearchProviderSwitch, Settings, SetupState, Voice,
+    WebSearch, WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -629,6 +629,8 @@ enum Change {
     FocusSlots(FocusSlots),
     /// Count postponed tasks (issue #623).
     PostponeStats(bool),
+    /// How long postponed tasks are kept (issue #623), clamped into its span.
+    PostponeRetention(PostponeRetention),
     QuietWhenBusy(bool),
     /// Show the hidden address books in the contacts app.
     ContactsShowHiddenBooks(bool),
@@ -771,6 +773,8 @@ impl Change {
             // Strict: only the file's reading falls back to the default.
             SettingKey::FocusSlots => Change::FocusSlots(FocusSlots::from_value(value)?),
             SettingKey::PostponeStats => Change::PostponeStats(serde_json::from_value(value.clone()).map_err(invalid)?),
+            // Clamped, not refused: only what is no whole number fails.
+            SettingKey::PostponeRetention => Change::PostponeRetention(PostponeRetention::from_value(value)?),
             SettingKey::QuietWhenBusy => Change::QuietWhenBusy(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::ContactsShowHiddenBooks => {
                 Change::ContactsShowHiddenBooks(serde_json::from_value(value.clone()).map_err(invalid)?)
@@ -928,6 +932,7 @@ impl Change {
             Change::ListOrder(entry) => settings.set_list_order(&entry.list, entry.order),
             Change::FocusSlots(slots) => settings.focus_slots = slots,
             Change::PostponeStats(on) => settings.postpone_stats = on,
+            Change::PostponeRetention(retention) => settings.postpone_retention = retention,
             Change::QuietWhenBusy(quiet) => settings.quiet_when_busy = quiet,
             Change::ContactsShowHiddenBooks(show) => settings.contacts_show_hidden_books = show,
             Change::PresenceHeartbeat(on) => settings.presence_heartbeat = on,
@@ -1993,6 +1998,7 @@ mod tests {
                 list_orders: Default::default(),
                 focus_slots: FocusSlots::new(5).expect("in range"),
                 postpone_stats: false,
+                postpone_retention: PostponeRetention::DEFAULT,
                 quiet_when_busy: false,
                 contacts_show_hidden_books: false,
                 presence_heartbeat: false,
@@ -2046,6 +2052,13 @@ mod tests {
         assert_eq!(settings.ai_slots.chat, None, "null goes back to the one used last");
         assert!(Change::parse(SettingKey::AssistantDefault, &json!({"engine": " "})).is_err(), "an engine");
         assert!(Change::parse(SettingKey::QuietWhenBusy, &json!("off")).is_err(), "only true or false");
+        // The days postponed tasks are kept (issue #623): clamped into 30 to 1095, only no number refused.
+        let mut kept = Settings::default();
+        Change::parse(SettingKey::PostponeRetention, &json!(10)).expect("clamped").apply(&mut kept);
+        assert_eq!(kept.postpone_retention.days(), 30);
+        Change::parse(SettingKey::PostponeRetention, &json!(180)).expect("in span").apply(&mut kept);
+        assert_eq!(kept.postpone_retention.days(), 180);
+        assert!(Change::parse(SettingKey::PostponeRetention, &json!("a year")).is_err());
         assert!(Change::parse(SettingKey::AssistantRetention, &json!(0)).is_err(), "at least a day");
         assert!(Change::parse(SettingKey::Setup, &json!("later")).is_err(), "pending, skipped or done");
         let unknown = json!({"component": "whiteboard", "enabled": false});

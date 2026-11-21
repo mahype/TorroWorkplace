@@ -1362,7 +1362,8 @@ pub enum Request {
     PostponeFocusPlan,
     /// What the person postponed (issue #623, `docs/aufschieben.md`): every move of an open task to a later
     /// due day through the core (`tasks.plan_todo`, `tasks.postpone_focus_plan`, `tasks.save_todo`), counted
-    /// on this computer only while the setting `postpone_stats` is on, kept 365 days. Answered with
+    /// on this computer only while the setting `postpone_stats` is on, kept `postpone_retention` days (365
+    /// unless changed). Answered with
     /// [`Response::PostponeStats`]: the tasks postponed most and the counts by priority, focus, list and
     /// weekday, of the lists the caller may see; `enabled: false` with empty counts while the setting is
     /// off. Codes: none of its own.
@@ -5928,6 +5929,10 @@ pub enum SettingKey {
     /// decides that their habits are recorded. Turning it off keeps the history
     /// (`tasks.clear_postponements` deletes it).
     PostponeStats,
+    /// How many days the history of postponed tasks is kept (issue #623): a whole number, 365 unless
+    /// changed; one below 30 is taken as 30, one above 1095 as 1095
+    /// (`torro_core::settings::PostponeRetention`). Lowering it drops the older postponements at once.
+    PostponeRetention,
     /// "Quiet during busy events": `true` (the default) or `false`. While on, inbox entries pop
     /// up during a busy event of a shown calendar only when they are urgent; the others are
     /// told in one message when the event ends.

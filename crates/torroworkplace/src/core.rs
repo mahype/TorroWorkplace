@@ -4029,7 +4029,8 @@ impl Core {
     async fn note_postponements(&self, before: &[torro_pim::Todo], written: &[torro_pim::Todo]) {
         let now = Utc::now();
         let found = crate::postponements::found(before, written, &chrono::Local, now);
-        if let Err(err) = self.postponements.record(found, now).await {
+        let kept = self.settings.current().postpone_retention;
+        if let Err(err) = self.postponements.record(found, now, kept).await {
             eprintln!("torroworkplace: cannot note postponed tasks: {err}");
         }
     }
@@ -4048,7 +4049,8 @@ impl Core {
         if !self.settings.current().postpone_stats {
             return Response::PostponeStats { stats: torro_ipc::PostponeStats::default() };
         }
-        let entries = match self.postponements.list(Utc::now()).await {
+        let kept = self.settings.current().postpone_retention;
+        let entries = match self.postponements.list(Utc::now(), kept).await {
             Ok(entries) => entries,
             Err(err) => return postponements_failed(&err),
         };
@@ -7809,6 +7811,13 @@ impl Core {
                 // sound goes on to where it no longer should.
                 if set.is_ok() && key == SettingKey::LiveEngine {
                     self.end_talk_for_another_engine().await;
+                }
+                // Fewer days for postponed tasks (issue #623): the older ones go now, not with the next one.
+                if set.is_ok() && key == SettingKey::PostponeRetention {
+                    let kept = self.settings.current().postpone_retention;
+                    if let Err(err) = self.postponements.tidy(Utc::now(), kept).await {
+                        eprintln!("torroworkplace: cannot drop old postponed tasks: {err}");
+                    }
                 }
                 // The terminal switched off (issue #754): its commands in the background end too.
                 if set.is_ok() && key == SettingKey::Terminal && !self.settings.current().tools.terminal.enabled {
@@ -25610,6 +25619,14 @@ done"#,
         assert_eq!(postpone_stats_of(&core, None).await.total, 2);
         assert_eq!(core.handle(Request::ClearPostponements).await, Response::Ok);
         assert_eq!(postpone_stats_of(&core, None).await.total, 0);
+
+        // How long they are kept is a setting, clamped into 30 to 1095 days.
+        let keep = |days: serde_json::Value| Request::SetSetting { key: SettingKey::PostponeRetention, value: days };
+        assert_eq!(core.handle(keep(serde_json::json!(5))).await, Response::Ok);
+        assert_eq!(core.settings.current().postpone_retention.days(), 30);
+        assert_eq!(core.handle(keep(serde_json::json!(5000))).await, Response::Ok);
+        assert_eq!(core.settings.current().postpone_retention.days(), 1095);
+        assert_eq!(code(&core.handle(keep(serde_json::json!("forever"))).await), "error");
     }
 
     /// A notice the app key posts, with a web page and a text; its id.

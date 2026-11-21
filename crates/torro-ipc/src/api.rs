@@ -3062,7 +3062,8 @@ static POSTPONE_STATS: Command = Command {
     mcp: Mcp::Tool,
     description: "What the person postponed: the tasks moved to a later due day most often (with count and last time) \
                   and the counts by priority, focus, list and the weekday the task was due on, of the lists you may \
-                  see, kept 365 days on this computer. Pass `since` (YYYY-MM-DD) for a shorter span. Returns \
+                  see, kept on this computer for the days the setting `postpone_retention` says (365 unless \
+                  changed). Pass `since` (YYYY-MM-DD) for a shorter span. Returns \
                   `enabled: false` with empty counts while the person has not turned counting on (setting \
                   `postpone_stats`). Use it to help plan, e.g. to suggest splitting a task postponed often.",
 };
@@ -4244,6 +4245,8 @@ static SET_SETTING: Command = Command {
                   ask for focus; tasks.set_focus refuses a further one with conflict) or \
                   `postpone_stats` (true, false; while on, moves of open tasks to a later due day are counted on \
                   this computer for tasks.postpone_stats; only a person may turn it on) or \
+                  `postpone_retention` (days the history of postponed tasks is kept, 365 unless changed; below 30 \
+                  is taken as 30, above 1095 as 1095; lowering it drops older postponements at once) or \
                   `quiet_when_busy` (true, false; while on, only urgent inbox entries pop up during a busy event) \
                   or `design` (the spacing level from list_designs: \"torro\" for Standard, \"comfort\" or \
                   \"dense\"; it changes only spacing and the heights of rows and controls, never the font, the \
@@ -9670,6 +9673,7 @@ mod tests {
                 "list_order",
                 "focus_slots",
                 "postpone_stats",
+                "postpone_retention",
                 "quiet_when_busy",
                 "contacts.show_hidden_books",
                 "presence_heartbeat",
