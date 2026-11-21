@@ -627,6 +627,8 @@ enum Change {
     ListOrder(ListOrderEntry),
     /// How many tasks may ask for focus today (issue #596).
     FocusSlots(FocusSlots),
+    /// Count postponed tasks (issue #623).
+    PostponeStats(bool),
     QuietWhenBusy(bool),
     /// Show the hidden address books in the contacts app.
     ContactsShowHiddenBooks(bool),
@@ -768,6 +770,7 @@ impl Change {
             SettingKey::ListOrder => Change::ListOrder(serde_json::from_value(value.clone()).map_err(invalid)?),
             // Strict: only the file's reading falls back to the default.
             SettingKey::FocusSlots => Change::FocusSlots(FocusSlots::from_value(value)?),
+            SettingKey::PostponeStats => Change::PostponeStats(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::QuietWhenBusy => Change::QuietWhenBusy(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::ContactsShowHiddenBooks => {
                 Change::ContactsShowHiddenBooks(serde_json::from_value(value.clone()).map_err(invalid)?)
@@ -924,6 +927,7 @@ impl Change {
             Change::WorkingHours(hours) => settings.working_hours = hours,
             Change::ListOrder(entry) => settings.set_list_order(&entry.list, entry.order),
             Change::FocusSlots(slots) => settings.focus_slots = slots,
+            Change::PostponeStats(on) => settings.postpone_stats = on,
             Change::QuietWhenBusy(quiet) => settings.quiet_when_busy = quiet,
             Change::ContactsShowHiddenBooks(show) => settings.contacts_show_hidden_books = show,
             Change::PresenceHeartbeat(on) => settings.presence_heartbeat = on,
@@ -1988,6 +1992,7 @@ mod tests {
                 working_hours: WorkingHours::from_value(&working).expect("valid working hours"),
                 list_orders: Default::default(),
                 focus_slots: FocusSlots::new(5).expect("in range"),
+                postpone_stats: false,
                 quiet_when_busy: false,
                 contacts_show_hidden_books: false,
                 presence_heartbeat: false,
