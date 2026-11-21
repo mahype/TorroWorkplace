@@ -5663,6 +5663,31 @@ mod tests {
         assert!(fresh.exists());
     }
 
+    /// Each store counts once and its `-wal`/`-shm` files never, whichever the folder lists first: on tmpfs the
+    /// `-wal` came first, took its store with it, and the store went uncounted (#647, fixed in #702). Several stores,
+    /// so both orders are likely listed.
+    #[test]
+    fn the_clean_up_counts_stores_not_their_wal_and_shm_files() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dirs = MailDirs::new(tmp.path(), tmp.path());
+        let unknown: Vec<String> = (0..8).map(|n| format!("mail:gone{n}@example.org")).collect();
+        for account in &unknown {
+            drop(MailStore::open(&dirs, account).expect("store"));
+            let store = file_for(&dirs, account);
+            std::fs::write(side_file(&store, "-wal"), b"x").expect("wal");
+            std::fs::write(side_file(&store, "-shm"), b"x").expect("shm");
+        }
+        // Side files whose store is already gone are removed but are not a store.
+        let orphan = file_for(&dirs, "mail:orphan@example.org");
+        std::fs::write(side_file(&orphan, "-wal"), b"x").expect("orphan wal");
+        std::fs::write(side_file(&orphan, "-shm"), b"x").expect("orphan shm");
+
+        assert_eq!(MailStore::remove_unknown(&dirs, &[], std::time::Duration::ZERO).expect("cleaned"), unknown.len());
+        let left: Vec<_> =
+            std::fs::read_dir(&dirs.data).expect("dir").map(|entry| entry.expect("entry").path()).collect();
+        assert!(left.is_empty(), "nothing of the stores is left: {left:?}");
+    }
+
     #[cfg(unix)]
     #[test]
     fn the_folder_is_private_and_so_are_all_files_including_wal_and_shm() {
