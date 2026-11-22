@@ -1035,7 +1035,7 @@ mod tests {
 
     #[test]
     fn the_standard_sidebar_draws_as_before() {
-        let _look = design::tests::SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _look = design::tests::hold_look();
         for (window, p) in [(theme(), Palette::dark()), (light(), Palette::light())] {
             let sidebar = sidebar_theme(&window);
             assert_ne!(sidebar, window, "a theme of its own");
@@ -1051,7 +1051,7 @@ mod tests {
     #[test]
     fn a_row_on_the_accent_takes_on_accent_for_its_text() {
         // Themes are told apart by identity: no other test may switch the look meanwhile (it was flaky).
-        let _look = design::tests::SWITCHING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _look = design::tests::hold_look();
         for (window, p) in [(theme(), Palette::dark()), (light(), Palette::light())] {
             let on = on_accent_theme(&window);
             assert_eq!(palette(&on), p.on_accent_row());
