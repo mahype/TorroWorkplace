@@ -1245,6 +1245,12 @@ laufen unverändert.
 - **Im Chat:** Warum ein Auftrag wartet, steht als Fehlerzeile (`paused`) in seiner Unterhaltung; dazu sagt
   `assistant.get_job` Zustand, Grund und Schritte. Knöpfe für Pause, Fortsetzen und das Entscheiden eines unklaren
   Schritts kommen mit #962 (Regel 5 der Entscheidungsregeln).
+- **Wer darf:** wie bei Unterhaltungen jeder Client mit dem Bereich `assistant` (Read zum Lesen, Write zum Starten,
+  Pausieren, Fortsetzen, Abbrechen); der eigene Client des Assistenten und Bots nie (`loops_back`). Einen unklaren
+  Schritt entscheidet nur ein Mensch: `assistant.resolve_job_step` ist Admin, für Clients also immer mit Freigabe, und
+  die Freigabe nennt Ziel, Schritt und Folge aus dem Journal. Solange der Befehl eines Schritts noch läuft, ist keine
+  Entscheidung möglich (`conflict`). Ein Auftrag läuft immer mit den Rechten des Assistenten-Clients; der Eigentümer
+  (wer startete) bleibt, und nach einem Neustart geht die Fortsetzung in seinem Namen weiter, nie als Wort der Person.
 - **Grenze:** Für externe Systeme ohne Idempotenzschlüssel oder verlässliche Ergebnisabfrage lässt sich „genau einmal“
   nicht garantieren. Der sichere Zustand ist dann `uncertain` mit Abgleich oder Entscheidung, nie eine automatische
   Wiederholung. Bisher hat kein Werkzeug der Suite einen Idempotenzschlüssel; abgeglichen wird über Freigaben.
