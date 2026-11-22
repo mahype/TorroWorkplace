@@ -240,9 +240,10 @@ global-hotkey = { version = "0.8.0", default-features = false }
 # text stack already brings.
 unicode-segmentation = "1.13.3"
 # Speech built into the assistant (torroassistant, issue #762): speech recognition (Whisper turbo, Parakeet) and
-# reading aloud (Pocket TTS) on the processor, without Python or other programs. k2-fsa's bindings link ONNX Runtime
-# statically; the first build downloads its prebuilt libraries (about 23 MB) from GitHub. Apache-2.0.
-sherpa-onnx = "2.0.1"
+# reading aloud (Pocket TTS) on the processor, without Python or other programs. The first build downloads k2-fsa's
+# prebuilt libraries (about 23 MB) from GitHub. Without default features: torroassistant picks per target, `static`
+# on Linux and macOS, `shared` on Windows (issue #773). Apache-2.0.
+sherpa-onnx = { version = "2.0.1", default-features = false }
 # Qwen3-TTS as a second local voice (torroassistant, issue #764, `docs/messung-qwen3-tts.md`): Crane runs it in Rust
 # on candle, with the native speech decoder and no second ONNX Runtime. Only built with `torroassistant/qwen-cuda`,
 # which needs the CUDA toolkit to build and its libraries to run. Cargo.lock resolves it in every build, so its tree

@@ -136,11 +136,16 @@ impl Part {
 /// of its own, installed and removed with the calendar (decision 4).
 pub const REMINDER: Part = Part { program: "torro-reminder", title: "Torro Reminder" };
 
+/// The assistant's DLLs on Windows (issue #773): sherpa-onnx as a DLL, from an archive of their own
+/// (`torroassistant-runtime-<target>.zip`), put beside the program ([`install::RUNTIME_FILES`]) and removed with it.
+pub const ASSISTANT_RUNTIME: Part = Part { program: "torroassistant-runtime", title: "Torro Assistant" };
+
 /// The parts `app` is installed from on `platform`.
 pub fn parts(app: AppId, platform: Platform) -> Vec<Part> {
     let own = Part { program: app.program_file(), title: app.display_name };
-    match (platform, app == AppId::CALENDAR) {
-        (Platform::MacOs, true) => vec![own, REMINDER],
+    match platform {
+        Platform::MacOs if app == AppId::CALENDAR => vec![own, REMINDER],
+        Platform::Windows if app == AppId::ASSISTANT => vec![own, ASSISTANT_RUNTIME],
         _ => vec![own],
     }
 }
@@ -459,8 +464,9 @@ impl Catalog {
         let old = scan.found(app).map(|found| found.path.as_path());
         let dir = old.or(env.exe.as_deref()).and_then(Path::parent);
         if let Some(dir) = dir {
-            for part in parts(app, env.platform) {
-                let path = dir.join(env.platform.program_file(part.program));
+            let files = parts(app, env.platform).into_iter().flat_map(|part| install::part_files(part, env.platform));
+            for file in files {
+                let path = dir.join(file);
                 let manager = installed::manager_on_disk(&path, env.platform);
                 if manager.is_some() || installed::setup_directory(&path, env.platform) {
                     let manager = manager.unwrap_or(installed::Manager::Setup);
@@ -814,19 +820,22 @@ async fn install_item(
             blocking(move || install::check_sum(&file, &expected)).await.map_err(fail(AppStep::Verify))?;
         }
         let into = folder.join(format!("{}.unpacked", part.program));
-        let program = platform.program_file(part.program);
-        let new = blocking(move || match platform {
-            Platform::MacOs => install::unpack_bundle(&file, &into, &part.bundle(), part.program),
-            Platform::Linux => install::unpack_tar(&file, &into, &program),
-            Platform::Windows => install::unpack_zip(&file, &into, &program),
+        // Each file of the part on its own: the program, or the assistant's DLLs (issue #773).
+        let files = install::part_files(part, platform);
+        let news = blocking(move || match platform {
+            Platform::MacOs => install::unpack_bundle(&file, &into, &part.bundle(), part.program).map(|new| vec![new]),
+            Platform::Linux => files.iter().map(|name| install::unpack_tar(&file, &into, name)).collect(),
+            Platform::Windows => files.iter().map(|name| install::unpack_zip(&file, &into, name)).collect(),
         })
         .await
         .map_err(fail(AppStep::Verify))?;
-        if platform == Platform::MacOs {
-            let bundle = new.clone();
-            blocking(move || install::check_signature(&bundle)).await.map_err(fail(AppStep::Verify))?;
+        for new in news {
+            if platform == Platform::MacOs {
+                let bundle = new.clone();
+                blocking(move || install::check_signature(&bundle)).await.map_err(fail(AppStep::Verify))?;
+            }
+            unpacked.push((part, new));
         }
-        unpacked.push((part, new));
     }
     let checked = if platform == Platform::MacOs { "Developer ID" } else { "SHA-256" };
     job.done(class, AppStep::Verify, Some(checked.into()));
@@ -849,10 +858,12 @@ async fn install_item(
                 (folder.join(part.bundle()), old)
             }
             Platform::Linux | Platform::Windows => {
-                let old = item.found.as_ref().map(|found| found.path.clone());
-                let dir = old.as_deref().and_then(Path::parent).or_else(|| env.exe.as_deref().and_then(Path::parent));
+                let found = item.found.as_ref().map(|found| found.path.clone());
+                let dir = found.as_deref().and_then(Path::parent).or_else(|| env.exe.as_deref().and_then(Path::parent));
                 let dir = dir.ok_or((app, AppStep::Install, Fail::Error))?;
-                (dir.join(platform.program_file(part.program)), old)
+                // The file keeps its name: the program, or a DLL of the assistant, which replaces no program.
+                let name = new.file_name().ok_or((app, AppStep::Install, Fail::Error))?;
+                (dir.join(name), found.filter(|_| part != ASSISTANT_RUNTIME))
             }
         };
         let discard = Arc::clone(&env.discard);
@@ -933,10 +944,13 @@ async fn uninstall_item(
         return Err((app, AppStep::Remove, Fail::Cancelled));
     }
     let mut gone = vec![found.path.clone()];
+    let others = parts(app, platform).into_iter().skip(1);
     if platform == Platform::MacOs {
         // The calendar's reminder goes with it (decision 4).
-        let others = parts(app, platform).into_iter().skip(1);
         gone.extend(others.filter_map(|part| existing_bundle(env, item, part)));
+    } else if let Some(dir) = found.path.parent() {
+        // The assistant's DLLs go with it on Windows (issue #773); a file that is not there is skipped.
+        gone.extend(others.flat_map(|part| install::part_files(part, platform)).map(|file| dir.join(file)));
     }
     let data: Vec<PathBuf> = match remove_data {
         true => (env.app_dirs)(app).into_iter().filter(|dir| !item.shared.contains(dir)).collect(),
@@ -1053,6 +1067,20 @@ pub(crate) mod tests {
             sum: None,
             delay: None,
         }
+    }
+
+    /// The assistant's DLLs for Windows (issue #773) in their archive, as `packaging/assistant_runtime.py`
+    /// writes it, with a file beside them that must not come out.
+    pub(crate) fn runtime_file() -> File {
+        use std::io::Write as _;
+        let mut body = Vec::new();
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut body));
+        for name in install::RUNTIME_FILES.iter().chain(&["onnxruntime_providers_shared.dll"]) {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default()).expect("entry");
+            zip.write_all(format!("MZ {name}").as_bytes()).expect("write");
+        }
+        zip.finish().expect("finish");
+        File { name: "torroassistant-runtime-x86_64-pc-windows-msvc.zip".into(), body, sum: None, delay: None }
     }
 
     /// Waits until the job `id` ended and its runner is through.
@@ -1399,6 +1427,54 @@ pub(crate) mod tests {
         assert_eq!(code(catalog.uninstall("torro-compose", false).await), Some("not-found"));
     }
 
+    /// Issue #773: on Windows the assistant brings sherpa-onnx's DLLs beside its program and takes them along.
+    #[tokio::test]
+    async fn the_assistant_on_windows_brings_its_dlls_and_takes_them_along() {
+        let dir = tempfile::tempdir().expect("dir");
+        let env = env_in(dir.path(), Platform::Windows, &[], true);
+        put_program(&env, "torroworkplace");
+        let server = MockServer::start_async().await;
+        serve(&server, "0.2.0", &[windows_file("torroassistant", b"MZ assistant"), runtime_file()]).await;
+        let catalog = catalog_at(env, &server);
+        let started = catalog.install("torro-assistant").await.expect("started");
+        let job = ended(&catalog, &started.id).await;
+        assert_eq!((job.state, job.error.as_deref()), (AppJobState::Done, None), "{job:?}");
+        let bin = dir.path().join("bin");
+        assert_eq!(std::fs::read(bin.join("torroassistant.exe")).expect("program"), b"MZ assistant");
+        for name in install::RUNTIME_FILES {
+            assert_eq!(std::fs::read(bin.join(name)).expect("dll"), format!("MZ {name}").as_bytes());
+        }
+        assert!(!bin.join("onnxruntime_providers_shared.dll").exists(), "only the pinned DLLs");
+        let shown = job.steps.iter().find(|step| step.step == AppStep::Install).and_then(|step| step.detail.clone());
+        assert_eq!(shown, Some(bin.join("torroassistant.exe").display().to_string()), "the program, not a DLL");
+        let started = catalog.uninstall("torro-assistant", false).await.expect("started");
+        assert_eq!(ended(&catalog, &started.id).await.state, AppJobState::Done);
+        assert!(!bin.join("torroassistant.exe").exists());
+        for name in install::RUNTIME_FILES {
+            assert!(!bin.join(name).exists(), "{name} went along");
+        }
+        assert!(bin.join("torroworkplace.exe").exists(), "the service stays");
+    }
+
+    /// Without its DLLs a release offers no assistant for Windows, and elsewhere none are needed.
+    #[test]
+    fn the_assistant_for_windows_needs_its_runtime_in_the_release() {
+        let asset = |name: &str| Asset { name: name.into(), size: 1, url: format!("{}{name}", releases::DOWNLOADS) };
+        let program = ["torroassistant-x86_64-pc-windows-msvc.zip", "torroassistant-x86_64-pc-windows-msvc.zip.sha256"];
+        let stored = Stored { latest: Some("0.2.0".into()), assets: program.map(asset).into(), ..Stored::default() };
+        let windows = Env { arch: "x86_64".into(), ..Env::empty(Platform::Windows) };
+        assert!(release_parts(&windows, AppId::ASSISTANT, &stored).is_none());
+        let runtime = [
+            "torroassistant-runtime-x86_64-pc-windows-msvc.zip",
+            "torroassistant-runtime-x86_64-pc-windows-msvc.zip.sha256",
+        ];
+        let assets = program.into_iter().chain(runtime).map(asset).collect();
+        let stored = Stored { latest: Some("0.2.0".into()), assets, ..Stored::default() };
+        assert_eq!(release_parts(&windows, AppId::ASSISTANT, &stored).map(|parts| parts.len()), Some(2));
+        assert_eq!(parts(AppId::ASSISTANT, Platform::Linux).len(), 1);
+        assert_eq!(parts(AppId::ASSISTANT, Platform::MacOs).len(), 1);
+    }
+
     #[tokio::test]
     async fn uninstalling_on_macos_takes_the_reminder_along() {
         let dir = tempfile::tempdir().expect("dir");
@@ -1589,6 +1665,12 @@ pub(crate) mod tests {
         let linux = "torro-inbox-mail-x86_64-unknown-linux-gnu.tar.xz";
         assert_eq!(mail[0].asset(Platform::Linux, "x86_64-unknown-linux-gnu"), linux);
         assert_eq!(mail[0].bundle(), "Torro Workplace Mail.app");
+        let assistant = parts(AppId::ASSISTANT, Platform::Windows);
+        assert_eq!(assistant[1], ASSISTANT_RUNTIME);
+        let runtime = "torroassistant-runtime-x86_64-pc-windows-msvc.zip";
+        assert_eq!(assistant[1].asset(Platform::Windows, "x86_64-pc-windows-msvc"), runtime);
+        assert_eq!(install::part_files(assistant[1], Platform::Windows), install::RUNTIME_FILES);
+        assert_eq!(install::part_files(assistant[0], Platform::Windows), ["torroassistant.exe"]);
         let tasks = parts(AppId::TASKS, Platform::Windows);
         assert_eq!(
             tasks[0].asset(Platform::Windows, "x86_64-pc-windows-msvc"),

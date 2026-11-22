@@ -75,7 +75,9 @@ Der Maintainer verändert Secrets/Variablen, veröffentlicht und setzt Tags; Age
 
 `release.yml` wurde mit dist 0.32.0 regeneriert. Bewusste Handergänzungen am `host`: `custom-ci` in
 `needs`, alle Pflichtjobs ausschließlich `success`, `verify`/`downloads` vor Hosting, Index/Manifest
-und Downloadtabelle beim Release. `allow-dirty = ["ci"]` schützt diese Ergänzungen. Zum Regenerieren
+und Downloadtabelle beim Release. Im Job `build-global-artifacts` nach `dist build` und vor dem Hochladen:
+`packaging/assistant_runtime.py --patch-powershell` ergänzt `torroassistant-installer.ps1` um die DLLs des
+Assistenten (Issue #773). `allow-dirty = ["ci"]` schützt diese Ergänzungen. Zum Regenerieren
 kurz auskommentieren, `dist generate`, wiederherstellen und **alle** Ergänzungen erneut einsetzen.
 Danach `dist plan --tag v0.1.0` und die Offline-Vertragstests ausführen. Keine Actions von Hand starten.
 

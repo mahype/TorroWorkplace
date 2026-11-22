@@ -208,6 +208,12 @@ jobs:
           echo "EOF" >> "$GITHUB_OUTPUT"
 
           cp dist-manifest.json "$BUILD_MANIFEST_NAME"
+      # TorroWorkplace hand edit (allow-dirty, issue #773): dist's PowerShell installer copies only programs; the
+      # assistant's also fetches its DLLs (torroassistant-runtime zip, checked by SHA-256). The installer has no
+      # checksum of its own in the manifest, so changing it here before the upload breaks none.
+      - name: Bring the assistant's DLLs with its PowerShell installer
+        shell: bash
+        run: python3 packaging/assistant_runtime.py --patch-powershell target/distrib/torroassistant-installer.ps1
       - name: "Upload artifacts"
         uses: actions/upload-artifact@v7
         with:

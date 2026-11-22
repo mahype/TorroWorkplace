@@ -11,6 +11,11 @@ ci = "github"
 # downloads prebuilt ONNX Runtime libraries at build time, and on Linux its sound needs ALSA's headers
 # (`libasound2-dev`, `[package.metadata.dist.dependencies.apt]` in crates/torroassistant/Cargo.toml).
 installers = ["shell", "powershell", "homebrew"]
+# On Windows the assistant also needs two DLLs (issue #773). dist packs only binaries into an app's archive, so they
+# go out as an asset of the assistant's release, `torroassistant-runtime-x86_64-pc-windows-msvc.zip`
+# (`[package.metadata.dist.extra-artifacts]` in crates/torroassistant/Cargo.toml). Setup, the service's app
+# installer and Scoop bring it. dist's PowerShell installer copies only programs; a hand-edited step in release.yml
+# (global job) extends torroassistant-installer.ps1 to fetch and check the DLLs (packaging/assistant_runtime.py).
 # Target platforms to build apps for. Linux uses gnu (not musl): the Iced GUIs dlopen
 # libwayland, libxkbcommon, libvulkan and libEGL at runtime, which a static musl binary cannot do.
 targets = [
