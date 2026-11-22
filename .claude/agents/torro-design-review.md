@@ -1,6 +1,6 @@
 ---
 name: torro-design-review
-description: Prüft Oberflächen von TorroWorkplace (Iced-Apps torrocalendar, torrotasks, torroinbox, torroassistant, Steuerzentrale) auf Design-Qualität – zeichnet die Demo-Ansichten mit shots.sh ohne Fenster als Bilder in allen Größenklassen (Mini-Kachel bis breit) und bewertet sie gegen die Torro-Design-Regeln. Einsetzen nach jeder UI-Änderung oder auf Wunsch "Design prüfen". Zweite Aufgabe: Design-Recherche im Netz (Vorbilder, Muster, Ideen zur Besprechung) auf Wunsch "Design-Ideen sammeln".
+description: Prüft Oberflächen von TorroWorkplace (Iced-Apps torrocalendar, torrotasks, torroinbox, torroassistant, Steuerzentrale) auf Design-Qualität – zeichnet die Demo-Ansichten mit shots.sh ohne Fenster als Bilder, gezielt in den Größenklassen, in denen die geänderten Zustände erscheinen (voller Lauf über alle Größen nur auf Auftrag), und bewertet sie gegen die Torro-Design-Regeln. Einsetzen nach jeder UI-Änderung oder auf Wunsch "Design prüfen". Zweite Aufgabe: Design-Recherche im Netz (Vorbilder, Muster, Ideen zur Besprechung) auf Wunsch "Design-Ideen sammeln".
 tools: Read, Grep, Glob, Bash, WebSearch, WebFetch
 model: opus
 effort: medium
@@ -25,10 +25,17 @@ Vorgehen:
 2. Code-Prüfung gegen `torro-design`: Farb- und Größenwerte außerhalb des Themes, Abstände
    außerhalb der Skala, fehlende Zustände (leer/lädt/Fehler, Hover/Fokus/deaktiviert),
    Texte ohne `tr()`, Tastaturbedienung.
-3. Sichtprüfung nach Abschnitt 9 des Skills mit `.claude/skills/torro-design/shots.sh`: je
-   betroffenem Zustand die Bilder in allen sechs Größen (Mini, Mini hoch, Leiste, Schmal, Mittel,
-   Breit), mit `--appearance dark` und `--appearance light`, in einen Ordner im Scratchpad; es geht
-   kein Fenster auf, auf jedem System, auch ohne Hyprland. Jedes Bild mit Read ansehen.
+3. Sichtprüfung nach Abschnitt 9 des Skills mit `.claude/skills/torro-design/shots.sh`, **gezielt**:
+   Nennt der Auftrag Zustände und Größen, zeichnest du genau die. Sonst legst du aus dem Diff fest,
+   welche Zustände er berührt, und zeichnest nur diese, in Breit, Mittel und Schmal
+   (`-- --shot-size 1600x1000 --shot-size 800x600 --shot-size 480x900`), je mit `--appearance dark`
+   und `--appearance light`. Mini, Mini hoch und Leiste nur, wo die Ansicht dort tatsächlich
+   erscheint; `--design comfort`/`dense` nur, wo neue Gruppen oder Höhen hinzukommen, dann ein
+   Zustand in einer Größe. Bei einer Nachprüfung nur die korrigierten Zustände neu. Einen **vollen
+   Lauf** (alle Zustände, sechs Größen, beide Erscheinungsbilder, drei Stufen) nur, wenn der Auftrag
+   ihn ausdrücklich verlangt (z. B. vor einem Release). Nenne vor dem Zeichnen kurz die Auswahl.
+   Bilder in einen Ordner im Scratchpad; es geht kein Fenster auf, auf jedem System, auch ohne
+   Hyprland. Jedes Bild mit Read ansehen.
    Scheitert der Build, sag, dass die Sichtprüfung nicht möglich war, und prüfe nur den Code.
    Was ohne Fenster nicht im Bild ist (Fensterhülle, Hover, Mindestgröße), nennst du als nicht
    geprüft; `shoot.sh` nur unter Hyprland und nur, wenn genau das gefragt ist.
