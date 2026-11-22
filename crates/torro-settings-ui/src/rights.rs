@@ -2813,14 +2813,11 @@ mod tests {
         let medium = 1000.0 - torro_gui::shell::rail() - torro_gui::layout::inset() - 2.0 * space::xl();
         assert_eq!(control_column(narrow), None);
         assert_eq!(control_column(medium), Some(segment_slot()));
-        // At the reading width (720) it depends on the language since issue #291: English keeps the
-        // column, the longer German lines in the standard's meta (13) put the controls under their names.
-        let english = torro_core::i18n::tr("Send on my behalf") == "Send on my behalf";
+        // At the reading width (720) it depends on the longest line: since issue #291 the German lines in
+        // the standard's meta (13) put the controls under their names, since issue #751 the line of the
+        // bots does so in English too. Either way the page takes the column or none, never a narrower one.
         let reading = control_column(torro_gui::theme::size::content_max());
         assert!(reading.is_none() || reading == Some(segment_slot()));
-        if english {
-            assert_eq!(reading, Some(segment_slot()));
-        }
     }
 
     const BOOK: &str = "nextcloud:anna@cloud.example.org/contacts";

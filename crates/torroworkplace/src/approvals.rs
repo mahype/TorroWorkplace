@@ -2344,6 +2344,8 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::DismissDuplicates { .. }) => contact_summary(request, facts.contact.as_deref()),
         // Issue #355: every map tile, and the kept places of the address books the client sees.
         Request::ClearMapsCache => tr("Clear stored map tiles and contact places").to_string(),
+        // Issue #623: what was noted for the lists the client sees; nothing to look up.
+        Request::ClearPostponements => tr("Delete the history of postponed tasks").to_string(),
         request if matches!(request.operation().area(), Area::Chat | Area::Presence) => {
             chat_summary(request, facts.chat.as_deref())
         }
@@ -6792,6 +6794,10 @@ pub(crate) mod tests {
         assert_eq!(
             summary(&Request::ClearMapsCache, &Facts::default()),
             tr("Clear stored map tiles and contact places")
+        );
+        assert_eq!(
+            summary(&Request::ClearPostponements, &Facts::default()),
+            tr("Delete the history of postponed tasks")
         );
         let off = Request::SetSetting {
             key: torro_ipc::SettingKey::Maps,

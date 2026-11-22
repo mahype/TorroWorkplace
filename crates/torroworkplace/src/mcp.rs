@@ -2955,6 +2955,18 @@ mod tests {
             request_for("tasks_plan_todo", args(json!({"href": "/l/t.ics", "etag": "1", "day": "tomorrow"})), &Utc);
         assert!(matches!(bad_day, Err(ToolError::Input(_))));
         assert_eq!(request_for("tasks_postpone_focus_plan", args(json!({})), &Utc), Ok(Request::PostponeFocusPlan));
+        // The evaluation of postponed tasks (issue #623): a span is optional, a wrong day is refused.
+        assert_eq!(
+            request_for("tasks_postpone_stats", args(json!({})), &Utc),
+            Ok(Request::PostponeStats { since: None })
+        );
+        assert_eq!(
+            request_for("tasks_postpone_stats", args(json!({"since": "2026-11-01"})), &Utc),
+            Ok(Request::PostponeStats { since: NaiveDate::from_ymd_opt(2026, 11, 1) })
+        );
+        let bad_span = request_for("tasks_postpone_stats", args(json!({"since": "last week"})), &Utc);
+        assert!(matches!(bad_span, Err(ToolError::Input(_))));
+        assert_eq!(request_for("tasks_clear_postponements", args(json!({})), &Utc), Ok(Request::ClearPostponements));
         let short = request_for(
             "tasks_save_todo",
             args(json!({"collection": "a/l", "summary": "Write the offer", "focus": "focus"})),
