@@ -1073,7 +1073,15 @@ pub(crate) mod tests {
     /// Held by the tests that switch the process's look, so they do not see each other's, and by the
     /// tests elsewhere that compare themes by identity (`theme::sidebar_theme`, `theme::on_accent_theme`):
     /// a switch beside them builds new themes, and the one they hold would no longer be recognised.
-    pub(crate) static SWITCHING: Mutex<()> = Mutex::new(());
+    static SWITCHING: Mutex<()> = Mutex::new(());
+
+    /// Takes [`SWITCHING`] for the rest of the test (issue #361): every test that switches the look,
+    /// or that holds a theme over several token calls and tells it apart by identity, starts with
+    /// `let _look = design::tests::hold_look();`. A test that failed while holding it leaves it
+    /// poisoned; the next one may still run.
+    pub(crate) fn hold_look() -> std::sync::MutexGuard<'static, ()> {
+        SWITCHING.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 
     /// Writes `toml` after `format` and `[about]` (named "Torro", so tests running beside see the
     /// standard's theme names) as the file of the part folder `folder`/`id`.
@@ -1113,7 +1121,7 @@ pub(crate) mod tests {
     /// #484: the old designs folder is not read).
     #[test]
     fn follow_takes_each_part_from_its_folder_and_loads_fonts_only_for_a_new_font() {
-        let _switching = SWITCHING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _look = hold_look();
         let (root, folders) = folders();
         // A font of its own id with the standard's families: `crate::settings()` in a test running
         // beside marks only the active font as loaded, never this one.
@@ -1148,7 +1156,7 @@ pub(crate) mod tests {
     /// installed font) but by a task; its answer is drawn with only while the settings still name it.
     #[test]
     fn a_font_of_the_computer_is_read_off_the_window() {
-        let _switching = SWITCHING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _look = hold_look();
         let (root, folders) = folders();
         let mut follow = Follow::new(None).in_folders(folders);
         let before = crate::font::active();
@@ -1174,7 +1182,7 @@ pub(crate) mod tests {
     /// design (`apply`) keeps font and colour scheme.
     #[test]
     fn a_message_sets_only_its_part() {
-        let _switching = SWITCHING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _look = hold_look();
         let (root, folders) = folders();
         let fresh = format!("only-{}", std::process::id());
         write(folders.fonts.as_deref().expect("fonts"), &fresh, "font.toml", "");
@@ -1224,7 +1232,7 @@ pub(crate) mod tests {
     /// drawn in the font, the palette the colour scheme – and a switch of one part keeps the others.
     #[test]
     fn each_part_switches_on_its_own() {
-        let _switching = SWITCHING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _look = hold_look();
         let mut twin = ColorScheme::standard();
         twin.id = "twin".into();
         crate::scheme::set(twin);
@@ -1380,7 +1388,7 @@ pub(crate) mod tests {
 
     #[test]
     fn without_a_core_the_start_keeps_the_standard() {
-        let _switching = SWITCHING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _look = hold_look();
         let nowhere = std::env::temp_dir().join(format!("torro-gui-no-core-{}", std::process::id()));
         start(Some(&nowhere), &Forced::default());
         start(None, &Forced::default());
@@ -1391,7 +1399,7 @@ pub(crate) mod tests {
 
     #[test]
     fn set_replaces_the_active_design() {
-        let _switching = SWITCHING.lock().unwrap_or_else(PoisonError::into_inner);
+        let _look = hold_look();
         // Same values as the standard under another id: tests running beside this one keep reading
         // the standard tokens.
         let mut twin = Design::standard();

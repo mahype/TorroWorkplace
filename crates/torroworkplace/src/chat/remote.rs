@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use torro_chat::{ChatError, ConversationKind, FileRef, Mention, MessageKind, NotifyLevel, Preview, Status};
-pub use torro_nextcloud::{DavPath, Picture, Reference, ShareMeta, Uploaded};
+pub use torro_nextcloud::{DavPath, FileFacts, Picture, Reference, ShareMeta, Uploaded};
 
 /// Why a call about a file failed: what every chat call can say, and what only files can.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -439,6 +439,16 @@ impl Remote {
     /// The card of `link` as the server resolves it (the server fetches the address).
     pub async fn resolve(&self, link: &str) -> Result<Option<Reference>, FileError> {
         each!(self, resolve(link))
+    }
+
+    /// What the public share `token` names (issue #924); `None` for one that is gone or locked.
+    pub async fn share_info(&self, token: &str) -> Result<Option<FileFacts>, FileError> {
+        each!(self, share_info(token))
+    }
+
+    /// What the server tells of the file `path` of `user` (issue #924); `None` when it is not there.
+    pub async fn file_info(&self, user: &str, path: &DavPath) -> Result<Option<FileFacts>, FileError> {
+        each!(self, file_info(user, path))
     }
 
     /// Shares the file `path` into the conversation `token`.

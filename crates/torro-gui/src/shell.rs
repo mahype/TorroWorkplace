@@ -1848,8 +1848,9 @@ mod tests {
     fn the_mail_head_draws_in_the_sidebar_palette_in_both_modes() {
         let _one = one_simulator();
         use std::sync::{Arc, Mutex};
-        // Palette readers in the other tests do not all take SWITCHING. Keep a real scheme switch
-        // in a child process so this rendering test cannot change their colours mid-assertion.
+        // Palette readers in the other tests do not all hold the look (`design::tests::hold_look`).
+        // Keep a real scheme switch in a child process so this rendering test cannot change their
+        // colours mid-assertion.
         const CHILD: &str = "TORRO_TEST_MAIL_HEAD_PALETTE";
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
