@@ -251,6 +251,7 @@ impl CalDavClient {
         let response = self
             .http
             .request(method, url.clone())
+            .timeout(self.write_timeout)
             .basic_auth(&self.username, Some(&self.password))
             .header("Content-Type", "application/xml; charset=utf-8")
             .body(body.to_string())
@@ -298,6 +299,7 @@ impl CalDavClient {
         let request = self
             .http
             .put(url.clone())
+            .timeout(self.write_timeout)
             .basic_auth(&self.username, Some(&self.password))
             .header("Content-Type", "text/calendar; charset=utf-8")
             .body(ics)
@@ -340,8 +342,12 @@ impl CalDavClient {
         let Some(href) = href else { return Ok(()) };
         let (header, value) = precondition(Some(href), etag)?;
         let url = self.on_server(resolve(collection, href)?)?;
-        let request =
-            self.http.delete(url.clone()).basic_auth(&self.username, Some(&self.password)).header(header, value);
+        let request = self
+            .http
+            .delete(url.clone())
+            .timeout(self.write_timeout)
+            .basic_auth(&self.username, Some(&self.password))
+            .header(header, value);
         let response = request.send().await.map_err(|err| Unwritten::Unknown(transport_error(err)))?;
         let status = response.status();
         // 404: already gone, which is what the caller wanted.
@@ -384,12 +390,14 @@ impl CalDavClient {
         Ok(self.fetch_item(collection, href).await?.map(|fetched| fetched.ics))
     }
 
-    /// GETs one item directly in `collection` ([`item_url`]); `Ok(None)` on 404.
+    /// GETs one item directly in `collection` ([`item_url`]); `Ok(None)` on 404. Part of a save
+    /// (the object a change is written onto), so within [`crate::WRITE_TIMEOUT`].
     async fn fetch_item(&self, collection: &str, href: &str) -> Result<Option<Fetched>, ProviderError> {
         let url = self.on_server(resolve(collection, href)?)?;
         let response = self
             .http
             .get(url.clone())
+            .timeout(self.write_timeout)
             .basic_auth(&self.username, Some(&self.password))
             .send()
             .await
@@ -409,7 +417,7 @@ impl CalDavClient {
     /// The ETag of one item, for servers that do not send it with the PUT answer.
     async fn fetch_etag(&self, url: &Url) -> Result<String, ProviderError> {
         let body = r#"<d:propfind xmlns:d="DAV:"><d:prop><d:getetag/></d:prop></d:propfind>"#;
-        let xml = self.request("PROPFIND", url, "0", body).await?;
+        let xml = self.request_within("PROPFIND", url, "0", body, Some(self.write_timeout)).await?;
         etag_from_multistatus(&xml).ok_or_else(|| ProviderError::Other(format!("{url}: server sent no ETag")))
     }
 
@@ -3388,7 +3396,10 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
     fn impatient_client_of(server: &httpmock::MockServer) -> CalDavClient {
         let account = crate::CalDavAccount { url: server.url("/remote.php/dav/"), username: "anna".into() };
         let http = reqwest::Client::builder().timeout(std::time::Duration::from_millis(200)).build().expect("http");
-        CalDavClient::new(http, &account, torro_core::account::Secret::new("secret")).expect("client")
+        let mut client = CalDavClient::new(http, &account, torro_core::account::Secret::new("secret")).expect("client");
+        // A save narrows each request to its own limit, which would outlast the client's.
+        client.write_timeout = std::time::Duration::from_millis(200);
+        client
     }
 
     /// The server holding [`SERIES_ICS`] at `work/e.ics` in version `"1"` that makes any new object
@@ -3446,6 +3457,49 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
             let expected = if lost { 0 } else { 1 };
             assert_eq!(taken_back.calls_async().await, expected, "taken back only after a refusal: {lost}");
         }
+    }
+
+    /// A client of the silent server at `url` with the real HTTP client and a save limit of
+    /// `write` instead of [`crate::WRITE_TIMEOUT`], so the test need not wait that long.
+    fn client_of_silent(url: &str, write: std::time::Duration) -> CalDavClient {
+        let account = crate::CalDavAccount { url: url.to_string(), username: "anna".into() };
+        let http = crate::http_client().expect("http");
+        let mut client = CalDavClient::new(http, &account, torro_core::account::Secret::new("secret")).expect("client");
+        assert_eq!(client.write_timeout, crate::WRITE_TIMEOUT, "every client starts with the limit of a save");
+        client.write_timeout = write;
+        client
+    }
+
+    /// Issue #876: a server that holds the connection but never answers costs a save the limit of
+    /// a save, not the minute of a sync, and the save comes back offline (pending for the core).
+    #[tokio::test]
+    async fn a_save_to_a_server_that_never_answers_is_offline_within_the_save_limit() {
+        let url = crate::testing::silent_server().await;
+        let client = client_of_silent(&url, std::time::Duration::from_millis(300));
+        let collection = format!("{url}calendars/anna/work/");
+        let new = Event { collection: collection.clone(), ..event() };
+        let changed = Event { href: Some("e.ics".into()), etag: Some("\"1\"".into()), ..new.clone() };
+        let started = std::time::Instant::now();
+        assert_eq!(client.save_event(new.clone()).await, Err(ProviderError::Offline), "a new event");
+        assert_eq!(client.save_event(changed.clone()).await, Err(ProviderError::Offline), "a change");
+        assert_eq!(client.delete_event(&changed).await, Err(ProviderError::Offline), "a delete");
+        let todo = Todo { collection, ..todo() };
+        assert_eq!(client.save_todo(todo).await, Err(ProviderError::Offline), "a task");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+    }
+
+    /// Issue #876: the limit of a save is not that of a read; a sync of a large calendar keeps the
+    /// client's own, longer one.
+    #[tokio::test]
+    async fn reading_keeps_the_limit_of_the_http_client() {
+        let url = crate::testing::silent_server().await;
+        let account = crate::CalDavAccount { url, username: "anna".into() };
+        let http = reqwest::Client::builder().timeout(std::time::Duration::from_secs(1)).build().expect("http");
+        let mut client = CalDavClient::new(http, &account, torro_core::account::Secret::new("secret")).expect("client");
+        client.write_timeout = std::time::Duration::from_millis(100);
+        let started = std::time::Instant::now();
+        assert_eq!(client.collections().await, Err(ProviderError::Offline));
+        assert!(started.elapsed() >= std::time::Duration::from_millis(900), "{:?}", started.elapsed());
     }
 
     /// The second review of #278, finding 4: a move whose delete of the old series gets no answer

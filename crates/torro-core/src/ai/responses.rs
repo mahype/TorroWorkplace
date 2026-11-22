@@ -43,6 +43,29 @@ pub fn body(request: &ChatRequest, stream: bool) -> Value {
     body
 }
 
+/// [`body`] as an account signed in with ChatGPT must send it (issue #324, the preview's rules checked on
+/// 2026-11-21): always streamed and not stored, the system text as `instructions` (a `system` item is refused), no
+/// `max_output_tokens` (refused as well). Tools and the effort stay as [`body`] writes them.
+pub fn plan_body(request: &ChatRequest) -> Value {
+    let mut body = body(request, true);
+    let instructions: Vec<&str> = request
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::System && !message.content.is_empty())
+        .map(|message| message.content.as_str())
+        .collect();
+    if let Some(items) = body.get_mut("input").and_then(Value::as_array_mut) {
+        items.retain(|item| item.get("role").and_then(Value::as_str) != Some("system"));
+    }
+    if !instructions.is_empty() {
+        body["instructions"] = json!(instructions.join("\n\n"));
+    }
+    if let Some(fields) = body.as_object_mut() {
+        fields.remove("max_output_tokens");
+    }
+    body
+}
+
 fn append_message(input: &mut Vec<Value>, message: &ChatMessage) {
     match message.role {
         Role::Tool => input.push(json!({
@@ -206,6 +229,18 @@ mod tests {
             ],
             "usage":{"input_tokens":20,"output_tokens":8}
         })
+    }
+
+    #[test]
+    fn the_plan_body_moves_the_system_text_to_instructions_and_drops_the_limit() {
+        let body = plan_body(&request());
+        assert_eq!((body["store"].clone(), body["stream"].clone()), (json!(false), json!(true)));
+        assert_eq!(body["instructions"], "Help.");
+        assert!(body.get("max_output_tokens").is_none() && body.get("temperature").is_none());
+        let input = body["input"].as_array().expect("input");
+        assert!(input.iter().all(|item| item["role"] != "system"), "{input:?}");
+        assert_eq!(input[0]["role"], "user");
+        assert_eq!(body["tools"][0]["name"], "tasks_list");
     }
 
     #[test]

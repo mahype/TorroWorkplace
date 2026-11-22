@@ -24,6 +24,8 @@ REPO = "https://github.com/mahype/TorroWorkplace"
 LINUX = ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu")
 MACOS = ("x86_64-apple-darwin", "aarch64-apple-darwin")
 WINDOWS = "x86_64-pc-windows-msvc"
+# The one program with files beside it on Windows: sherpa-onnx's DLLs (issue #773).
+ASSISTANT = "torroassistant"
 FORMATS = ("deb", "rpm", "archlinux")
 
 
@@ -119,6 +121,36 @@ def unpack_program(folder, program, target, scratch):
                 into.write_bytes(stream.read())
     regular(into).chmod(0o755)
     return into
+
+
+def assistant_runtime():
+    """The DLLs torroassistant needs beside it on Windows (issue #773), each with its pinned SHA-256."""
+    value = json.loads((ROOT / "windows/assistant-runtime.json").read_text())
+    if value["schema"] != 1 or value["target"] != WINDOWS or not value["files"]:
+        raise ValueError("unexpected assistant-runtime.json")
+    return value["files"]
+
+
+def unpack_runtime(folder, scratch):
+    """The assistant's DLLs out of the checked runtime archive: exactly the pinned files, each against its hash."""
+    files = assistant_runtime()
+    archive = checked(folder / f"torroassistant-runtime-{WINDOWS}.zip")
+    out = {}
+    with zipfile.ZipFile(archive) as zipped:
+        members = zipped.infolist()
+        for member in members:
+            safe_name(member.filename)
+            if stat.S_IFMT(member.external_attr >> 16) not in (0, stat.S_IFREG):
+                raise ValueError("links and special archive members are forbidden")
+        if sorted(m.filename for m in members) != sorted(files):
+            raise ValueError("the runtime archive holds other files than the pinned DLLs")
+        for name, expected in files.items():
+            into = scratch / name
+            into.write_bytes(zipped.read(name))
+            if digest(into) != expected:
+                raise ValueError(f"invalid SHA-256: {name}")
+            out[name] = into
+    return out
 
 
 def marker(program, manager, package, path):
@@ -233,11 +265,19 @@ def build_windows(folder, out, tag):
     with tempfile.TemporaryDirectory() as temp:
         scratch = Path(temp)
         binaries = {a["program"]: unpack_program(folder, a["program"], WINDOWS, scratch) for a in apps()}
+        runtime = unpack_runtime(folder, scratch)
         for app in apps():
             lines = []
             checks = []
             locks = []
             for program in windows_payload(app):
+                if program == ASSISTANT:
+                    # Its DLLs first (issue #773): shared files like the programs, removed with the last setup
+                    # that brought them, so they go with the assistant.
+                    for name, path in runtime.items():
+                        lines.append(f'Source: "{path}"; DestDir: "{{code:CopyDirectory}}"; Flags: ignoreversion sharedfile uninsnosharedfileprompt 64bit; AfterInstall: VerifyFile(\'{name}\', \'{digest(path)}\')')
+                        checks.append(f"  if not CheckFile('{name}') then begin Result := False; exit; end;")
+                        locks.append(f"  CheckUnlocked('{name}');")
                 # Marker uses an Inno {code:...} constant so Program Files is resolved by Windows,
                 # not guessed from the build runner's locale or drive.
                 lines.extend([

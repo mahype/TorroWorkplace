@@ -38,6 +38,9 @@ pub struct State {
     choices: BTreeMap<String, usize>,
     expanded: BTreeSet<String>,
     sorting: bool,
+    /// Whether the window offers a chat (issue #591): the mail window has none (#545), so there the
+    /// page neither suggests nor sets a model for Chat.
+    chat: bool,
     form: Option<(AiProvider, Option<String>, String)>,
     key: Secret,
     install: bool,
@@ -53,6 +56,8 @@ pub struct State {
     /// The first-run setup shows this page and carries "Use suggestion" in its own footer (issue #326):
     /// the page leaves its own button out.
     hosted: bool,
+    /// A sign-in with a browser under way (issue #324): the provider and the core's flow, asked about on every tick.
+    signing: Option<(AiProvider, String)>,
 }
 
 impl Default for State {
@@ -70,6 +75,7 @@ impl Default for State {
             choices: BTreeMap::new(),
             expanded: BTreeSet::new(),
             sorting: true,
+            chat: true,
             form: None,
             key: Secret::default(),
             install: false,
@@ -82,6 +88,7 @@ impl Default for State {
             demo: false,
             menus: Dropdown::default(),
             hosted: false,
+            signing: None,
         }
     }
 }
@@ -108,6 +115,12 @@ pub enum Message {
     Retry,
     /// The dropdown of "Choose a provider" opens, closes or is clicked next to.
     Menus(DropdownEvent<()>),
+    /// "Continue with ChatGPT" (issue #324): the core starts a sign-in with the browser.
+    SignIn(AiProvider),
+    /// Ends the sign-in under way.
+    CancelSignIn,
+    /// "Manage usage": the provider's page where the limit of the plan is set.
+    ManageUsage(AiProvider),
 }
 
 #[derive(Debug)]
@@ -122,6 +135,11 @@ enum Work {
     Pull,
     Pulls,
     Cancel,
+    /// Starting a sign-in of this provider (issue #324).
+    SignIn(AiProvider),
+    /// Asking how the sign-in stands.
+    SignInCheck,
+    SignInCancel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +175,8 @@ pub fn leave(state: &mut State) {
     state.queue.clear();
     state.current = None;
     state.pull = None;
+    // The core ends a sign-in nobody asks about after ten minutes; a page that is left forgets it.
+    state.signing = None;
 }
 
 pub fn owns(state: &State, owner: u64) -> bool {
@@ -208,12 +228,30 @@ pub fn allow_sorting(state: &mut State, allowed: bool) {
     }
 }
 
+/// The window the page stands in has no chat (issue #591: the mail window, #545): the page then
+/// suggests and prepares only the model for Sorting.
+pub fn without_chat(state: &mut State) {
+    state.chat = false;
+    state.queue.retain(|(slot, _)| *slot != AiSlot::Chat);
+}
+
+/// Whether the page may suggest and prepare a model for `slot`: Sorting only while the host allows it,
+/// Chat only where the window has a chat.
+fn offers(state: &State, slot: AiSlot) -> bool {
+    match slot {
+        AiSlot::Chat => state.chat,
+        AiSlot::Decide => state.sorting,
+    }
+}
+
 /// Short status for the host's compact overview, without starting a second polling path.
 pub fn status(state: &State) -> Option<&'static str> {
     if state.current.is_some() || state.pull.is_some() {
         Some(tr("Preparing model…"))
     } else if matches!(state.flight, Some(Work::Connect)) {
         Some(tr("Connecting…"))
+    } else if state.signing.is_some() {
+        Some(tr("Waiting for the sign-in in your browser…"))
     } else if state.flight.is_some() {
         Some(if state.selected.as_deref().and_then(super::ai_provider) == Some(AiProvider::OllamaCloud) {
             tr("Loading models…")
@@ -325,6 +363,10 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
         }
         Message::Tick if !state.active => open(state),
         Message::Tick if state.flight.is_some() || state.form.is_some() => Action::None,
+        Message::Tick if state.signing.is_some() => {
+            let flow = state.signing.as_ref().map(|(_, flow)| flow.clone()).unwrap_or_default();
+            send(state, Work::SignInCheck, Request::CheckAiSignIn { flow })
+        }
         Message::Tick if state.pull.is_some() => send(state, Work::Pulls, Request::AiPulls),
         Message::Tick if state.selected.is_some() => refresh(state),
         Message::Retry if state.form.is_some() => update(state, Message::Submit, data),
@@ -432,7 +474,7 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
                 .flat_map(|r| &r.preparations)
                 .filter(|p| {
                     Some(&p.account) == state.selected.as_ref()
-                        && (state.sorting || p.slot != AiSlot::Decide)
+                        && offers(state, p.slot)
                         && data.settings().ai_slots.get(p.slot).is_none()
                 })
                 .filter_map(|p| {
@@ -445,6 +487,19 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
             }
             next(state)
         }
+        Message::SignIn(provider) if may_change_account(state) && state.signing.is_none() => {
+            state.ways = false;
+            state.error = None;
+            send(state, Work::SignIn(provider), Request::StartAiSignIn { provider })
+        }
+        Message::CancelSignIn => match state.signing.take() {
+            Some((_, flow)) => send(state, Work::SignInCancel, Request::CancelAiSignIn { flow }),
+            None => Action::None,
+        },
+        Message::ManageUsage(provider) => provider
+            .sign_in()
+            .and_then(|sign_in| sign_in.usage_url)
+            .map_or(Action::None, |url| Action::OpenUrl(url.to_string())),
         Message::Cancel => {
             state.queue.clear();
             if let Some(id) = state.pull.take() {
@@ -496,7 +551,7 @@ fn suggestion(state: &State, data: &dyn Seen, replace: bool, only: Option<AiSlot
         .filter(|p| {
             p.account == account
                 && only.is_none_or(|slot| p.slot == slot)
-                && (state.sorting || p.slot != AiSlot::Decide)
+                && offers(state, p.slot)
                 && (replace || data.settings().ai_slots.get(p.slot).is_none())
         })
         .filter_map(|p| p.candidates.get(*state.choices.get(p.slot.key()).unwrap_or(&0)).cloned().map(|c| (p.slot, c)))
@@ -561,9 +616,8 @@ pub fn preparing(state: &State) -> bool {
 }
 
 fn next(state: &mut State) -> Action {
-    if !state.sorting {
-        state.queue.retain(|(slot, _)| *slot != AiSlot::Decide);
-    }
+    let (chat, sorting) = (state.chat, state.sorting);
+    state.queue.retain(|(slot, _)| if *slot == AiSlot::Chat { chat } else { sorting });
     if state.queue.is_empty() {
         state.current = None;
         return refresh(state);
@@ -591,12 +645,16 @@ pub fn answered(state: &mut State, owner: u64, run: u64, result: &Result<Respons
         return Action::None;
     }
     let Some(work) = state.flight.take() else { return Action::None };
-    if !state.sorting && state.current.as_ref().is_some_and(|(slot, _)| *slot == AiSlot::Decide) {
+    if state.current.as_ref().is_some_and(|(slot, _)| !offers(state, *slot)) {
         state.current = None;
         state.pull = None;
         return next(state);
     }
     state.error = None;
+    if matches!(work, Work::SignIn(_) | Work::SignInCheck) && matches!(result, Err(_) | Ok(Response::Error { .. })) {
+        // The sign-in is over: the error below says why.
+        state.signing = None;
+    }
     if matches!(work, Work::Pull) && matches!(result, Ok(Response::Error { code, .. }) if code == "busy") {
         return send(state, Work::Pulls, Request::AiPulls);
     }
@@ -618,6 +676,17 @@ pub fn answered(state: &mut State, owner: u64, run: u64, result: &Result<Respons
         (Work::Recommend, Ok(Response::AiRecommendation { recommendation })) => {
             state.recommendation = Some(compatible_recommendation(recommendation.clone()));
             Action::None
+        }
+        (Work::SignIn(provider), Ok(Response::AiSignIn { flow, url })) => {
+            state.signing = Some((provider, flow.clone()));
+            // The demo has no browser and sends no address.
+            if url.is_empty() { Action::None } else { Action::OpenUrl(url.clone()) }
+        }
+        (Work::SignInCheck, Ok(Response::AiSignInPending { .. })) | (Work::SignInCancel, _) => Action::None,
+        (Work::SignInCheck, Ok(Response::Account { account })) => {
+            state.signing = None;
+            select_endpoint(state, account.id.clone(), super::account_server(account).to_string());
+            refresh(state)
         }
         (Work::Connect, Ok(Response::Account { account })) => {
             select_endpoint(state, account.id.clone(), super::account_server(account).to_string());
@@ -785,7 +854,7 @@ fn can_use(state: &State, data: &dyn Seen) -> bool {
                 .iter()
                 .filter(|p| {
                     Some(&p.account) == state.selected.as_ref()
-                        && (state.sorting || p.slot != AiSlot::Decide)
+                        && offers(state, p.slot)
                         && data.settings().ai_slots.get(p.slot).is_none()
                 })
                 .any(|p| {
@@ -997,11 +1066,17 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
         Some(tr("Torro checks automatically while this page is open. GPT4All: enable the Local API Server.").into()),
     );
     let provider = state.menus.button((), tr("Choose provider"), Message::Menus);
+    let mut ways =
+        vec![setup_row(narrow, tr("Choose a provider"), Some(tr("Connect with an API key").into()), provider)];
+    ways.extend(sign_in_rows(state, narrow));
     let online = widgets::group(
         tr("Online service"),
-        vec![setup_row(narrow, tr("Choose a provider"), Some(tr("Connect with an API key").into()), provider)],
+        ways,
         Some(tr("Text goes to this provider. Mail stays here unless you allow it.").into()),
     );
+    if let Some(signing) = signing_view(state) {
+        parts = parts.push(signing);
+    }
     if state.selected.is_none()
         && state.focus.is_none()
         && (state.ways || (state.found.is_empty() && state.observations.is_empty()))
@@ -1046,11 +1121,19 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
             } else {
                 parts = parts.push(typo::text(typo::body_strong(), name.to_string()));
             }
+            if let Some(hint) = super::ai_provider(account).and_then(plan_hint) {
+                parts = parts.push(hint);
+            }
         }
         // Hosted by the first-run setup, the suggestion shows before an account is chosen: its "Use
         // suggestion" takes the suggested one (issue #326).
         let shown = if state.hosted { suggested_account(state) } else { state.selected.as_deref() };
-        for preparation in recommendation.preparations.iter().filter(|p| Some(p.account.as_str()) == shown) {
+        // Without a chat in the window, no Chat row (issue #591); Sorting stays visible while its choice waits.
+        for preparation in recommendation
+            .preparations
+            .iter()
+            .filter(|p| Some(p.account.as_str()) == shown && (state.chat || p.slot != AiSlot::Chat))
+        {
             let index = *state.choices.get(preparation.slot.key()).unwrap_or(&0);
             if let Some(candidate) = preparation.candidates.get(index) {
                 let fit =
@@ -1124,6 +1207,7 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
         }
         for suggestion in recommendation.slots.iter().filter(|s| {
             s.engine.as_deref() == shown
+                && (state.chat || s.slot != AiSlot::Chat)
                 && !recommendation
                     .preparations
                     .iter()
@@ -1388,9 +1472,14 @@ fn hosted_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message>
     let add = state.menus.button((), tr("Add key"), Message::Menus);
     let key =
         setting_row(None, tr("API key"), Some(tr("Anthropic, OpenAI, Mistral, OpenRouter and more").to_string()), add);
+    let mut ways = vec![key];
+    ways.extend(sign_in_rows(state, false));
+    if let Some(signing) = signing_view(state) {
+        parts = parts.push(signing);
+    }
     parts = parts.push(widgets::group(
         tr("Cloud"),
-        vec![key],
+        ways,
         Some(tr("Cloud providers receive what you send them.").to_string()),
     ));
     if state.pull.is_some() {
@@ -1402,6 +1491,75 @@ fn hosted_view<'a>(state: &'a State, data: &'a dyn Seen) -> Element<'a, Message>
         ));
     }
     parts.into()
+}
+
+/// The providers signed in to with a browser that can be offered (issue #324): those with a client id configured
+/// in this build or the environment ([`torro_core::ai::oauth::SignIn::offered`]). ChatGPT without one is left out
+/// (decision on #324); the core refuses it as well.
+pub(crate) fn offered_sign_ins() -> Vec<AiProvider> {
+    AiProvider::SIGN_IN.into_iter().filter(|provider| provider.sign_in().is_some_and(|s| s.offered())).collect()
+}
+
+/// The offered providers signed in to with a browser ([`offered_sign_ins`]): one row each, "Continue with ChatGPT".
+fn sign_in_rows<'a>(state: &'a State, narrow: bool) -> Vec<Element<'a, Message>> {
+    offered_sign_ins()
+        .into_iter()
+        .map(|provider| {
+            let ready = may_change_account(state) && state.signing.is_none();
+            setup_row(
+                narrow,
+                provider.name(),
+                Some(trf("Use your {provider} plan, no API key", &[("provider", &provider.name())])),
+                widgets::text_button(
+                    None,
+                    trf("Continue with {provider}", &[("provider", &provider.name())]),
+                    style::button::secondary,
+                    ready.then_some(Message::SignIn(provider)),
+                ),
+            )
+        })
+        .collect()
+}
+
+/// While a sign-in waits for the browser: what happens, where the usage counts, and a way out.
+fn signing_view(state: &State) -> Option<Element<'_, Message>> {
+    let (provider, _) = state.signing.as_ref()?;
+    let mut parts = column![
+        typo::text(typo::body_strong(), trf("Signing in to {provider}", &[("provider", &provider.name())])),
+        typo::text(typo::body(), tr("Finish the sign-in in your browser. This page continues by itself.")),
+    ]
+    .spacing(space::s());
+    if let Some(hint) = plan_hint(*provider) {
+        parts = parts.push(hint);
+    }
+    parts =
+        parts.push(widgets::text_button(None, tr("Cancel sign-in"), style::button::ghost, Some(Message::CancelSignIn)));
+    Some(parts.into())
+}
+
+/// For a provider whose plan is used (issue #324): the usage counts against the plan, the limit is set there.
+pub(crate) fn plan_hint<'a>(provider: AiProvider) -> Option<Element<'a, Message>> {
+    let sign_in = provider.sign_in()?;
+    let mut hint = column![
+        typo::text(
+            typo::meta(),
+            trf(
+                "Uses your {provider} plan. Set how much Torro Workplace may use in {provider}.",
+                &[("provider", &provider.name())]
+            )
+        )
+        .style(theme::text_2)
+    ]
+    .spacing(space::xs());
+    if sign_in.usage_url.is_some() {
+        hint = hint.push(widgets::text_button(
+            Some(Icon::ArrowUpRight),
+            tr("Manage usage"),
+            style::button::ghost,
+            Some(Message::ManageUsage(provider)),
+        ));
+    }
+    Some(hint.into())
 }
 
 fn cloud_form(state: &State) -> Element<'_, Message> {
@@ -1589,6 +1747,8 @@ pub fn demo(state: &mut State, scenario: &str, data: &dyn Seen) {
             state.pull = Some("demo-download".into());
         }
         "error" => state.error = Some(tr("The local AI search could not start.").into()),
+        // Signing in with ChatGPT (issue #324): the browser is open, the page waits.
+        "chatgpt-signing" => state.signing = Some((AiProvider::ChatGpt, "demo-chatgpt".into())),
         // The first-run setup's suggestion (issue #326): Ollama found and connected, both models to download.
         "suggestion" => {
             let account = super::demo::DEMO_OLLAMA.to_string();
@@ -1681,6 +1841,64 @@ mod tests {
         let Action::AskAi(mut asks) = action else { panic!("owned request") };
         let (Asked::Setup { owner, run, .. }, request) = asks.remove(0) else { panic!("setup tag") };
         (owner, run, request)
+    }
+
+    /// Decision on #324: ChatGPT is offered exactly when a client id is configured; without one it has no row.
+    #[test]
+    fn chatgpt_is_offered_only_with_a_configured_client_id() {
+        let configured = torro_core::ai::oauth::CHATGPT.configured_client_id().is_some();
+        assert_eq!(offered_sign_ins().contains(&AiProvider::ChatGpt), configured);
+        let state = State { active: true, ..State::default() };
+        assert_eq!(sign_in_rows(&state, false).len(), usize::from(configured));
+    }
+
+    /// Issue #324: "Continue with ChatGPT" starts a sign-in in the core, opens its address, asks on every tick until the
+    /// account is there, and never handles a token; an error or "Cancel sign-in" ends it.
+    #[test]
+    fn signing_in_with_chatgpt_opens_the_browser_and_waits_for_the_core() {
+        let data = super::super::demo::demo_data();
+        let mut state = State { active: true, ..State::default() };
+        let (owner, run, request) = tag(update(&mut state, Message::SignIn(AiProvider::ChatGpt), &data));
+        assert_eq!(request, Request::StartAiSignIn { provider: AiProvider::ChatGpt });
+        let started = Ok(Response::AiSignIn { flow: "f1".into(), url: "https://auth.example/authorize?x".into() });
+        assert!(
+            matches!(answered(&mut state, owner, run, &started), Action::OpenUrl(url) if url.contains("authorize"))
+        );
+        assert_eq!(status(&state), Some(tr("Waiting for the sign-in in your browser…")));
+        let (owner, run, request) = tag(update(&mut state, Message::Tick, &data));
+        assert_eq!(request, Request::CheckAiSignIn { flow: "f1".into() });
+        assert!(matches!(
+            answered(&mut state, owner, run, &Ok(Response::AiSignInPending { flow: "f1".into() })),
+            Action::None
+        ));
+        assert!(state.signing.is_some(), "still waiting");
+        let (owner, run, _) = tag(update(&mut state, Message::Tick, &data));
+        let account = super::super::demo::demo_answer(
+            &Request::ConnectAi { provider: AiProvider::ChatGpt, server: None, key: Secret::default() },
+            &data,
+        )
+        .expect("demo account");
+        let Response::Account { account } = account else { panic!("account") };
+        let _ = answered(&mut state, owner, run, &Ok(Response::Account { account: account.clone() }));
+        assert!(state.signing.is_none());
+        assert_eq!(state.selected.as_deref(), Some(account.id.as_str()));
+
+        let mut failed = State { active: true, ..State::default() };
+        let (owner, run, _) = tag(update(&mut failed, Message::SignIn(AiProvider::ChatGpt), &data));
+        let _ = answered(&mut failed, owner, run, &started);
+        let (owner, run, _) = tag(update(&mut failed, Message::Tick, &data));
+        let declined = Ok(Response::Error { code: "error".into(), message: "declined".into() });
+        let _ = answered(&mut failed, owner, run, &declined);
+        assert!(failed.signing.is_none() && failed.error.as_deref() == Some("declined"));
+
+        let mut cancelled = State { active: true, ..State::default() };
+        let (owner, run, _) = tag(update(&mut cancelled, Message::SignIn(AiProvider::ChatGpt), &data));
+        let _ = answered(&mut cancelled, owner, run, &started);
+        let (_, _, request) = tag(update(&mut cancelled, Message::CancelSignIn, &data));
+        assert_eq!(request, Request::CancelAiSignIn { flow: "f1".into() });
+        assert!(cancelled.signing.is_none());
+        let usage = update(&mut cancelled, Message::ManageUsage(AiProvider::ChatGpt), &data);
+        assert!(matches!(usage, Action::OpenUrl(url) if url == "https://chatgpt.com/settings/usage"));
     }
 
     /// Issue #554: "Choose a provider" is the suite's dropdown; Escape and a choice close it.
@@ -1974,5 +2192,36 @@ mod tests {
         let (_, _, request) = tag(answered(&mut state, owner, run, &answer));
         assert!(matches!(request, Request::AiRecommend), "no model enable, download or slot request follows");
         assert!(state.current.is_none() && state.queue.is_empty());
+    }
+
+    /// Issue #591: in a window without a chat (the mail window) the page suggests and sets only the
+    /// model for Sorting; elsewhere it keeps both slots.
+    #[test]
+    fn without_a_chat_only_sorting_is_suggested_and_set() {
+        let mut data = super::super::demo::demo_data();
+        data.settings.ai_slots.chat = None;
+        data.settings.ai_slots.decide = None;
+        let mut state = State::default();
+        demo(&mut state, "cloud-connected", &data);
+        let slots = |state: &State| suggestion(state, &data, false, None).into_iter().map(|(slot, _)| slot).collect();
+        let both: Vec<AiSlot> = slots(&state);
+        assert_eq!(both, [AiSlot::Chat, AiSlot::Decide], "with a chat both slots are suggested");
+
+        without_chat(&mut state);
+        let only: Vec<AiSlot> = slots(&state);
+        assert_eq!(only, [AiSlot::Decide]);
+        assert!(!can_use_suggestion(&state, &data, false, Some(AiSlot::Chat)));
+        assert!(can_use(&state, &data));
+        drop(view(&state, &data));
+
+        let (owner, run, request) = tag(update(&mut state, Message::Use, &data));
+        assert!(matches!(request, Request::AiModels { .. }));
+        assert!(state.current.as_ref().is_some_and(|(slot, _)| *slot == AiSlot::Decide));
+        assert!(state.queue.is_empty(), "no Chat model waits to be set");
+        let account = state.selected.clone().expect("account");
+        let answer = Ok(Response::AiModels { account, models: vec![] });
+        drop(answered(&mut state, owner, run, &answer));
+        assert!(state.queue.iter().all(|(slot, _)| *slot != AiSlot::Chat));
+        assert!(state.current.as_ref().is_none_or(|(slot, _)| *slot != AiSlot::Chat));
     }
 }
