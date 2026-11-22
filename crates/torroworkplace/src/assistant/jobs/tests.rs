@@ -178,6 +178,7 @@ async fn a_restart_with_an_open_approval_runs_nothing_until_it_is_decided() {
     assert_eq!(steps[0].state, StepState::Uncertain);
     assert!(again.asked().is_empty() && after.ran.lock().expect("lock").is_empty(), "nothing ran");
     assert_eq!(code(&second.go_on_with(&started.id, None, None, None).await), "conflict", "still open");
+    assert_eq!(code(&second.resolve_job_step(&started.id, 1, false).await), "conflict", "no decision while it waits");
 
     // The person denies it: the step did not run, and the job goes on without it.
     *after.approvals.lock().expect("lock") = Some(ApprovalState::Denied);

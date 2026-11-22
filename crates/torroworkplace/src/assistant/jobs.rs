@@ -378,6 +378,26 @@ impl Assistant {
         (Some(goal), tool)
     }
 
+    /// Whether step `step` of the job `id` waits for an approval that is still open (or cannot be read now).
+    async fn approval_open(&self, id: &str, step: u32) -> bool {
+        let looked = id.to_string();
+        let approval = on_journal(&self.journal, move |journal| journal.get(&looked))
+            .await
+            .ok()
+            .and_then(|(_, steps)| steps.into_iter().find(|known| known.seq == step))
+            .and_then(|known| known.approval);
+        let Some(approval) = approval else { return false };
+        let Some(host) = self.host() else { return true };
+        match host.approval_as(&Actor::Assistant, &approval).await {
+            Response::Approval { approval } => {
+                matches!(approval.state, ApprovalState::Pending | ApprovalState::Running)
+            }
+            // Gone (expired and dropped after a day): nothing can run it any more.
+            Response::Error { code, .. } if code == "not-found" => false,
+            _ => true,
+        }
+    }
+
     /// Whether the command of step `step` of the job `id` runs now ([`Flight`]).
     fn flies(&self, id: &str, step: u32) -> bool {
         self.flying.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&(id.to_string(), step))
@@ -487,6 +507,10 @@ impl Assistant {
     pub async fn resolve_job_step(&self, id: &str, step: u32, done: bool) -> Response {
         if self.flies(id, step) {
             return refusal("conflict", "the step still runs; its outcome comes in by itself");
+        }
+        // Its approval still open: a person may yet allow it and the core run it, so "not done" could send twice.
+        if self.approval_open(id, step).await {
+            return refusal("conflict", "the step's approval still waits; once it is decided, its outcome is known");
         }
         let looked = id.to_string();
         let resolved = on_journal(&self.journal, move |journal| {
