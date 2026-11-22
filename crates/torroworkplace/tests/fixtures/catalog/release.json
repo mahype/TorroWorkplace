@@ -729,6 +729,22 @@
       "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-x86_64-pc-windows-msvc.zip.sha256"
     },
     {
+      "id": 1130,
+      "name": "torroassistant-runtime-x86_64-pc-windows-msvc.zip",
+      "size": 10500000,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-runtime-x86_64-pc-windows-msvc.zip"
+    },
+    {
+      "id": 1131,
+      "name": "torroassistant-runtime-x86_64-pc-windows-msvc.zip.sha256",
+      "size": 100,
+      "content_type": "application/octet-stream",
+      "state": "uploaded",
+      "browser_download_url": "https://github.com/mahype/TorroWorkplace/releases/download/v0.2.0/torroassistant-runtime-x86_64-pc-windows-msvc.zip.sha256"
+    },
+    {
       "id": 1090,
       "name": "torroassistant-aarch64-apple-darwin.tar.xz",
       "size": 9000000,

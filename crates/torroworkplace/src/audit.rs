@@ -224,6 +224,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ListFonts
         | Request::ListColorSchemes
         | Request::ListClients
+        | Request::DetectClients { .. }
+        | Request::ConnectClient { .. }
         | Request::CreateClient { .. }
         | Request::ListApprovals
         | Request::ListItems { .. }
@@ -269,6 +271,8 @@ pub fn ids(request: &Request) -> Vec<String> {
             [item(&Some(href.clone())), item(before)].into_iter().flatten().collect()
         }
         Request::PostponeFocusPlan => Vec::new(),
+        // What was postponed spans the lists the client sees; nothing to name (issue #623).
+        Request::PostponeStats { .. } | Request::ClearPostponements => Vec::new(),
         // The list only (task E8.7a): never the mail account, the mail's id or its Message-ID,
         // not even hashed – together they would tell which mail a person turned into a task.
         Request::CreateTodoFromMail { collection: list, .. } => vec![collection(list)],
@@ -419,6 +423,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::UpdateClient { id: client, .. }
         | Request::NewClientKey { id: client }
         | Request::RemoveClient { id: client }
+        | Request::DisconnectClient { id: client }
         | Request::ClientActivity { id: client } => vec![random("client", client)],
         Request::ApprovalStatus { id: approval } | Request::DecideApproval { id: approval, .. } => {
             vec![random("approval", approval)]
@@ -557,6 +562,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::TorroMailAccounts | Request::ImportTorroMailAccount { .. } => Vec::new(),
         // AI accounts (task KI.1a): never the address typed nor the key; finding names nothing.
         Request::ConnectAi { .. } | Request::ConnectLocalAi { .. } | Request::FindAiServers => Vec::new(),
+        // Signing in with a browser (issue #324): never the flow, the address or a token.
+        Request::StartAiSignIn { .. } | Request::CheckAiSignIn { .. } | Request::CancelAiSignIn { .. } => Vec::new(),
         // ntfy (task E5.12): never the address, a topic or the login; a topic's account only.
         Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } => Vec::new(),
         Request::SetNtfyTopic { account: name, .. } => vec![account(name)],

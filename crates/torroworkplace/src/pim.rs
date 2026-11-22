@@ -1316,6 +1316,8 @@ impl PimService {
                     .map(str::to_string);
             }
             Request::PostponeFocusPlan => return None,
+            // What was postponed is filtered by the lists the client sees in the handler (issue #623).
+            Request::PostponeStats { .. } | Request::ClearPostponements => return None,
             Request::MoveTodo { href, before, .. } => {
                 let seen = ids(self.seen(reach, Role::TaskList).await);
                 let state = self.state.read().await;
@@ -1376,6 +1378,9 @@ impl PimService {
             | Request::NewClientKey { .. }
             | Request::RemoveClient { .. }
             | Request::ClientActivity { .. }
+            | Request::DetectClients { .. }
+            | Request::ConnectClient { .. }
+            | Request::DisconnectClient { .. }
             | Request::ListApprovals
             | Request::ApprovalStatus { .. }
             | Request::DecideApproval { .. }
@@ -1467,6 +1472,9 @@ impl PimService {
             // No collection: AI accounts have none (task KI.1a).
             Request::ConnectAi { .. }
             | Request::ConnectLocalAi { .. }
+            | Request::StartAiSignIn { .. }
+            | Request::CheckAiSignIn { .. }
+            | Request::CancelAiSignIn { .. }
             | Request::AiModels { .. }
             | Request::SetModelEnabled { .. }
             | Request::FindAiServers => return None,
@@ -6881,6 +6889,27 @@ pub(crate) mod tests {
     fn cached_task(base: &str, path: &str, uid: &str, sort_order: Option<i64>) -> Todo {
         let (collection, href) = on_server(base, path, &format!("{uid}.ics"));
         Todo { uid: uid.into(), etag: Some("\"1\"".into()), sort_order, ..todo_in(&collection, Some(href)) }
+    }
+
+    /// [`fake_caldav`] whose cache holds the tasks `uids` of `work`, each due on its day, urgent, in version
+    /// `"1"` as a sync leaves it (issue #623). The server answers a read with version `"1"` and a write with
+    /// `"2"`, so each task can be written once.
+    pub(crate) async fn fake_caldav_with_tasks(settings: SettingsStore, uids: &[(&str, NaiveDate)]) -> FakeCalDav {
+        let (base, record) = fake_server(server_holding(TASK)).await;
+        let service = service_with(settings);
+        let mut slot = slot_on(&base);
+        slot.todos = uids
+            .iter()
+            .map(|(uid, day)| Todo {
+                summary: format!("Task {uid}"),
+                priority: Some(1),
+                ..day_task(&base, WORK, uid, *day, torro_pim::Focus::Normal)
+            })
+            .collect();
+        service.state.write().await.accounts.push(slot);
+        let (work, _) = on_server(&base, WORK, "");
+        let (home, _) = on_server(&base, HOME, "");
+        FakeCalDav { service, account: account_on(&base), work, home, record }
     }
 
     /// A service on the fake server at `base` whose cache holds `tasks`.

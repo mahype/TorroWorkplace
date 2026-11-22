@@ -861,6 +861,41 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Secret::is_blank")]
         key: Secret,
     },
+    /// Starts signing in to an AI account with a browser instead of an API key (issue #324, `docs/ki.md`,
+    /// "Anmelden mit ChatGPT"): today `chatgpt` ("Sign in with ChatGPT"), later further providers with a
+    /// `torro_core::ai::oauth::SignIn`. The core listens on `http://127.0.0.1:<port>` for the provider's callback
+    /// (OAuth 2.0 Authorization Code with PKCE), and answers with [`Response::AiSignIn`]: the `flow` to ask about
+    /// and the `url` the client opens in the browser. The tokens never leave the core: it exchanges the code, keeps
+    /// the tokens in the system keychain under the account id `ai:chatgpt@api.openai.com` and renews them itself.
+    /// Ask with [`Request::CheckAiSignIn`] until it is done; a sign-in that is not finished in ten minutes ends.
+    ///
+    /// Error codes: `unsupported` for a provider without a sign-in, `error` when the suite has no client id the
+    /// provider requires (the message says so) or no port is free on this computer. A second start for the same
+    /// provider ends the first sign-in (its flow is then unknown). Only the app key may send it: every client key gets `forbidden`, whatever its rights, because it
+    /// brings a secret into the core (`docs/api.md`, "Was nie nach außen geht", 5); it never waits for an approval.
+    #[serde(rename = "accounts.start_ai_sign_in")]
+    StartAiSignIn {
+        /// The provider to sign in to: `chatgpt`.
+        provider: AiProvider,
+    },
+    /// Asks how the sign-in `flow` of [`Request::StartAiSignIn`] stands (issue #324): [`Response::AiSignInPending`]
+    /// while the person is still in the browser, [`Response::Account`] once the core checked the tokens with the
+    /// provider and stored the account (the model list is asked like every account's; connecting turns on no
+    /// model), else the error that ended it, once: `auth` when the provider refused, `error` when the person
+    /// declined or the answer did not belong to the sign-in, `offline`, `not-found` for a flow the core does not
+    /// know (ended, asked about already, or of an earlier run). Only the app key may send it.
+    #[serde(rename = "accounts.check_ai_sign_in")]
+    CheckAiSignIn {
+        /// The flow as [`Response::AiSignIn`] named it.
+        flow: String,
+    },
+    /// Ends the sign-in `flow` (issue #324): the core stops listening and forgets it; nothing is stored. Answered
+    /// with [`Response::Ok`], also for a flow it does not know. Only the app key may send it.
+    #[serde(rename = "accounts.cancel_ai_sign_in")]
+    CancelAiSignIn {
+        /// The flow as [`Response::AiSignIn`] named it.
+        flow: String,
+    },
     /// Connects an ntfy server's topics that need no login (task E5.12): the inbox subscribes to
     /// them as the source `ntfy:<host>` (task E5.13).
     ///
@@ -1360,6 +1395,24 @@ pub enum Request {
     /// fails, the ones before it stay: reload and send it again.
     #[serde(rename = "tasks.postpone_focus_plan")]
     PostponeFocusPlan,
+    /// What the person postponed (issue #623, `docs/aufschieben.md`): every move of an open task to a later
+    /// due day through the core (`tasks.plan_todo`, `tasks.postpone_focus_plan`, `tasks.save_todo`), counted
+    /// on this computer only while the setting `postpone_stats` is on, kept `postpone_retention` days (365
+    /// unless changed). Answered with
+    /// [`Response::PostponeStats`]: the tasks postponed most and the counts by priority, focus, list and
+    /// weekday, of the lists the caller may see; `enabled: false` with empty counts while the setting is
+    /// off. Codes: none of its own.
+    #[serde(rename = "tasks.postpone_stats")]
+    PostponeStats {
+        /// Only postponements from this day on, e.g. `2026-11-01`; leave out for all that are kept.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<NaiveDate>,
+    },
+    /// Deletes the history of postponed tasks (issue #623): all of it for the app key, for a client only
+    /// what was recorded for the lists it may see. It cannot be restored. Answered with
+    /// [`Response::Ok`]; the setting `postpone_stats` stays as it is.
+    #[serde(rename = "tasks.clear_postponements")]
+    ClearPostponements,
     /// Makes a task of the mail `id` in the mail account `account`, in the task list `collection`
     /// (task E8.7a): for mail in any folder, also one that is no inbox entry. The mail itself is
     /// not changed (not marked read, not moved). Answered with [`Response::Todo`]: the new task as
@@ -2547,6 +2600,47 @@ pub enum Request {
     /// `error`.
     #[serde(rename = "clients.activity")]
     ClientActivity { id: String },
+    /// Which of the coding agents and apps the core can connect by itself are on this computer
+    /// (issue #538, [`Response::DetectedClients`]): Claude Code, Codex, Gemini CLI, Claude
+    /// Desktop, Cursor and the open clients, each with where its entry would go. Reads nothing but
+    /// the presence of folders, files and commands. `path`: the asking app's `PATH`, searched
+    /// before the core's own, because a service started at login often has a shorter one.
+    #[serde(rename = "clients.detect_clients")]
+    DetectClients {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        path: Vec<String>,
+    },
+    /// Connects the client `target` (a kind of [`Request::DetectClients`], `claude-code`) by
+    /// itself (issue #538): makes a client of that kind with its own key and the template *Read
+    /// only* or *Read and write*, writes the key into the client's configuration, and for coding
+    /// agents with hooks also a hook client and its hooks, the way the control centre's "Connect
+    /// client" does. Answered with [`Response::ClientConnected`], never with a key: it goes from
+    /// the core straight into the client. `path` as in [`Request::DetectClients`].
+    ///
+    /// A target the core does not know is `error`; one not found on this computer is `not-found`;
+    /// one that can only be set up by hand (guided) is `unsupported`; one whose client is still
+    /// connected is `conflict` (disconnect it first); another setup holding the files is `busy`. When the entry cannot be
+    /// written, the new client is removed again and the answer is `error` with the reason. Hooks
+    /// that fail do not undo the connection: the answer says why in `hooks_error`.
+    #[serde(rename = "clients.connect_client")]
+    ConnectClient {
+        target: String,
+        /// The template *Read only* (`true`, also when the field is missing: the safer one) or
+        /// *Read and write* (`false`).
+        #[serde(default = "read_only_default")]
+        read_only: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        path: Vec<String>,
+    },
+    /// Disconnects the MCP client `id` (issue #538): removes the client and its key (it stops
+    /// working at once), then takes out what the suite wrote into the client's configuration (its
+    /// entry, its skill, its hooks with their key file) and removes the hook clients that reported
+    /// for it. Answered with [`Response::Ok`]. An unknown id is `not-found`; a client of another
+    /// kind than an MCP one is `unsupported` (a script's key goes with `clients.remove_client`).
+    /// When the configuration cannot be cleaned up the client is gone all the same and the answer
+    /// is `error` with the reason.
+    #[serde(rename = "clients.disconnect_client")]
+    DisconnectClient { id: String },
 
     // Approvals (`docs/api.md`, "Freigaben: der Mensch entscheidet"). A client command that needs
     // a person's approval is answered with [`Response::Pending`]; the core keeps it in
@@ -5669,6 +5763,57 @@ pub struct TodoRef {
     pub etag: String,
 }
 
+/// The evaluation of postponed tasks (`tasks.postpone_stats`, issue #623).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostponeStats {
+    /// Whether postponements are counted (setting `postpone_stats`). While off, the rest is empty.
+    pub enabled: bool,
+    /// The day of the oldest postponement counted; left out when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub since: Option<NaiveDate>,
+    /// How many postponements are counted.
+    pub total: usize,
+    /// The tasks postponed, most often first (the more recent first among equals).
+    pub tasks: Vec<PostponedTask>,
+    /// By the task's priority when it was postponed: `urgent`, `high`, `medium`, `low` or `none`.
+    pub by_priority: Vec<PostponeCount>,
+    /// By the task's focus when it was postponed: `normal`, `focus` or `strong`.
+    pub by_focus: Vec<PostponeCount>,
+    /// By the id of the task list it was in, as `tasks.list_lists` lists it.
+    pub by_list: Vec<PostponeCount>,
+    /// By the weekday the task was due on and left: `mon` … `sun`.
+    pub by_weekday: Vec<PostponeCount>,
+}
+
+/// One task of [`PostponeStats::tasks`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostponedTask {
+    /// iCalendar UID of the task; it stays when the task moves to another list.
+    pub uid: String,
+    /// The list it was last postponed in.
+    pub collection: String,
+    /// How many times it was postponed.
+    pub count: usize,
+    /// When it was postponed last.
+    pub last: DateTime<Utc>,
+    /// `href` of the task as `tasks.list_todos` lists it; left out when the task is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub href: Option<String>,
+    /// Its title, from the core's cache; left out when the task is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Whether it is done by now.
+    #[serde(default)]
+    pub done: bool,
+}
+
+/// One group of an evaluation: its key and how many postponements fall into it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostponeCount {
+    pub key: String,
+    pub count: usize,
+}
+
 /// One conversation engine in the cloud (`settings.list_live_engines`, issue #838).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct LiveEngineOption {
@@ -5854,6 +5999,16 @@ pub enum SettingKey {
     /// `tasks.plan_todo` refuse a further focus task with `conflict` while the slots are full. Open
     /// task windows follow.
     FocusSlots,
+    /// Count postponed tasks (issue #623, `docs/aufschieben.md`): `true` or `false` (the default). While
+    /// on, the core notes on this computer every move of an open task to a later due day it writes, for
+    /// `tasks.postpone_stats`; while off it notes nothing. Only the app key may send `true` – a person
+    /// decides that their habits are recorded. Turning it off keeps the history
+    /// (`tasks.clear_postponements` deletes it).
+    PostponeStats,
+    /// How many days the history of postponed tasks is kept (issue #623): a whole number, 365 unless
+    /// changed; one below 30 is taken as 30, one above 1095 as 1095
+    /// (`torro_core::settings::PostponeRetention`). Lowering it drops the older postponements at once.
+    PostponeRetention,
     /// "Quiet during busy events": `true` (the default) or `false`. While on, inbox entries pop
     /// up during a busy event of a shown calendar only when they are urgent; the others are
     /// told in one message when the event ends.
@@ -6303,6 +6458,10 @@ pub enum Response {
     Todos {
         todos: Vec<Todo>,
     },
+    /// The evaluation [`Request::PostponeStats`] asked for (issue #623).
+    PostponeStats {
+        stats: PostponeStats,
+    },
     Event {
         event: Event,
         /// How many changed events of the series the save reset (task TE.4): changing the time or
@@ -6510,6 +6669,23 @@ pub enum Response {
         client: ClientInfo,
         key: IssuedKey,
     },
+    /// The clients [`Request::DetectClients`] found on this computer, in the order a list shows
+    /// them. Never a key.
+    DetectedClients {
+        clients: Vec<DetectedClient>,
+    },
+    /// A client [`Request::ConnectClient`] connected: the new client (never its key, which went
+    /// into the client's configuration), where its entry went (`place`, for people), and for a
+    /// coding agent where its hooks went (`hooks`) or why they could not be written
+    /// (`hooks_error`).
+    ClientConnected {
+        client: ClientInfo,
+        place: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hooks: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        hooks_error: Option<String>,
+    },
     /// A new client without a key (#231): the assistant's ([`api::ASSISTANT_CLIENT`]), made by
     /// [`Request::CreateClient`]. The core runs its tools itself, so it never hands out a key for
     /// it.
@@ -6517,10 +6693,21 @@ pub enum Response {
         client: ClientInfo,
     },
     /// The account a sign-in just connected ([`Request::ConnectGithub`],
-    /// [`Request::SetGithubToken`], [`Request::ConnectAi`], [`Request::ConnectNtfy`],
+    /// [`Request::SetGithubToken`], [`Request::ConnectAi`], [`Request::CheckAiSignIn`], [`Request::ConnectNtfy`],
     /// [`Request::SetNtfyLogin`]), as [`Request::Accounts`] lists it; never with its secret.
     Account {
         account: AccountInfo,
+    },
+    /// A sign-in with a browser began ([`Request::StartAiSignIn`], issue #324): open `url` in the browser and ask
+    /// about `flow` with [`Request::CheckAiSignIn`]. The address holds no token and not PKCE's verifier, only its
+    /// challenge; its `state` and `nonce` bind the callback to this sign-in, so it goes to the app key alone.
+    AiSignIn {
+        flow: String,
+        url: String,
+    },
+    /// The person has not finished the sign-in `flow` in the browser yet ([`Request::CheckAiSignIn`]).
+    AiSignInPending {
+        flow: String,
     },
     /// The control centre was opened so a person can finish the request there (a client's
     /// [`Request::ConnectGithub`] or [`Request::ConnectNtfy`]); nothing has changed yet.
@@ -8433,6 +8620,27 @@ pub struct ColorSchemeInfo {
     /// core without it reads as `false`.
     #[serde(default)]
     pub vivid: bool,
+}
+
+/// What [`Request::ConnectClient`] assumes without `read_only`: the safer template.
+fn read_only_default() -> bool {
+    true
+}
+
+/// A client the core can connect by itself, as [`Request::DetectClients`] found it (issue #538).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedClient {
+    /// The kind for [`Request::ConnectClient`] and of the client it makes: `claude-code`.
+    pub target: String,
+    /// The product's name, not translated: `Claude Code`.
+    pub name: String,
+    /// Where the entry goes, for people: `~/.cursor/mcp.json`, or the command `claude`.
+    pub place: String,
+    /// It can only be set up by hand: [`Request::ConnectClient`] refuses it, and a key to copy
+    /// (`clients.create_client`) is the way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guided: bool,
 }
 
 /// One client as [`Request::ListClients`] reports it: everything in `clients.json` but the hash

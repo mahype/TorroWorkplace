@@ -158,13 +158,13 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `chat` ³⁰ | `list_conversations`, `get_messages`, `suggest_mentions`, `find_people`, `search_messages`, `get_upload`, `get_preview`, `get_attachment`, `list_shared`, `get_call` | `send_message` (nach außen, auch mit `files` und `items`), `mark_read`, `mark_unread`, `create_conversation` (nach außen), `react` (nach außen), `set_favorite`, `set_notification_level`, `prepare_file` (`source: path` **nur App-Schlüssel**, Punkt 10 unten), `upload_file`, `cancel_upload`, `save_attachment` (`to: file`/`folder` **nur App-Schlüssel**), `show_card` (**nur App-Schlüssel**, Punkt 14), `decline_call`, `leave_call` | `edit_message`, `delete_message` (beide nach außen), `release_files` | |
 | `presence` ³⁰ | `list_people`, `find_people`, `get_own_status` | `add_person`, `remove_person`, `set_own_status` (nach außen) | | |
 | `workflows` (#556) | Vorlagen, Abläufe, Regeln, Läufe, Dokumentstücke und lokale Vorschau (siehe unten) | Entwürfe, getestete Abläufe, Start/Abbruch, Öffnen/Zeigen | Ablauf/Regel entfernen | Regeln verwalten; Dauergrant erteilen/widerrufen **nur App-Schlüssel** |
-| `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
+| `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305), `start_ai_sign_in`, `check_ai_sign_in`, `cancel_ai_sign_in` (**nur App-Schlüssel**, Punkt 5, #324) |
 | `settings` ³¹ | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
 | `apps` | `list_apps`, `list_catalog`, `app_job`, `list_announcements` (#485) | `open_app` ¹³, `check_updates`, `cancel_app_job`, `dismiss_announcement` (#485) | | `uninstall_app`, `install_app` und `update_apps` (die letzten zwei **nur App-Schlüssel**, Punkt 11 unten, #411) |
 | `tools` ²² | `list_tools`, `web_search`, `fetch_page`, `list_search_providers` ²², `list_folder`, `find_files` | `create_pdf`, `open_file`, `save_file_as` (**nur App-Schlüssel**, Punkt 9 unten), `create_folder`, `copy_file`, `move_file` | `trash_file` | |
 | `extensions` ²⁵ | `list_extensions`, `get_extension`, `list_catalog`, `list_tools`, `read_logs` (**nur App-Schlüssel**, Punkt 10 unten) | `set_enabled` (einschalten **nur App-Schlüssel**) | `call_tool` (Zugriff des Werkzeugs, ²⁵) | `remove_extension`, `install_extension`, `confirm_tools`, `update_extension`, `set_secret`, `set_folder` (die letzten fünf **nur App-Schlüssel**) |
-| `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
+| `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity`, `detect_clients`, `connect_client`, `disconnect_client` (#538) (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
 | `assistant` (Karten, #784) | `get_cards`, `get_card_picture` (Bild einer Link-Karte wie `chat.get_preview`: mit dem Recht „Bildinhalte“, nur für Karten, die `get_cards` dem Client zeigt; holt nichts Neues) | `show_items` (Treffer als Karten; nur Kennungen, die der Assistent in dieser Unterhaltung gelesen hat, höchstens 10, auch für Bots), `show_card` (**nur App-Schlüssel**, Punkt 14) | | |
 
@@ -1233,7 +1233,14 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Ausnahme: Der Schlüssel eines **neuen Clients** geht einmal an die Steuerzentrale (Antwort auf
    `clients.create_client` bzw. `clients.new_key`, nur App-Schlüssel), die ihn in die Konfiguration
    des Agenten oder in eine Schlüsseldatei (0600, unter `<config>/hooks/`) schreibt oder bei
-   „Script“ einmal zum Kopieren zeigt. Danach kennt ihn nur noch der Client.
+   „Script“ einmal zum Kopieren zeigt. Ebenso druckt `torroworkplace ctl clients add` bzw. `new-key` ihn
+   einmal ins Terminal. Danach kennt ihn nur noch der Client. **Ohne Hauptanwendung** (#538) übernimmt der
+   Abschnitt „Connections“ jeder App diese Rolle: Gelistete Clients trägt der **Dienst selbst** ein
+   (`clients.connect_client`, nur App-Schlüssel): Er schreibt den Schlüssel des neuen Clients direkt in dessen
+   Konfiguration bzw. in die Schlüsseldatei der Hooks unter `<config>/hooks/` und gibt ihn in keiner Antwort
+   heraus, auch nicht an die App. Den Schlüssel zum Kopieren zeigt die App nur als Notlösung für andere Clients
+   und Skripte, über `clients.create_client` wie die Steuerzentrale ([einzelne-apps.md](einzelne-apps.md),
+   „API-Schlüssel und MCP-Clients ohne Hauptanwendung“).
 2. **Agenten und ihre Rechte verwalten** (`clients.*`): nur mit dem App-Schlüssel. Sonst könnte
    sich ein Agent selbst mehr Rechte geben.
 3. **Freigaben entscheiden** (`approvals.decide_approval`): nur mit dem App-Schlüssel, also nur
@@ -1246,7 +1253,9 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
 5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,
    Anmeldung mit Passwort `accounts.connect_caldav`, `accounts.connect_mail` und
    `accounts.reconfigure_mail` (Zugangsdaten eines Mail-Kontos prüfen und speichern, #343), API-Schlüssel eines
-   KI-Kontos `accounts.connect_ai` oder `accounts.connect_local_ai` (auch ohne Schlüssel: Menschen wählen Datenziele), Anmeldung bei ntfy `accounts.set_ntfy_login`, Schlüssel eines
+   KI-Kontos `accounts.connect_ai` oder `accounts.connect_local_ai` (auch ohne Schlüssel: Menschen wählen Datenziele),
+   Anmeldung eines KI-Kontos im Browser `accounts.start_ai_sign_in`, `accounts.check_ai_sign_in` und
+   `accounts.cancel_ai_sign_in` (#324, „Sign in with ChatGPT“: die Tokens bleiben im Schlüsselbund des Dienstes), Anmeldung bei ntfy `accounts.set_ntfy_login`, Schlüssel eines
    Websuche-Anbieters `accounts.set_search_key` (#305), Import aus einem fremden Schlüsselbund): nur mit
    dem App-Schlüssel, also nur aus der Oberfläche. Ein Agent nimmt nie ein Passwort entgegen und
    reicht es weiter. Darum setzt auch **Server und vertraute Zertifikate eines Mail-Kontos** nur ein Mensch
@@ -1504,7 +1513,8 @@ ihrem eigenen Bereich (Kalender `calendar`, Aufgaben `tasks` und `github`, Notif
 Mail `mail` und mit #556 `workflows`, Assistent `assistant` und `bots`) und ändert sie dort. Es sind dieselben Rechte desselben Clients,
 einmal im Dienst gespeichert; die Steuerzentrale zeigt sie gesammelt. Die App sendet nur `clients.update_client`
 (App-Schlüssel, `Mcp::Never`), nur für die Arten `script` und die MCP-Arten, nie für Assistent, Bots oder Hooks.
-Schlüssel anlegen und Clients verbinden bleibt in der Steuerzentrale (in einer einzelnen App: #538). Es gibt kein
+Schlüssel anlegen und Clients verbinden bleibt mit Hauptanwendung in der Steuerzentrale; ohne sie kommt mit #538
+der Abschnitt „Connections“ in jede App ([einzelne-apps.md](einzelne-apps.md)). Es gibt kein
 MCP-Tool dafür: Agenten ändern nie Rechte („Was nie nach außen geht“, Punkt 2).
 
 ### Je Client
@@ -1774,6 +1784,24 @@ clients“ nur „API“, und beide Abschnitte hatten einen Schalter („Allow A
   bestätigt; entfernt den Schlüssel aus dem Client, wenn möglich). Unter MCP zusätzlich die Gruppe „Notification
   Hub“: Schalter „Report when waiting or done“ legt den Hook-Client an und schreibt die Hooks bzw. nimmt beides
   heraus.
+- **Ohne Hauptanwendung** (#538): Jede App zeigt hinter dem Zahnrad den Abschnitt „Connections“ (die Oberfläche
+  fehlt noch, das Design kommt vom Designer): Client aus der Liste wählen, der Dienst trägt ihn mit eigenem Token
+  und immer mit seinen Hooks ein; Skript-Schlüssel anlegen, „Create new key“ und „Revoke…“; der Schlüssel zum
+  Kopieren mit Schalter „Read only“ nur als Notlösung. Befehle, alle `Area::Clients`, `Admin`, nur App-Schlüssel,
+  `Mcp::Never`:
+  - `clients.detect_clients { path }`: die erkannten Clients mit Ort des Eintrags (`detected-clients`).
+  - `clients.connect_client { target, read_only, path }`: Client anlegen und eintragen, Hooks dazu; Antwort
+    `client-connected` ohne Schlüssel (`place`, `hooks` bzw. `hooks_error`). Scheitert der Eintrag, wird der Client
+    wieder entfernt. Ohne `read_only` gilt *Read only*. Ist das Ziel schon mit einem bestehenden Client verbunden:
+    `conflict` (erst trennen), damit kein alter Schlüssel gültig liegen bleibt.
+  - `clients.disconnect_client { id }`: Client und seine Hook-Clients entfernen (Schlüssel sofort ungültig), dann
+    Eintrag, Skill, Hooks und Schlüsseldatei heraus.
+
+  `path` ist der `PATH` der App, zuerst durchsucht: Ein beim Anmelden gestarteter Dienst hat oft einen kürzeren.
+  Nur absolute Einträge zählen.
+  Die Clients landen in derselben Ablage (`clients.json`, `client_setup.json`), so dass eine später installierte
+  Steuerzentrale sie übernimmt. Einzelheiten: [einzelne-apps.md](einzelne-apps.md), „API-Schlüssel und
+  MCP-Clients ohne Hauptanwendung (#538)“.
 - **Abschnitt „Approvals“** (oder Gruppe in Overview, solange es wenige sind): offene Freigaben mit
   „Allow“/„Deny“, darunter die zuletzt entschiedenen.
 

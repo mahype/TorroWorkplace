@@ -11054,6 +11054,7 @@ dependencies = [
 name = "torro-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "fontdb",
  "keyring",
  "psl",
@@ -11061,10 +11062,12 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "toml 1.1.8+spec-1.1.0",
  "torro-mail",
  "ttf-parser",
+ "url",
 ]
 
 [[package]]
@@ -11074,6 +11077,7 @@ dependencies = [
  "chrono",
  "iced",
  "iced_test",
+ "image",
  "muda",
  "png 0.18.1",
  "roxmltree 0.21.1",

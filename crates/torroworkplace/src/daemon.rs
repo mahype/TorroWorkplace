@@ -1141,6 +1141,8 @@ fn describe(request: &Request) -> String {
         Request::SetFocus { .. } => "set focus of a todo".into(),
         Request::PlanTodo { .. } => "plan todo".into(),
         Request::PostponeFocusPlan => "postpone focus plan".into(),
+        Request::PostponeStats { .. } => "postponed tasks".into(),
+        Request::ClearPostponements => "clear postponed tasks".into(),
         // The list only: never the mail account, the mail's id or its Message-ID (task E8.7a).
         Request::CreateTodoFromMail { collection, .. } => format!("make a task in {collection} of a mail"),
         // The calendar only (issue #603).
@@ -1195,6 +1197,9 @@ fn describe(request: &Request) -> String {
         Request::NewClientKey { id } => format!("new key for client {id}"),
         Request::RemoveClient { id } => format!("remove client {id}"),
         Request::ClientActivity { id } => format!("activity of client {id}"),
+        Request::DetectClients { .. } => "detect clients".into(),
+        Request::ConnectClient { target, .. } => format!("connect client {target}"),
+        Request::DisconnectClient { id } => format!("disconnect client {id}"),
         Request::ListApprovals => "approvals".into(),
         Request::ApprovalStatus { id } => format!("approval {id}"),
         Request::DecideApproval { id, allow, .. } => format!("{} approval {id}", if *allow { "allow" } else { "deny" }),
@@ -1245,6 +1250,10 @@ fn describe(request: &Request) -> String {
         Request::ImportTorroMailAccount { .. } => "import torromail account".into(),
         // Never the address or the key (task KI.1a).
         Request::ConnectAi { .. } | Request::ConnectLocalAi { .. } => "connect ai".into(),
+        // Never the flow or a token (issue #324).
+        Request::StartAiSignIn { .. } => "start ai sign-in".into(),
+        Request::CheckAiSignIn { .. } => "check ai sign-in".into(),
+        Request::CancelAiSignIn { .. } => "cancel ai sign-in".into(),
         // Never a topic: on a public server its name is a password (task E5.12).
         Request::ConnectNtfy { .. } => "connect ntfy".into(),
         Request::SetNtfyLogin { .. } => "set ntfy login".into(),
