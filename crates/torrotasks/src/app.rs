@@ -7,7 +7,7 @@
 //!
 //! The columns (redesign R.2 in `docs/tasks/design.md`, mock-up
 //! `docs/prototypes/tasks/redesign.html`) – see [`Columns`]: without an open task the list stands
-//! alone at the left, at most [`size::content_max()`] wide. With one open, wide windows whose content
+//! alone and fills the content (issue #436). With one open, wide windows whose content
 //! is at least [`THREE_COLUMNS_FROM`] wide show three columns – the list ([`size::list()`]), the
 //! detail and the properties ([`size::props()`]) –, narrower wide and medium windows the list
 //! ([`size::list_medium()`]) and the detail, narrow windows the detail instead of the list. A
@@ -102,7 +102,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
-use iced::widget::{Space, column, container, mouse_area, row, rule, stack, svg, text, text_input};
+use iced::widget::{Space, column, container, row, rule, stack, svg, text, text_input};
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -570,8 +570,7 @@ struct Drag {
 /// The columns below the header bar (mock-up `redesign.html`), chosen by [`columns`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Columns {
-    /// No task open: the list alone at the left, at most [`size::content_max()`] wide (narrow
-    /// windows: the full width).
+    /// No task open: the list alone, as wide as the content (issue #436).
     List,
     /// Narrow windows with a task open: the detail instead of the list.
     Detail,
@@ -640,18 +639,16 @@ pub fn content_width(class: SizeClass, sidebar: SidebarMode, width: f32) -> f32 
     (width - side - layout::inset()).max(0.0)
 }
 
-/// The width of the list column in `columns`, inside a content `content` wide: alone at most
-/// [`size::content_max()`] (inside the panel's border; the whole panel when less than
-/// [`space::xxl()`] would be left beside it) – the whole width in narrow windows –, beside
-/// the detail [`size::list()`] or [`size::list_medium()`]. Rows shorten after it ([`list::RowParts`]).
+/// The width of the list column in `columns`, inside a content `content` wide: alone the whole
+/// panel (inside its border; the whole width in narrow windows), beside the detail [`size::list()`]
+/// or [`size::list_medium()`]. Rows shorten after it ([`list::RowParts`]) and give a wider list to
+/// the titles.
 pub fn list_width(class: SizeClass, columns: Columns, content: f32) -> f32 {
     match columns {
-        Columns::List if matches!(class, SizeClass::Wide | SizeClass::Medium) => {
-            let inner = content - 2.0 * LINE;
-            // A sliver of empty panel beside the list would only look like a mistake: then the
-            // list takes the whole panel.
-            if inner - size::content_max() < space::xxl() { inner } else { size::content_max() }
-        }
+        // Issue #436: a list capped at a reading width left most of a wide window empty beside it,
+        // with the titles cut short. Like Linear's lists it takes the whole panel; the cells keep
+        // their widths and the title gets the rest.
+        Columns::List if matches!(class, SizeClass::Wide | SizeClass::Medium) => (content - 2.0 * LINE).max(0.0),
         Columns::List | Columns::Detail => content,
         Columns::ListDetail => size::list_medium(),
         Columns::ListDetailProps => size::list(),
@@ -2151,7 +2148,7 @@ impl App {
         let editor = || self.detail.as_ref()?.layer(&property).map(|layer| layer.map(Message::Detail));
         // The properties column is part of the body ([`App::body`]), not the shell's: the detail
         // brings its own, scrolling on its own.
-        let window = shell::shell(class, sidebar, header, self.body(class, columns, &property), None)
+        let window = shell::shell(class, sidebar, header, self.body(columns, &property), None)
             .sidebar_width(self.sidebar_room(), self.widths.side.dragging, Message::SidebarWidth)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
@@ -2375,27 +2372,15 @@ impl App {
             .max()
     }
 
-    /// The content below the header bar in `columns`: the list alone at its width (a line at its
-    /// right where it does not fill the panel), the detail instead of it, or list and detail side by
+    /// The content below the header bar in `columns`: the list alone over the whole panel, the
+    /// detail instead of it, or list and detail side by
     /// side with a line between them, and the properties column after another line.
-    fn body(&self, class: SizeClass, columns: Columns, anchor: &Anchor) -> Element<'_, Message> {
+    fn body(&self, columns: Columns, anchor: &Anchor) -> Element<'_, Message> {
         let width = self.list_width();
         match columns {
             Columns::Detail => self.detail_column(columns, anchor),
-            Columns::List => {
-                if !matches!(class, SizeClass::Wide | SizeClass::Medium) || width >= self.content_room() - 2.0 * LINE {
-                    return self.list();
-                }
-                // The widgets of `split::split` (a mouse area around a stack with list, line and rest),
-                // without a handle: opening a task keeps the list's scroll position.
-                let line = mouse_area(container(rule::vertical(LINE).style(style::rule)).width(LINE).height(Fill));
-                let panes = row![
-                    container(self.list()).width(width).height(Fill),
-                    line,
-                    container(Space::new()).width(Fill).height(Fill)
-                ];
-                mouse_area(stack![panes]).into()
-            }
+            // Alone the list fills the panel (issue #436), so it needs no line at its edge.
+            Columns::List => self.list(),
             Columns::ListDetail => split::split(
                 self.list(),
                 self.detail_column(columns, anchor),
@@ -4976,7 +4961,8 @@ mod tests {
         let mut app = app_with_rows();
         connected(&mut app);
         let _ = app.update(Message::Resized(WIDE));
-        assert_eq!((app.columns(), app.list_width()), (Columns::List, size::content_max()), "nothing open");
+        let alone = content_width(SizeClass::Wide, SidebarMode::Expanded, WIDE.width) - 2.0 * LINE;
+        assert_eq!((app.columns(), app.list_width()), (Columns::List, alone), "nothing open: the whole panel");
         let _ = press(&mut app, Shortcut::Down);
         let _ = press(&mut app, Shortcut::Open);
         let _ = app.update(Message::Detail(detail::Message::Open(detail::Editor::Due)));
@@ -5075,8 +5061,33 @@ mod tests {
         }
         assert_eq!(list_width(SizeClass::Medium, Columns::List, 540.0), 538.0, "inside the border of a small panel");
         assert_eq!(list_width(SizeClass::Narrow, Columns::List, 480.0), 480.0, "narrow: the whole width");
-        assert_eq!(list_width(SizeClass::Medium, Columns::List, 740.0), 738.0, "no sliver of 18 beside the list");
-        assert_eq!(list_width(SizeClass::Medium, Columns::List, 940.0), size::content_max());
+        assert_eq!(list_width(SizeClass::Medium, Columns::List, 940.0), 938.0, "medium: the whole panel");
+    }
+
+    /// Issue #436: alone, the list takes all the width the window has – in every size class, with
+    /// the sidebar expanded or as a rail, up to a half of a 32:9 monitor –, not a reading width
+    /// with empty panel beside it. Header and body are built for each size.
+    #[test]
+    fn the_list_alone_fills_the_window_at_every_width() {
+        let mut app = app_with_rows();
+        connected(&mut app);
+        for sidebar in [SidebarMode::Expanded, SidebarMode::Rail] {
+            let _ = app.update(Message::UiState(UiState { sidebar }));
+            for width in [480.0, 640.0, 800.0, 1023.0, 1280.0, 1600.0, 2400.0, 3840.0] {
+                let _ = app.update(Message::Resized(Size::new(width, 900.0)));
+                let class = app.class();
+                let content = content_width(class, app.sidebar, width);
+                let full =
+                    if matches!(class, SizeClass::Wide | SizeClass::Medium) { content - 2.0 * LINE } else { content };
+                assert_eq!(app.columns(), Columns::List, "{width} {sidebar:?}");
+                assert_eq!(app.list_width(), full, "{width} {sidebar:?}: the list fills the panel");
+                assert!(
+                    app.list_width() > size::content_max() || width < 1024.0,
+                    "{width}: wider than a reading width"
+                );
+                let _ = app.view();
+            }
+        }
     }
 
     #[test]
