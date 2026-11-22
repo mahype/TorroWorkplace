@@ -265,6 +265,13 @@ pub fn provider_of(host: &str) -> Option<Provider> {
     valid_key(domain).then(|| Provider { key: domain.to_string(), name: domain.to_string() })
 }
 
+/// Whether `a` and `b` belong to the same provider ([`provider_of`]): `img.example.com` and `cdn.example.com`,
+/// `youtube.com` and `i.ytimg.com`. Never for a host without provider. A mail's picture may follow a redirect
+/// to such a host (issue #696): whoever learns of the load is the provider that was allowed anyway.
+pub fn same_provider(a: &str, b: &str) -> bool {
+    provider_of(a).is_some_and(|provider| Some(&provider) == provider_of(b).as_ref())
+}
+
 /// What a mail whose HTML names `hosts` may load (issue #672, `mail.get_message`), by the rule of
 /// [`Privacy::decide`]: everything at "Always show"; at "Ask" the hosts of allowed providers in `load`
 /// and the providers not asked about yet in `ask`, each with its hosts; a blocked provider, a host
@@ -338,6 +345,20 @@ mod tests {
         assert_eq!(provider_of("jira"), provider("jira", "jira"));
         assert_eq!(provider_of("co.uk"), None);
         assert_eq!(provider_of(""), None);
+    }
+
+    /// Issue #696: hosts of one domain or one known service are one provider, others are not.
+    #[test]
+    fn hosts_of_one_provider_are_told_apart_from_others() {
+        assert!(same_provider("img.example.com", "cdn.example.com"));
+        assert!(same_provider("img.example.com", "example.com"));
+        assert!(same_provider("www.youtube.com", "i.ytimg.com"));
+        assert!(same_provider("a.shop.example.co.uk", "b.example.co.uk"));
+        assert!(!same_provider("img.example.com", "cdn.example.org"));
+        assert!(!same_provider("img.example.com", "example.com.evil.org"));
+        assert!(!same_provider("a.example.co.uk", "b.other.co.uk"), "a public suffix is no provider");
+        assert!(!same_provider("203.0.113.7", "203.0.113.8"));
+        assert!(!same_provider("co.uk", "co.uk"), "no provider, never the same");
     }
 
     #[test]

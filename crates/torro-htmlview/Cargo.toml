@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 torro-gui.workspace = true
+# `privacy::same_provider`: a redirect may move to another host of the provider the mail named (issue #696).
+torro-core.workspace = true
 # `image-without-codecs`: the raster pipeline for the RGBA picture Blitz paints (no decoders of Iced's own).
 iced = { workspace = true, features = ["advanced", "image-without-codecs"] }
 blitz-dom.workspace = true
