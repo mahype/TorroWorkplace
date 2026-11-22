@@ -4324,6 +4324,31 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Der unklare Schritt ist entschieden. Setz den Auftrag fort, um weiterzumachen.",
     ),
     ("nothing yet", "noch nichts"),
+    ("Cancel the assistant's job for good: {job}", "Den Auftrag des Assistenten endgültig abbrechen: {job}"),
+    (
+        "Mark step {step} ({tool}) as done, so it does not run again; the assistant's job: {job}",
+        "Schritt {step} ({tool}) als erledigt markieren, damit er nicht noch einmal läuft; Auftrag des Assistenten: {job}",
+    ),
+    (
+        "Mark step {step} ({tool}) as not done, so it may run again when the job resumes; the assistant's job: {job}",
+        "Schritt {step} ({tool}) als nicht erledigt markieren, damit er beim Fortsetzen noch einmal laufen darf; Auftrag des Assistenten: {job}",
+    ),
+    ("Pause the assistant's job: {job}", "Den Auftrag des Assistenten pausieren: {job}"),
+    ("Resume the assistant's job: {job}", "Den Auftrag des Assistenten fortsetzen: {job}"),
+    (
+        "Resume the assistant's job with another model, answered by \"{engine}\": {job}",
+        "Den Auftrag des Assistenten mit einem anderen Modell fortsetzen, beantwortet von „{engine}“: {job}",
+    ),
+    (
+        "Start a long-running job of the assistant, answered by \"{engine}\"",
+        "Einen langlebigen Auftrag des Assistenten starten, beantwortet von „{engine}“",
+    ),
+    (
+        "The job stopped unexpectedly. Resume it to go on.",
+        "Der Auftrag hat unerwartet aufgehört. Setz ihn fort, um weiterzumachen.",
+    ),
+    ("an unknown command", "einen unbekannten Befehl"),
+    ("an unknown job", "ein unbekannter Auftrag"),
     // Assistant page in the control centre (C.6)
     ("1 year", "1 Jahr"),
     (

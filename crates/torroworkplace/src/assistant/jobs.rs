@@ -120,6 +120,47 @@ pub(super) async fn decided(link: &JobLink, seq: u32, outcome: &Outcome) {
     note(on(link, move |journal| journal.decided(&id, Utc::now())).await, "go on with");
 }
 
+/// Marks step `seq` as `uncertain`: it was handed over and its outcome cannot be learned now (its approval could not
+/// be read, the task that ran it ended without an answer). It never runs again by itself.
+pub(super) async fn unsure(link: &JobLink, seq: u32) {
+    let id = link.id.clone();
+    let marked = on(link, move |journal| journal.step_to(&id, seq, StepState::Uncertain, None, Utc::now())).await;
+    if !matches!(marked, Err(JournalError::Conflict(_))) {
+        note(marked, "mark a step of");
+    }
+}
+
+/// Whether step `seq` is `uncertain` now; a journal that cannot be read counts as uncertain.
+pub(super) async fn is_uncertain(link: &JobLink, seq: u32) -> bool {
+    let id = link.id.clone();
+    match on(link, move |journal| journal.get(&id)).await {
+        Ok((_, steps)) => steps.iter().any(|step| step.seq == seq && step.state == StepState::Uncertain),
+        Err(JournalError::NotFound) => false,
+        Err(_) => true,
+    }
+}
+
+/// A step whose command runs now (issue #961): while it lives, the step is in [`Assistant::flies`], and nobody decides
+/// it by hand; dropped when the task that runs it ends, also by a panic.
+pub(super) struct Flight {
+    assistant: Arc<Assistant>,
+    key: (String, u32),
+}
+
+impl Flight {
+    pub(super) fn start(assistant: &Arc<Assistant>, id: &str, seq: u32) -> Flight {
+        let key = (id.to_string(), seq);
+        assistant.flying.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(key.clone());
+        Flight { assistant: Arc::clone(assistant), key }
+    }
+}
+
+impl Drop for Flight {
+    fn drop(&mut self) {
+        self.assistant.flying.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&self.key);
+    }
+}
+
 /// Keeps that the tool line of step `seq` is the conversation's entry `entry`.
 pub(super) async fn keep_result(link: &JobLink, seq: u32, entry: u64) {
     let id = link.id.clone();
@@ -294,6 +335,54 @@ impl Assistant {
         }
     }
 
+    /// Why a job command would fail anyway (issue #961): an unknown job or step, a job in a state the command does
+    /// not fit, a step that is not uncertain. Checked again under the journal's transaction when it runs; this only
+    /// spares a person an approval for nothing. `None` for every other request.
+    pub(super) async fn job_refusal(&self, request: &torro_ipc::Request) -> Option<Response> {
+        use torro_ipc::Request;
+        let (id, fits, step): (&str, fn(JobState) -> bool, Option<u32>) = match request {
+            Request::PauseJob { id } => {
+                (id, |state| matches!(state, JobState::Queued | JobState::Running | JobState::AwaitingApproval), None)
+            }
+            Request::CancelJob { id } => (id, |state| !state.is_final(), None),
+            Request::ResumeJob { id, .. } => (id, |state| state == JobState::Paused, None),
+            Request::ResolveJobStep { id, step, .. } => (id, |_| true, Some(*step)),
+            _ => return None,
+        };
+        let looked = id.to_string();
+        let (job, steps) = match on_journal(&self.journal, move |journal| journal.get(&looked)).await {
+            Ok(found) => found,
+            Err(error) => return Some(journal_refusal(error)),
+        };
+        if !fits(job.state) {
+            return Some(refusal("conflict", &format!("the job is {}", job.state.as_str())));
+        }
+        match step.map(|seq| steps.iter().find(|known| known.seq == seq)) {
+            Some(None) => Some(refusal("not-found", "no such step")),
+            Some(Some(known)) if known.state != StepState::Uncertain => {
+                Some(refusal("conflict", &format!("the step is {}", known.state.as_str())))
+            }
+            _ => None,
+        }
+    }
+
+    /// What an approval of a job command names (issue #961): the job's goal, its first line shortened, and the command
+    /// of its step `step`, as the journal keeps them; `None` for what it does not have.
+    pub async fn job_facts(&self, id: &str, step: Option<u32>) -> (Option<String>, Option<String>) {
+        let looked = id.to_string();
+        let Ok((job, steps)) = on_journal(&self.journal, move |journal| journal.get(&looked)).await else {
+            return (None, None);
+        };
+        let goal: String = job.goal.lines().next().unwrap_or_default().chars().take(80).collect();
+        let tool = step.and_then(|seq| steps.into_iter().find(|known| known.seq == seq)).map(|known| known.tool);
+        (Some(goal), tool)
+    }
+
+    /// Whether the command of step `step` of the job `id` runs now ([`Flight`]).
+    fn flies(&self, id: &str, step: u32) -> bool {
+        self.flying.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains(&(id.to_string(), step))
+    }
+
     /// The job of `conversation` that is not over and not paused, when there is one.
     pub(super) async fn active_job(&self, conversation: &str) -> Option<JobInfo> {
         let looked = conversation.to_string();
@@ -327,14 +416,18 @@ impl Assistant {
         let (looked, from, text) = (id.to_string(), from.to_vec(), message.to_string());
         let reason = (to == JobState::Paused).then_some(reason);
         let moved = on_journal(&self.journal, move |journal| {
-            journal.move_job(&looked, &from, to, reason, Some(&text), Utc::now())
+            let before = journal.job(&looked)?.state;
+            journal.move_job(&looked, &from, to, reason, Some(&text), Utc::now()).map(|job| (before, job))
         })
         .await;
-        let job = match moved {
-            Ok(job) => job,
+        let (before, job) = match moved {
+            Ok(moved) => moved,
             Err(error) => return journal_refusal(error),
         };
-        if let Some(Response::Error { message, .. }) = self.stop(&job.conversation, None, Utc::now()).await {
+        // A paused job has no answer of its own: what runs there now is a normal chat, which goes on.
+        if before != JobState::Paused
+            && let Some(Response::Error { message, .. }) = self.stop(&job.conversation, None, Utc::now()).await
+        {
             eprintln!("torroworkplace: cannot stop the answer of a job: {message}");
         }
         let unclear = self.interrupt_steps(&job.id).await;
@@ -392,6 +485,9 @@ impl Assistant {
 
     /// `assistant.resolve_job_step`: a person says whether the uncertain step `step` of the job `id` happened.
     pub async fn resolve_job_step(&self, id: &str, step: u32, done: bool) -> Response {
+        if self.flies(id, step) {
+            return refusal("conflict", "the step still runs; its outcome comes in by itself");
+        }
         let looked = id.to_string();
         let resolved = on_journal(&self.journal, move |journal| {
             journal.resolve(&looked, step, done, Utc::now())?;
@@ -517,17 +613,6 @@ impl Assistant {
                  model",
             );
         }
-        if chosen {
-            let (looked, engine_chosen, model) = (job.id.clone(), engine.clone(), access.model.clone());
-            let engine = engine_chosen.clone();
-            if let Err(error) =
-                on_journal(&self.journal, move |journal| journal.choose_model(&looked, &engine, &model, Utc::now()))
-                    .await
-            {
-                return journal_refusal(error);
-            }
-            (job.engine, job.model) = (engine_chosen, access.model);
-        }
         {
             let state = self.state().await;
             if !state.conversations.contains_key(&job.conversation) {
@@ -544,13 +629,16 @@ impl Assistant {
                 return busy();
             }
         }
-        let looked = job.id.clone();
+        // The claim and the model chosen in one transaction: of two resumes, only the winner's choice is written.
+        let (looked, chosen) = (job.id.clone(), chosen.then(|| (engine.clone(), access.model.clone())));
         let claimed = on_journal(&self.journal, move |journal| {
-            journal.move_job(&looked, &[JobState::Paused], JobState::Queued, None, None, Utc::now())
+            let chosen = chosen.as_ref().map(|(engine, model)| (engine.as_str(), model.as_str()));
+            journal.claim(&looked, chosen, Utc::now())
         })
         .await;
-        if let Err(error) = claimed {
-            return journal_refusal(error);
+        match claimed {
+            Ok(claimed) => job = claimed,
+            Err(error) => return journal_refusal(error),
         }
         self.go_on(&job, &steps, from, false).await
     }
@@ -604,13 +692,17 @@ impl Assistant {
     /// Picks up the jobs a restart interrupted (issue #961), once the core runs: settles their steps
     /// ([`Assistant::interrupt_steps`] after looking up their approvals) and lets each go on, unless a step is
     /// unclear or waits for a person: then the job pauses and its conversation says why. A job whose conversation
-    /// is gone is cancelled.
-    pub async fn recover_jobs(self: &Arc<Self>) {
+    /// is gone is cancelled. Only jobs last changed before `since`, the core's start, count: one started or resumed
+    /// since runs in this core and is no restart's.
+    pub async fn recover_jobs(self: &Arc<Self>, since: chrono::DateTime<Utc>) {
         let jobs = match on_journal(&self.journal, Journal::unfinished).await {
             Ok(jobs) => jobs,
             Err(error) => return note::<()>(Err(error), "pick up"),
         };
-        for job in jobs {
+        for job in jobs.into_iter().filter(|job| job.updated < since) {
+            if self.state().await.running.contains_key(&job.conversation) {
+                continue;
+            }
             if !self.state().await.conversations.contains_key(&job.conversation) {
                 let looked = job.id.clone();
                 let open = [JobState::Queued, JobState::Running, JobState::AwaitingApproval];
@@ -696,7 +788,7 @@ impl Assistant {
 }
 
 /// Why a job waits after a step with an unclear outcome, for people.
-fn uncertain_message() -> String {
+pub(super) fn uncertain_message() -> String {
     tr("A step of this job changes something, and it is not known whether it happened. It does not run again by \
         itself: check it, mark it as done or not done, then resume the job.")
     .to_string()

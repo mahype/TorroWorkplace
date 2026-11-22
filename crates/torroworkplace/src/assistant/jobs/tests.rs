@@ -94,7 +94,7 @@ async fn after_a_restart_a_confirmed_read_is_not_repeated() {
     // The model asks for the same list again: the journal answers it, the core is not asked.
     let again = Script::new(vec![calls("inbox_list_items", json!({})), says("Sorted.")]);
     let (second, after) = set_up_with(dir.path(), Some(reader()), Place::Local, Arc::clone(&again), answers);
-    second.recover_jobs().await;
+    second.recover_jobs(chrono::Utc::now()).await;
     let (job, steps) = until(&second, &started.id, |job, _| job.state.is_final()).await;
     assert_eq!(job.state, JobState::Completed);
     assert_eq!((ran(&before, "inbox.list_items"), ran(&after, "inbox.list_items")), (1, 0));
@@ -122,7 +122,7 @@ async fn a_crash_while_a_mail_is_sent_never_sends_it_twice() {
 
     let again = Script::new(vec![calls("mail_send_draft", json!({"id": "d1"})), says("Sent.")]);
     let (second, after) = set_up_with(dir.path(), Some(mailer()), Place::Local, Arc::clone(&again), answers);
-    second.recover_jobs().await;
+    second.recover_jobs(chrono::Utc::now()).await;
     let (job, steps) = job(&second, &started.id).await;
     assert_eq!((job.state, job.reason), (JobState::Paused, Some(JobReason::Uncertain)));
     assert_eq!((steps[0].state, steps[0].repeatable), (StepState::Uncertain, false));
@@ -172,7 +172,7 @@ async fn a_restart_with_an_open_approval_runs_nothing_until_it_is_decided() {
     let again = Script::new(vec![says("Nothing was deleted.")]);
     let (second, after) = set_up_with(dir.path(), Some(deleter()), Place::Local, Arc::clone(&again), answers);
     *after.approvals.lock().expect("lock") = Some(ApprovalState::Pending);
-    second.recover_jobs().await;
+    second.recover_jobs(chrono::Utc::now()).await;
     let (job, steps) = job(&second, &started.id).await;
     assert_eq!((job.state, job.reason), (JobState::Paused, Some(JobReason::ApprovalPending)));
     assert_eq!(steps[0].state, StepState::Uncertain);
@@ -201,7 +201,7 @@ async fn rights_withdrawn_before_a_resume_stop_the_job_before_anything_runs() {
     narrower.areas.remove(&Area::Calendar);
     let again = Script::new(vec![calls("calendar_list_calendars", json!({})), says("Sorted.")]);
     let (second, after) = set_up_with(dir.path(), Some(narrower), Place::Local, again, answers);
-    second.recover_jobs().await;
+    second.recover_jobs(chrono::Utc::now()).await;
     let (job, steps) = until(&second, &started.id, |job, _| job.state == JobState::Paused).await;
     assert_eq!(job.reason, Some(JobReason::Forbidden));
     assert!(after.ran.lock().expect("lock").is_empty(), "nothing reached the core");
@@ -256,7 +256,7 @@ async fn after_a_restart_a_model_switched_off_pauses_the_job_before_it_asks_anot
     let again = Script::new(vec![says("Sorted.")]);
     let (second, after) = set_up_with(dir.path(), Some(reader()), Place::Local, Arc::clone(&again), answers);
     *after.only_on.lock().expect("lock") = Some("gemma3:4b");
-    second.recover_jobs().await;
+    second.recover_jobs(chrono::Utc::now()).await;
     let (job, _) = until(&second, &started.id, |job, _| job.state == JobState::Paused).await;
     assert_eq!((job.reason, job.model.as_str()), (Some(JobReason::ModelUnavailable), "qwen3:8b"));
     assert!(again.asked().is_empty(), "the other model never saw the conversation");
@@ -279,6 +279,8 @@ async fn a_pause_while_a_mail_is_sent_starts_nothing_more_and_keeps_it_uncertain
     let Response::Job { job, steps } = paused else { panic!("expected the job, got {paused:?}") };
     assert_eq!((job.state, job.reason), (JobState::Paused, Some(JobReason::Uncertain)));
     assert_eq!(steps[0].state, StepState::Uncertain);
+    // While the command still runs, nobody decides it: its outcome may still come in.
+    assert_eq!(code(&assistant.resolve_job_step(&started.id, 1, false).await), "conflict");
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert_eq!(ran(&host, "inbox.list_items"), 0, "no step after the pause");
     assert_eq!(script.asked().len(), 1);
@@ -351,4 +353,16 @@ async fn a_normal_message_makes_no_job_and_a_deleted_conversation_takes_its_jobs
     // The request is the catalogue's, so the core logs and checks it like any other of the assistant.
     let request = Request::GetJob { id: started.id };
     assert_eq!(request.operation().name(), "assistant.get_job");
+}
+
+#[tokio::test]
+async fn an_approval_that_cannot_be_read_leaves_the_step_uncertain() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let script = Script::new(vec![calls("workspaces_delete_template", json!({"id": "old-plans"})), says("Done.")]);
+    let (assistant, host) = set_up_with(dir.path(), Some(deleter()), Place::Local, Arc::clone(&script), answers);
+    host.approvals_gone.store(true, std::sync::atomic::Ordering::SeqCst);
+    let started = start(&assistant, "Delete my old plans").await;
+    let (job, steps) = until(&assistant, &started.id, |job, _| job.state == JobState::Paused).await;
+    assert_eq!((job.reason, steps[0].state), (Some(JobReason::Uncertain), StepState::Uncertain));
+    assert_eq!(script.asked().len(), 1, "the job did not go on as if it had failed");
 }

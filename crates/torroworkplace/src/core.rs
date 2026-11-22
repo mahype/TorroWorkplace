@@ -4196,10 +4196,10 @@ impl Core {
         // readers of the switches wait for it (`hold_until_kept` above).
         // The assistant's jobs a restart interrupted (issue #961) go on once the models in use are known, so a model
         // of theirs is not taken for gone while the accounts still load.
-        let core = Arc::clone(self);
+        let (core, since) = (Arc::clone(self), Utc::now());
         tokio::spawn(async move {
             core.keep_used_models_on().await;
-            core.assistant.recover_jobs().await;
+            core.assistant.recover_jobs(since).await;
         });
         self.ntfy.start();
         self.start_contacts();
@@ -6710,6 +6710,26 @@ impl Core {
             Request::DeleteSkill { name } | Request::SaveSkill { replaces: Some(name), .. } => {
                 Facts { skill: self.assistant.skill(name).await, ..Facts::default() }
             }
+            // A job by its goal and a step by its command as the journal keeps them (issue #961), the engine of a
+            // resume by its name; never by what the client sends along.
+            Request::PauseJob { id }
+            | Request::CancelJob { id }
+            | Request::ResumeJob { id, .. }
+            | Request::ResolveJobStep { id, .. } => {
+                let step = match request {
+                    Request::ResolveJobStep { step, .. } => Some(*step),
+                    _ => None,
+                };
+                let (name, job_step) = self.assistant.job_facts(id, step).await;
+                let engine = match request {
+                    Request::ResumeJob { engine: Some(engine), .. } => {
+                        let engines = self.assistant.engines(&self.ai).await;
+                        engines.into_iter().find(|known| known.id == *engine).map(|known| known.name)
+                    }
+                    _ => None,
+                };
+                Facts { name, job_step, engine, ..Facts::default() }
+            }
             // The conversation by the title the assistant keeps for its id and the engine by its
             // name (task C.1), the bot by the name it is stored with (task B.1), never by what the
             // client sends along.
@@ -6723,7 +6743,9 @@ impl Core {
                     None => None,
                 };
                 let engine = match request {
-                    Request::SendMessage { engine, .. } | Request::ChooseModel { engine, .. } => {
+                    Request::SendMessage { engine, .. }
+                    | Request::ChooseModel { engine, .. }
+                    | Request::StartJob { engine, .. } => {
                         let engines = self.assistant.engines(&self.ai).await;
                         engines.into_iter().find(|known| known.id == *engine).map(|known| known.name)
                     }

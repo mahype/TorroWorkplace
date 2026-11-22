@@ -263,19 +263,23 @@ impl Journal {
         })
     }
 
-    /// Chooses `engine` and `model` for the paused job `id`: a person's or a client's explicit choice when it
-    /// resumes, never the core's own.
-    pub fn choose_model(&self, id: &str, engine: &str, model: &str, now: DateTime<Utc>) -> Result<(), JournalError> {
+    /// Claims the paused job `id` for a resume (`paused → queued`), with the `engine` and `model` chosen on purpose
+    /// when there are: in one transaction, so of two resumes only the winner's model is written. A person's or a
+    /// client's explicit choice, never the core's own.
+    pub fn claim(&self, id: &str, chosen: Option<(&str, &str)>, now: DateTime<Utc>) -> Result<JobInfo, JournalError> {
         self.transaction(|tx| {
             let job = job_in(tx, id)?;
             if job.state != JobState::Paused {
                 return Err(JournalError::Conflict(format!("the job is {}", job.state.as_str())));
             }
+            if let Some((engine, model)) = chosen {
+                tx.execute("UPDATE jobs SET engine=?2, model=?3 WHERE id=?1", params![id, engine, model])?;
+            }
             tx.execute(
-                "UPDATE jobs SET engine=?2, model=?3, updated=?4 WHERE id=?1",
-                params![id, engine, model, now.to_rfc3339()],
+                "UPDATE jobs SET state=?2, reason=NULL, message=NULL, updated=?3 WHERE id=?1",
+                params![id, JobState::Queued.as_str(), now.to_rfc3339()],
             )?;
-            Ok(())
+            job_in(tx, id)
         })
     }
 

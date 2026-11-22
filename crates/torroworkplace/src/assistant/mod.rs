@@ -167,6 +167,8 @@ pub struct Assistant {
     /// The journal of the long-running jobs (issue #961, [`journal`]): `<data>/assistant/jobs.sqlite`, in memory
     /// without a folder.
     journal: Arc<journal::Journal>,
+    /// The steps of jobs whose command runs now (issue #961, [`jobs::Flight`]): no person decides them meanwhile.
+    flying: StdMutex<BTreeSet<(String, u32)>>,
 }
 
 /// What [`Assistant`] holds in memory.
@@ -287,6 +289,7 @@ impl Assistant {
             config: None,
             own: Mutex::new(()),
             bots: Bots::new(None),
+            flying: StdMutex::new(BTreeSet::new()),
         }
     }
 
@@ -569,6 +572,10 @@ impl Assistant {
             {
                 return Some(refused);
             }
+        }
+        // A job command that would fail anyway (issue #961) is refused before a person is asked to approve it.
+        if let Some(refused) = self.job_refusal(request).await {
+            return Some(refused);
         }
         let delegation = bot.as_ref().and_then(|bot| match request {
             Request::SendMessage { without, mode, .. } => for_caller(bot, from, without, *mode),
@@ -1210,6 +1217,10 @@ impl Assistant {
     /// that entry now, when something was read and no `stopped` entry follows the last message yet. Its
     /// approvals stay as they are: interrupting never decides one.
     pub async fn interrupt(&self, id: &str, heard: Option<String>, now: DateTime<Utc>) -> Response {
+        // A job's conversation (issue #961): the job pauses as with a stop, its steps settled.
+        if let Some(job) = self.active_job(id).await {
+            self.pause_job(&job.id, torro_ipc::assistant::JobReason::Stopped).await;
+        }
         // Stopped first: an answer that ends meanwhile still gets the entry below.
         if let Some(answer) = self.stop(id, heard.clone(), now).await {
             return answer;
