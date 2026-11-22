@@ -49,6 +49,10 @@ function Check-Payload($Installed) {
         }
         if ($expected.ContainsKey($program)) { Check-Version $program }
     }
+    # The assistant's DLLs (issue #773) live exactly as long as the assistant; Check-Version above loads them.
+    foreach ($file in @('sherpa-onnx-c-api.dll', 'onnxruntime.dll')) {
+        if ((Test-Path (Join-Path $root $file)) -ne $expected.ContainsKey('torroassistant')) { throw "Wrong DLL lifetime: $file" }
+    }
 }
 function Uninstall-Metadata {
     @(Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\io.github.mahype.*_is1' |

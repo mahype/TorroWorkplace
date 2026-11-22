@@ -275,6 +275,19 @@ pub fn demo_answer(request: &Request, data: &dyn Seen) -> Option<Response> {
             })
         }
         Request::DiscoverServices { address } => Some(demo_discovery(address)),
+        // Signing in with a browser (issue #324): no browser in the demo; the next check is signed in. Only what the
+        // core would offer, so ChatGPT needs a configured client id here as well.
+        Request::StartAiSignIn { provider } if provider.sign_in().is_some_and(|s| s.offered()) => {
+            Some(Response::AiSignIn { flow: format!("demo-{}", provider.id()), url: String::new() })
+        }
+        Request::CheckAiSignIn { flow } => {
+            let provider = AiProvider::SIGN_IN.into_iter().find(|p| flow == &format!("demo-{}", p.id()))?;
+            demo_answer(
+                &Request::ConnectAi { provider, server: None, key: torro_core::account::Secret::default() },
+                data,
+            )
+        }
+        Request::CancelAiSignIn { .. } => Some(Response::Ok),
         // AI providers (task KI.1a): Ollama runs on this computer, LM Studio does not; the key
         // "wrong" is refused, every other connection works and stores nothing.
         Request::FindAiServers => Some(Response::AiServers {

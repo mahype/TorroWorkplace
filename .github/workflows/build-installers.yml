@@ -62,6 +62,13 @@ jobs:
           $process = Start-Process $installer -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/DIR=$destination") -Wait -PassThru
           if ($process.ExitCode -ne 0) { throw 'Inno Setup installation failed' }
           "ISCC=$destination\ISCC.exe" >> $env:GITHUB_ENV
+      # The assistant's DLLs (issue #773): dist's global job builds the same asset in parallel with this job, so it
+      # is built here again from k2-fsa's archive, pinned with every DLL by SHA-256 (packaging/windows/assistant-runtime.json).
+      - name: Build the assistant's Windows runtime
+        shell: pwsh
+        run: |
+          python packaging/assistant_runtime.py --output input
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build nine all-users setups
         shell: pwsh
         run: |

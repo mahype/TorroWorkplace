@@ -26,7 +26,9 @@
 //! **Invitations** (task E8.3b): what an invitation invites to is read from its `text/calendar` part
 //! wherever a whole message is read (the sync's texts, `mail.get_message`), kept with the text
 //! ([`Body::invite`]) in the message's row, and outlives the text; the answer given from the suite
-//! is kept beside it ([`MailStore::set_invite_answer`]), so lists show both.
+//! is kept beside it ([`MailStore::set_invite_answer`]), so lists show both. The answer is kept under
+//! the mail's `Message-ID` as well (issue #654, in `mail_actions`), so it stays when the mail is moved
+//! and comes back under a new id.
 //!
 //! **Full text** (issue #136). Two FTS5 indexes hold subject, sender, recipients, text and
 //! attachment names of every message, all folded (`super::fold`: case, accents, `ß` = `ss`,
@@ -93,6 +95,11 @@ CREATE TABLE IF NOT EXISTS mail_actions (
 );
 CREATE INDEX IF NOT EXISTS mail_actions_key ON mail_actions(mail_key, seq);
 ";
+
+/// The kind of action an answer to an invitation is kept as (issue #654,
+/// [`MailStore::set_invite_answer`]): `data` is the answer's wire name (`accept`, `tentative`,
+/// `decline`), empty for one forgotten. Only the newest is kept. `SUMMARY_COLUMNS` names it too.
+const INVITE_ANSWER: &str = "invite_answer";
 
 /// The most actions of one kind [`MailStore::record_action`] keeps for one mail; older ones go.
 pub const ACTIONS_KEPT: i64 = 100;
@@ -2711,9 +2718,31 @@ impl MailStore {
 
     /// Keeps `answer` as the answer given to the invitation of the message `id`
     /// (`mail.respond_to_invitation`, task E8.3b); `None` forgets it. `false`: no such message.
+    ///
+    /// Kept twice (issue #654): in the message's row, and – for a message with a `Message-ID` – as
+    /// its newest [`INVITE_ANSWER`] action under `rfc:<Message-ID>` ([`MailStore::record_action`]).
+    /// A move the store cannot follow (another mail program, a move whose new UID was not found)
+    /// gives the message a new row at the next sync; the action outlives that, so the mail still
+    /// shows the answer. A newer version of the invitation is a mail of its own with a
+    /// `Message-ID` of its own, and is asked about again.
     pub fn set_invite_answer(&self, id: &str, answer: Option<InvitationAnswer>) -> Result<bool, MailStoreError> {
         let answer = answer.map(InvitationAnswer::as_str);
-        Ok(self.db.execute("UPDATE messages SET invite_answer = ?2 WHERE id = ?1", params![id, answer])? > 0)
+        let tx = self.db.unchecked_transaction()?;
+        let rfc: Option<Option<String>> =
+            tx.query_row("SELECT rfc_message_id FROM messages WHERE id = ?1", [id], |row| row.get(0)).optional()?;
+        let Some(rfc) = rfc else { return Ok(false) };
+        tx.execute("UPDATE messages SET invite_answer = ?2 WHERE id = ?1", params![id, answer])?;
+        if let Some(rfc) = rfc.as_deref().map(str::trim).filter(|rfc| !rfc.is_empty()) {
+            let key = format!("rfc:{rfc}");
+            // Only the newest answer counts; an empty `data` is an answer forgotten.
+            tx.execute("DELETE FROM mail_actions WHERE mail_key = ?1 AND kind = ?2", params![key, INVITE_ANSWER])?;
+            tx.execute(
+                "INSERT INTO mail_actions (mail_key, kind, at, data) VALUES (?1, ?2, ?3, ?4)",
+                params![key, INVITE_ANSWER, Utc::now().timestamp_millis(), answer.unwrap_or_default()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Inclusive lower edge of the messages selected for local reading. For a size limit, it is
@@ -3808,7 +3837,11 @@ const FOLDER_ORDER: &str =
         WHEN 'junk' THEN 4 WHEN 'trash' THEN 5 ELSE 6 END, f.path";
 
 const SUMMARY_COLUMNS: &str = "m.id, m.folder_id, m.thread_id, m.from_json, m.to_json, m.subject, m.date, m.snippet,
-    m.flags, m.has_attachments, m.invite_json, m.invite_answer, m.category, m.category_source, m.category_confidence,
+    m.flags, m.has_attachments, m.invite_json,
+    CASE WHEN m.invite_json IS NULL THEN NULL ELSE coalesce((SELECT a.data FROM mail_actions a
+        WHERE a.mail_key = 'rfc:' || trim(m.rfc_message_id) AND a.kind = 'invite_answer' ORDER BY a.seq DESC LIMIT 1),
+        m.invite_answer) END,
+    m.category, m.category_source, m.category_confidence,
     m.sender_check, m.caught,
     (SELECT group_concat(s.kind, ',') FROM suggestions s WHERE s.message = m.seq AND s.state IN ('reading', 'ready', 'unfilled'))";
 
@@ -4146,7 +4179,8 @@ fn category_from_row(row: &Row<'_>) -> rusqlite::Result<Option<MailCategory>> {
 }
 
 /// The invitation of a summary row (columns 10 and 11). A value this version cannot read counts as
-/// none: a list must not fail on one message.
+/// none: a list must not fail on one message. Column 11 is the answer kept under the message's
+/// `Message-ID`, else the one in its row ([`MailStore::set_invite_answer`]).
 fn invite_from_row(row: &Row<'_>) -> rusqlite::Result<Option<Invite>> {
     let json: Option<String> = row.get(10)?;
     let answer: Option<String> = row.get(11)?;
@@ -4771,6 +4805,45 @@ mod tests {
         drop(store);
         let store = MailStore::open(&dirs, ACCOUNT).expect("migrated");
         assert_eq!(store.summary(&id).expect("summary").expect("kept").invite, None);
+    }
+
+    /// Issue #654: a mail moved where the store cannot follow comes back under a new id (here: in
+    /// the archive, read again); the answer kept under its Message-ID is still on it. An answer
+    /// changed or forgotten later counts there too; a mail without a Message-ID keeps the answer in
+    /// its row only, and another invitation (another Message-ID) is not answered.
+    #[test]
+    fn an_answer_stays_with_the_mail_when_it_comes_back_under_a_new_id() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let archive = folder(&store, "Archive", Some(Role::Archive));
+        let invite =
+            Invite { title: "Planning".into(), start: day(15), end: Some(day(16)), all_day: false, answered: None };
+        let body =
+            Body { text: "Join us".into(), from_html: false, html: None, attachments: vec![], invite: Some(invite) };
+        let answered = |id: &str| store.summary(id).expect("summary").and_then(|s| s.invite).and_then(|i| i.answered);
+        let id = add(&store, &inbox, &message(4, "Invitation: Planning"));
+        store.set_body(&id, &body).expect("body");
+        assert!(store.set_invite_answer(&id, Some(InvitationAnswer::Accept)).expect("answer"));
+
+        assert!(store.delete_message(&id).expect("gone from the inbox"));
+        let again = add(&store, &archive, &message(4, "Invitation: Planning"));
+        assert_ne!(again, id, "a new id");
+        assert_eq!(answered(&again), None, "no invitation read yet");
+        store.set_body(&again, &body).expect("read again");
+        assert_eq!(answered(&again), Some(InvitationAnswer::Accept));
+
+        store.set_invite_answer(&again, Some(InvitationAnswer::Decline)).expect("changed");
+        assert_eq!(answered(&again), Some(InvitationAnswer::Decline));
+        store.set_invite_answer(&again, None).expect("forgotten");
+        assert_eq!(answered(&again), None);
+
+        let other = add(&store, &inbox, &message(5, "Invitation: Planning, moved"));
+        store.set_body(&other, &body).expect("body");
+        assert_eq!(answered(&other), None, "another mail of the same event is asked about again");
+        let bare = add(&store, &inbox, &NewMessage { rfc_message_id: None, ..message(6, "No Message-ID") });
+        store.set_body(&bare, &body).expect("body");
+        assert!(store.set_invite_answer(&bare, Some(InvitationAnswer::Tentative)).expect("answer"));
+        assert_eq!(answered(&bare), Some(InvitationAnswer::Tentative));
     }
 
     #[test]
@@ -5661,6 +5734,31 @@ mod tests {
         let fresh = file_for(&dirs, "mail:carla@example.org");
         assert_eq!(MailStore::remove_unknown(&dirs, &[], std::time::Duration::from_secs(3600)).expect("young"), 0);
         assert!(fresh.exists());
+    }
+
+    /// Each store counts once and its `-wal`/`-shm` files never, whichever the folder lists first: on tmpfs the
+    /// `-wal` came first, took its store with it, and the store went uncounted (#647, fixed in #702). Several stores,
+    /// so both orders are likely listed.
+    #[test]
+    fn the_clean_up_counts_stores_not_their_wal_and_shm_files() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dirs = MailDirs::new(tmp.path(), tmp.path());
+        let unknown: Vec<String> = (0..8).map(|n| format!("mail:gone{n}@example.org")).collect();
+        for account in &unknown {
+            drop(MailStore::open(&dirs, account).expect("store"));
+            let store = file_for(&dirs, account);
+            std::fs::write(side_file(&store, "-wal"), b"x").expect("wal");
+            std::fs::write(side_file(&store, "-shm"), b"x").expect("shm");
+        }
+        // Side files whose store is already gone are removed but are not a store.
+        let orphan = file_for(&dirs, "mail:orphan@example.org");
+        std::fs::write(side_file(&orphan, "-wal"), b"x").expect("orphan wal");
+        std::fs::write(side_file(&orphan, "-shm"), b"x").expect("orphan shm");
+
+        assert_eq!(MailStore::remove_unknown(&dirs, &[], std::time::Duration::ZERO).expect("cleaned"), unknown.len());
+        let left: Vec<_> =
+            std::fs::read_dir(&dirs.data).expect("dir").map(|entry| entry.expect("entry").path()).collect();
+        assert!(left.is_empty(), "nothing of the stores is left: {left:?}");
     }
 
     #[cfg(unix)]

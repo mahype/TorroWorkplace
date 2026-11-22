@@ -1485,7 +1485,7 @@ impl Host {
             (Form::Steps, false) => {
                 let name = sub_page.map_or_else(|| section.name().to_string(), |(name, _)| name);
                 if actions.is_empty() {
-                    widgets::menu_button(anchor, Some(section.icon), widgets::path_menu_label(&name), menu())
+                    widgets::path_menu_here(anchor, Some(section.icon), name, menu())
                 } else {
                     // Beside the page's own buttons a name has no room in a narrow header ("Sort
                     // existing mail…" ran under the settings button, design review of #554): the

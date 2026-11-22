@@ -3395,6 +3395,31 @@ pub fn path_menu_label(label: &str) -> String {
     typo::ellipsize(label, typo::body(), PATH_MENU_ROOM)
 }
 
+/// The [`menu_button`] of a narrow header that names what is open ("‹ [☁ an account ▾]", issue #686): `label`
+/// cut with "…" to the room the header leaves it, at most [`PATH_MENU_ROOM`], the whole as tooltip. A fixed
+/// cut alone ([`path_menu_label`]) ran under the settings button at 480 wide. Like [`path_here`] it takes
+/// the header's free room, the button itself stays as wide as its content.
+pub fn path_menu_here<'a, M: Clone + 'a>(
+    anchor: &Anchor,
+    icon: Option<Icon>,
+    label: String,
+    on_press: M,
+) -> Element<'a, M> {
+    let anchor = anchor.clone();
+    let fit = responsive(move |room| {
+        // What the button needs besides its label: padding, the icon and the chevron with their gaps.
+        let icon_room = if icon.is_some() { icon::SIZE_SM + ICON_GAP } else { 0.0 };
+        let pad = style::button_padding();
+        let fixed = pad.left + pad.right + icon_room + ICON_GAP + icon::SIZE_SM;
+        let shown = typo::ellipsize(&label, typo::body(), (room.width - fixed).clamp(0.0, PATH_MENU_ROOM));
+        let cut = shown != label;
+        let b = menu_button(&anchor, icon, shown, on_press.clone());
+        if cut { with_tooltip(b, label.clone()) } else { b }
+    })
+    .height(Length::Shrink);
+    container(fit).width(Length::FillPortion(PATH_PORTION)).into()
+}
+
 /// A [`menu_button`] with its icon and label in `tone`.
 fn menu_button_in<'a, M: Clone + 'a>(
     anchor: &Anchor,

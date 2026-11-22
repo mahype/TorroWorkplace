@@ -51,14 +51,15 @@ pub const HELPER: &str = "pdf-text";
 /// How long the core waits for the process that reads a PDF before it ends it.
 pub const HELPER_TIME: Duration = Duration::from_secs(30);
 
-/// How much memory the process that reads a PDF may take beyond what it holds when it starts: 1 GiB (256 MiB in the
-/// tests, so a test of the bound stays small).
+/// How much memory the process that reads a PDF may take beyond what it holds when it starts: 1 GiB (128 MiB in the
+/// tests, so a test of the bound stays small). The test bomb peaks near 260 MiB: at 256 MiB it ended the helper only
+/// when the German table still had to be built, so the test passed in German and failed in English (#647).
 #[cfg(not(test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const HELPER_MEMORY: u64 = 1024 * 1024 * 1024;
 #[cfg(test)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-pub const HELPER_MEMORY: u64 = 256 * 1024 * 1024;
+pub const HELPER_MEMORY: u64 = 128 * 1024 * 1024;
 
 /// How far one stream of a PDF may inflate while it is loaded, and the content of one page while its text is
 /// read: 16 MiB.
