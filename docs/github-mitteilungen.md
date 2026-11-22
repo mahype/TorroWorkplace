@@ -66,12 +66,16 @@ Die ersten beiden Gründe sehen für die Mitteilungszentrale gleich aus: Die Que
   [eingang.md](eingang.md), [settings.md](settings.md), [github.md](github.md).
 - Kein neuer Request, keine neue Oberfläche.
 
-**Als Folge-Issue [#947](https://github.com/mahype/TorroWorkplace/issues/947) (nicht umgesetzt):** Der Kern kennt die Scopes des Tokens schon
+**Als Folge-Issue [#947](https://github.com/mahype/TorroWorkplace/issues/947) (umgesetzt, Feld `notice`):** Der Kern kennt die Scopes des Tokens schon
 (`AccountInfo::scopes` aus `X-OAuth-Scopes`). Fehlt `repo`, sagt die Quelle GitHub das selbst, an zwei Stellen:
 
-- in der Steuerzentrale bei der Quelle (Notification Hub › Settings › Sources, Gruppe des GitHub-Kontos) als
-  Fußzeile, etwa „Only public repositories: the token has no repo scope.“, mit Verweis auf die Kontoseite;
-- in `inbox.list_sources` als Hinweis an der Quelle, damit Agenten (MCP `inbox_list_sources`) dasselbe sehen.
+- in den Einstellungen des Notification Hub bei der Quelle (Settings › Sources, Gruppe des GitHub-Kontos) als
+  Satz unter „Notifications“ („Only public repositories: the token has no repo scope. See Permissions on the
+  account's page under Accounts.“), solange die Quelle nicht aus einem anderen Grund still ist;
+- in `inbox.list_sources` als Hinweis an der Quelle (`notice: "public_only"`, fehlt in JSON, wenn es nichts zu
+  sagen gibt), damit Agenten (MCP `inbox_list_sources`) dasselbe sehen. Klassisch heißt: GitHub meldete Scopes, und
+  `repo` ist nicht dabei (auch `public_repo` genügt nicht). Ein Fine-grained-Token meldet keine Scopes und bleibt
+  `missing_scope` ohne Hinweis.
 
 Dafür bekommt `SourceInfo` ein eigenes neues Feld (entschieden, siehe unten), kein neuer `SourceHealth`-Wert. Das
 ist eine Änderung an einer festen Schnittstelle (`torro-ipc`) und gehört deshalb in ein eigenes, geplantes Issue.
