@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Pinboard</title>
+<!-- Torro Pinboard – Entwurf „Schwarzes Brett“: interaktiver Prototyp in drei Gestaltungsrichtungen
+     (A Korkbrett, B Ruhiges Raster – Empfehlung, C Zonen). Token nach torro-design (Standard seit #291);
+     sichtbare Texte der App englisch (Regel „zuerst englisch“), Erläuterungen deutsch wie in docs/.
+     Zustände: ?v=a|b|c (Richtung) · ?theme=light|dark · ?size=l|m|s · Hash #a/#b/#c.
+     Für das Artefakt wird diese Datei ohne Gerüst (doctype/head/body) nach .publish.html gestrippt,
+     die Schriften liegen dann unter fonts/. Alle Maße und Farben aus den Token, Icons Lucide (Strich 1.75). -->
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+@font-face{font-family:Inter;font-weight:400;src:url(../../../crates/torro-gui/assets/fonts/Inter-Regular.ttf) format("truetype")}
+@font-face{font-family:Inter;font-weight:500;src:url(../../../crates/torro-gui/assets/fonts/Inter-Medium.ttf) format("truetype")}
+@font-face{font-family:Inter;font-weight:600;src:url(../../../crates/torro-gui/assets/fonts/Inter-SemiBold.ttf) format("truetype")}
+@font-face{font-family:"Inter Tabular";font-weight:400;src:url(../../../crates/torro-gui/assets/fonts/InterTabular-Regular.ttf) format("truetype")}
+@font-face{font-family:"Inter Tabular";font-weight:500;src:url(../../../crates/torro-gui/assets/fonts/InterTabular-Medium.ttf) format("truetype")}
+:root{
+  --bg:#08090A; --panel:#0F1011; --raised:#141518; --hover:#16171A; --selected:#1C1E22; --menu:#17181B;
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98;
+  --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10); --line-selected:rgba(255,255,255,.28);
+  --focus:rgba(255,255,255,.35); --scrim:rgba(0,0,0,.62);
+  --accent:#D50C0C; --on-accent:#fff; --attn:#E8A33D; --ok:#3FB984; --err:#F0645A;
+  --c0:#5B8CFF; --c1:#3FB984; --c2:#E8A33D; --c3:#D96CA8; --c4:#A78BFA; --tint:18%;
+  --shadow:0 12px 32px rgba(0,0,0,.5);
+  /* Korkbrett (nur Richtung A), „Foto“ des Bild-Zettels */
+  --cork:#241B12; --cork-dot:rgba(255,255,255,.05); --paper:#F1EADA; --ink:#2A2119; --ink2:#6A5F4B;
+  --ph-sky:#8FB4DE; --ph-sun:#F2C94C; --ph-hill:#4C7A52; --ph-hill2:#3A5F44;
+  --r:4px; color-scheme:dark;
+}
+@media (prefers-color-scheme: light){:root:not([data-theme="dark"]){
+  --bg:#F4F5F6; --panel:#FFFFFF; --raised:#F8F9FA; --hover:#F0F1F3; --selected:#E9EAED; --menu:#FFFFFF;
+  --text:#18191B; --text2:#4F535A; --text3:#62666D;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11); --line-selected:rgba(0,0,0,.32);
+  --focus:rgba(0,0,0,.50); --scrim:rgba(0,0,0,.30);
+  --c0:#3B6EF0; --c1:#1F9D68; --c2:#B06F12; --c3:#C2508F; --c4:#7C5CE6; --attn:#B06F12; --ok:#1F9D68; --err:#C93A30; --tint:14%;
+  --shadow:0 12px 32px rgba(0,0,0,.12);
+  --cork:#B69B72; --cork-dot:rgba(0,0,0,.07); --paper:#FAF4E6;
+  color-scheme:light;
+}}
+:root[data-theme="light"]{
+  --bg:#F4F5F6; --panel:#FFFFFF; --raised:#F8F9FA; --hover:#F0F1F3; --selected:#E9EAED; --menu:#FFFFFF;
+  --text:#18191B; --text2:#4F535A; --text3:#62666D;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11); --line-selected:rgba(0,0,0,.32);
+  --focus:rgba(0,0,0,.50); --scrim:rgba(0,0,0,.30);
+  --c0:#3B6EF0; --c1:#1F9D68; --c2:#B06F12; --c3:#C2508F; --c4:#7C5CE6; --attn:#B06F12; --ok:#1F9D68; --err:#C93A30; --tint:14%;
+  --shadow:0 12px 32px rgba(0,0,0,.12);
+  --cork:#B69B72; --cork-dot:rgba(0,0,0,.07); --paper:#FAF4E6;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--text);font:400 14px/22px Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:40px 64px}
+button{font:inherit;color:inherit;cursor:default;background:none;border:0;padding:0}
+:focus-visible{outline:2px solid var(--focus);outline-offset:1px;border-radius:2px}
+.t2{color:var(--text2)} .t3{color:var(--text3)}
+.meta{font-size:13px;line-height:18px} .cap{font-size:12px;line-height:16px;font-weight:500} .micro{font-size:11px;line-height:14px}
+.strong{font-weight:500} .grow{flex:1;min-width:0}
+.ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tab{font-family:"Inter Tabular",Inter,sans-serif}
+svg.i{width:16px;height:16px;flex:none;display:block;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
+svg.i.s12{width:12px;height:12px} svg.i.s14{width:14px;height:14px} svg.i.s20{width:20px;height:20px}
+::-webkit-scrollbar{width:8px;height:8px} ::-webkit-scrollbar-thumb{background:var(--line-strong);border-radius:4px} ::-webkit-scrollbar-track{background:transparent}
+
+/* Seite: Kopf, Steuerung, Erläuterungen */
+.page{max-width:1280px;margin:0 auto}
+.eyebrow{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+h1{font:600 28px/36px Inter,sans-serif;margin:8px 0 0}
+.lead{font-size:16px;line-height:26px;color:var(--text2);max-width:72ch;margin:12px 0 0}
+.controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:24px 0 4px}
+.seg{display:inline-flex;height:36px;padding:2px;border-radius:var(--r);background:var(--panel);border:1px solid var(--line)}
+.seg button{display:inline-flex;align-items:center;gap:6px;padding:0 12px;border-radius:2px;font:500 12px/16px Inter,sans-serif;color:var(--text3)}
+.seg button:hover{background:var(--hover);color:var(--text)}
+.seg button.on{background:var(--selected);color:var(--text);box-shadow:0 0 0 1px var(--line-selected)}
+.btn{height:36px;display:inline-flex;align-items:center;gap:6px;padding:0 12px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);color:var(--text);font:500 12px/16px Inter,sans-serif;white-space:nowrap}
+.btn:hover{background:var(--hover);border-color:var(--line-selected)}
+.btn.ghost{border-color:transparent;background:none;color:var(--text2)}
+.btn.ghost:hover{background:var(--hover);color:var(--text)}
+.btn.sm{height:28px;padding:0 8px}
+.btn.primary{background:var(--accent);border-color:transparent;color:var(--on-accent)}
+.btn.primary:hover{background:var(--accent);filter:brightness(1.1)}
+.iconbtn{width:36px;height:36px;display:grid;place-items:center;border-radius:var(--r);color:var(--text2)}
+.iconbtn:hover{background:var(--hover);color:var(--text)}
+.hint{font-size:12px;line-height:18px;color:var(--text3);margin:10px 2px 0;display:flex;gap:14px;flex-wrap:wrap}
+.doc{margin-top:56px;max-width:920px}
+.doc>h2{font:600 22px/28px Inter,sans-serif;margin:0 0 8px}
+.doc>p{color:var(--text2);margin:0 0 16px;max-width:72ch}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.fcard{background:var(--raised);border:1px solid var(--line-strong);border-radius:var(--r);padding:16px;display:flex;flex-direction:column;gap:8px}
+.fcard h3{font:600 16px/22px Inter,sans-serif;margin:0;display:flex;gap:8px;align-items:center}
+.fcard h3 .n{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:12px;background:var(--selected);color:var(--text2)}
+.fcard p{margin:0;color:var(--text2);font-size:13px;line-height:20px}
+.fcard .verdict{font-size:12px;line-height:18px;color:var(--text3);border-top:1px solid var(--line);padding-top:8px;margin-top:auto}
+.fcard.rec{border-color:var(--line-selected)}
+.fcard.rec h3 .n{background:var(--accent);color:var(--on-accent)}
+.feat{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+ul.plain{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+ul.plain li{display:flex;gap:10px;align-items:flex-start;color:var(--text2);font-size:13px;line-height:20px;padding-left:0}
+ul.plain li svg{margin-top:2px;color:var(--text3)}
+ul.plain b{color:var(--text);font-weight:500}
+table.tb{border-collapse:collapse;width:100%;font-size:13px;line-height:20px}
+table.tb th{text-align:left;font:500 12px/16px Inter,sans-serif;color:var(--text3);padding:6px 12px 6px 0;border-bottom:1px solid var(--line-strong)}
+table.tb td{padding:8px 12px 8px 0;border-bottom:1px solid var(--line);vertical-align:top;color:var(--text2)}
+table.tb td:first-child{color:var(--text);font-family:"Inter Tabular",Inter,sans-serif;font-size:12px}
+table.tb code{font:400 12px/18px ui-monospace,monospace;background:var(--raised);border:1px solid var(--line-strong);border-radius:3px;padding:0 4px;color:var(--text)}
+
+/* Fenster: Seitenleiste auf BG, Inhalt bündig PANEL, Kopfleiste 64 (torro-design 0) */
+.win{display:flex;height:700px;border:1px solid var(--line-strong);border-radius:8px;overflow:hidden;background:var(--panel);box-shadow:var(--shadow);max-width:100%;position:relative}
+.side{width:240px;flex:none;display:flex;flex-direction:column;padding:8px;gap:2px;overflow:hidden}
+.switcher{display:flex;align-items:center;gap:8px;height:36px;padding:0 6px;border-radius:var(--r);flex:1}
+.switcher:hover{background:var(--hover)}
+.logo{width:20px;height:20px;border-radius:var(--r);background:var(--accent);display:grid;place-items:center;color:var(--on-accent);font-weight:600;font-size:11px;line-height:1}
+.nav{display:flex;align-items:center;gap:8px;height:32px;padding:0 8px;border-radius:var(--r);color:var(--text2);position:relative}
+.nav:hover{background:var(--hover);color:var(--text)}
+.nav.on{background:var(--selected);color:var(--text)}
+.nav .n{font:400 13px/18px "Inter Tabular",Inter,sans-serif;color:var(--text3)}
+.nav svg{color:var(--text3)} .nav.on svg{color:var(--text2)}
+.gt{display:flex;align-items:center;gap:4px;height:28px;padding:0 8px;margin-top:12px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.side .spacer{flex:1}
+.syncrow{display:flex;align-items:center;gap:8px;height:36px;padding:0 8px;border-radius:var(--r);color:var(--text2)}
+.syncrow svg{color:var(--text3)}
+.syncrow .ok{color:var(--ok)}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--panel);border-left:1px solid var(--line)}
+.header{height:64px;flex:none;display:flex;align-items:center;gap:12px;padding:0 24px;border-bottom:1px solid var(--line)}
+.header .crumbs{display:flex;align-items:baseline;gap:8px;white-space:nowrap}
+.header .crumbs b{font-weight:500}
+.field{height:38px;display:flex;align-items:center;gap:8px;padding:0 12px;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);color:var(--text3)}
+.field.flat{border:0;background:none}
+.field input{flex:1;min-width:0;background:none;border:0;outline:0;color:var(--text);font:inherit}
+.field input::placeholder{color:var(--text3)}
+.field.focus-within{border-color:var(--line-selected);box-shadow:0 0 0 3px var(--line)}
+.boardwrap{flex:1;min-height:0;overflow:auto;position:relative}
+.board{position:relative;width:1020px;height:676px;background-image:radial-gradient(var(--line-strong) 1px,transparent 1px);background-size:24px 24px;background-position:12px 12px}
+/* Zonen (nur Richtung C): beschriftete Bereiche, gestrichelter Rahmen wie unbestätigte Termine */
+.zone{position:absolute;border:1px dashed var(--line-strong);border-radius:8px}
+.zone .zl{position:absolute;left:12px;top:8px;font:500 12px/16px Inter,sans-serif;color:var(--text3)}
+.win[data-v="a"] .zone,.win[data-v="b"] .zone{display:none}
+
+/* Zettel */
+.pin{position:absolute;border-radius:var(--r);border:1px solid var(--line-strong);background:var(--raised);padding:12px 14px;
+  box-shadow:0 1px 2px rgba(0,0,0,.15);cursor:grab;user-select:none}
+.pin:hover{border-color:var(--line-selected)}
+.pin.drag{box-shadow:var(--shadow);cursor:grabbing}
+.pin:focus-visible{outline-offset:2px}
+.pin.dim{opacity:.16;filter:saturate(.4)}
+.pin.fade{opacity:.55;filter:saturate(.55)}
+.pin[data-c]{background:color-mix(in srgb,var(--cc) var(--tint),var(--raised));border-color:color-mix(in srgb,var(--cc) 45%,var(--line-strong))}
+.pin[data-c]::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--cc);border-radius:var(--r) 0 0 var(--r)}
+.pin[data-c="c0"]{--cc:var(--c0)} .pin[data-c="c1"]{--cc:var(--c1)} .pin[data-c="c2"]{--cc:var(--c2)}
+.pin[data-c="c3"]{--cc:var(--c3)} .pin[data-c="c4"]{--cc:var(--c4)}
+.w-note{width:232px} .w-check{width:232px} .w-shot{width:240px} .w-image{width:240px}
+.w-link{width:240px} .w-file{width:232px} .w-agent{width:240px}
+.pin .txt{outline:none;border-radius:2px;padding:0 2px;margin:0 -2px;line-height:20px;font-size:14px;user-select:text;-webkit-user-select:text;min-width:40px}
+.pin .txt:focus{background:var(--hover)}
+.pin .txt::selection{background:var(--selected)}
+.pin .mrow{display:flex;gap:6px;align-items:center;color:var(--text3);font-size:12px;line-height:16px;margin-top:8px}
+.pin .mrow svg{color:var(--text3)}
+.pin h4{margin:0 0 8px;font:500 14px/20px Inter,sans-serif}
+.ck{display:flex;gap:8px;align-items:flex-start;padding:3px 0;color:var(--text);font-size:13px;line-height:18px;cursor:default}
+.ck .c{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--text3);flex:none;margin-top:1px;display:grid;place-items:center}
+.ck.done{color:var(--text3)} .ck.done .c{background:var(--text3);border-color:var(--text3)}
+.ck.done .c svg{width:10px;height:10px;color:var(--bg);stroke-width:2.5}
+.ck.done .t{text-decoration:line-through}
+.progress{display:flex;gap:8px;align-items:center;margin-top:10px}
+.progress .bar{width:64px;height:4px;border-radius:2px;background:var(--line-strong);overflow:hidden}
+.progress .bar i{display:block;height:100%;background:var(--ok)}
+.progress .n{font:400 12px/16px "Inter Tabular",Inter,sans-serif;color:var(--text3)}
+.shotimg{border:1px solid var(--line-strong);border-radius:3px;overflow:hidden;background:var(--bg);margin-bottom:10px}
+.shotimg .tb{height:24px;display:flex;align-items:center;gap:6px;padding:0 8px;border-bottom:1px solid var(--line);font-size:11px;line-height:14px;color:var(--text3);white-space:nowrap;overflow:hidden}
+.shotimg .tb .l{width:8px;height:8px;border-radius:50%}
+.shotimg .tb .l:nth-child(1){background:var(--err)} .shotimg .tb .l:nth-child(2){background:var(--attn)} .shotimg .tb .l:nth-child(3){background:var(--ok)}
+.shotimg .pg{background:var(--paper);margin:8px;padding:10px 12px;border-radius:2px;color:var(--ink)}
+.shotimg .pg .ln{height:4px;border-radius:2px;background:var(--ink2);opacity:.55;margin:6px 0;opacity:.45}
+.shotimg .pg .ln.w90{width:90%} .shotimg .pg .ln.w60{width:60%} .shotimg .pg .ln.w75{width:75%}
+.shotimg .pg .hd{height:8px;width:40%;background:var(--ink);opacity:.8;border-radius:2px;margin:2px 0 10px}
+.photo{border:1px solid var(--line-strong);border-radius:3px;height:120px;position:relative;overflow:hidden;margin-bottom:10px;
+  background:linear-gradient(180deg,var(--ph-sky) 0%,var(--ph-sky) 58%,var(--ph-hill) 58%,var(--ph-hill2) 100%)}
+.photo::before{content:"";position:absolute;right:22px;top:18px;width:26px;height:26px;border-radius:50%;background:var(--ph-sun)}
+.photo::after{content:"";position:absolute;left:-10%;bottom:-26px;width:60%;height:70%;border-radius:50%;background:var(--ph-hill);opacity:.85}
+.crow{display:flex;gap:8px;align-items:center;min-width:0}
+.crow svg{color:var(--text3)}
+.crow .nm{font-size:13px;line-height:18px}
+.pill{height:22px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:11px;border:1px solid var(--line-strong);font:500 12px/16px Inter,sans-serif;color:var(--text2);white-space:nowrap}
+.pill svg{width:12px;height:12px}
+.pill.attn svg{color:var(--attn)}
+.chiprow{display:flex;gap:6px;align-items:center;margin-bottom:8px}
+.spk{color:var(--accent)}
+.pfoot{display:flex;gap:6px;align-items:center;margin-top:10px}
+.acts{position:absolute;right:8px;top:8px;display:none;align-items:center;gap:2px;padding:4px;border-radius:var(--r);
+  background:var(--menu);border:1px solid var(--line-strong);box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.pin:hover .acts,.pin:focus-within .acts{display:flex}
+.acts .ab{width:26px;height:26px;display:grid;place-items:center;border-radius:3px;color:var(--text2)}
+.acts .ab:hover{background:var(--hover);color:var(--text)}
+.acts .cd{width:14px;height:14px;border-radius:50%;margin:0 3px;border:1px solid rgba(0,0,0,.25)}
+.acts .cd:hover{box-shadow:0 0 0 2px var(--focus)}
+.acts .cd.none{background:var(--raised);border-color:var(--text3);position:relative}
+.acts .cd.none::after{content:"";position:absolute;inset:4px 2px;background:var(--text3);transform:rotate(45deg) scaleX(.28)}
+.acts .sep{width:1px;height:16px;background:var(--line-strong);margin:0 2px}
+
+/* Menü „Neu“, Toast */
+.menu{position:absolute;z-index:50;background:var(--menu);border:1px solid var(--line-strong);border-radius:var(--r);box-shadow:var(--shadow);padding:4px;min-width:220px}
+.menu .item{display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:var(--r);white-space:nowrap;width:100%;text-align:left}
+.menu .item:hover{background:var(--hover)}
+.menu .item svg{color:var(--text3)}
+.menu .item kbd{margin-left:auto;font:500 11px/14px Inter,sans-serif;color:var(--text3);border:1px solid var(--line-strong);border-radius:3px;padding:1px 5px}
+.menu .sep{height:1px;background:var(--line);margin:4px 0}
+.scrim{position:absolute;inset:0;background:var(--scrim);z-index:40}
+.toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:60;display:flex;align-items:center;gap:8px;height:40px;padding:0 8px 0 16px;
+  background:var(--menu);border:1px solid var(--line-strong);border-radius:var(--r);box-shadow:var(--shadow);font-size:14px}
+.toast button{height:28px;padding:0 8px;border-radius:3px;color:var(--text2);font-weight:500;font-size:12px}
+.toast button:hover{background:var(--hover);color:var(--text)}
+
+/* Richtung A: Korkbrett – Papier, Pins, leicht gedreht */
+.win[data-v="a"] .board{background:var(--cork);background-image:radial-gradient(var(--cork-dot) 1.2px,transparent 1.2px);background-size:18px 18px}
+.win[data-v="a"] .pin{background:var(--paper);color:var(--ink);border:0;border-radius:2px;box-shadow:0 5px 12px rgba(0,0,0,.35);transform:rotate(var(--rot))}
+.win[data-v="a"] .pin:hover{border:0;filter:brightness(1.03)}
+.win[data-v="a"] .pin.drag{box-shadow:0 14px 28px rgba(0,0,0,.5)}
+.win[data-v="a"] .pin[data-c]{background:color-mix(in srgb,var(--cc) 16%,var(--paper))}
+.win[data-v="a"] .pin[data-c]::before{display:none}
+.win[data-v="a"] .pin .t2,.win[data-v="a"] .pin .t3,.win[data-v="a"] .pin .mrow,.win[data-v="a"] .pin .crow svg{color:var(--ink2)}
+.win[data-v="a"] .pin .txt:focus{background:rgba(0,0,0,.06)}
+.win[data-v="a"] .pin .ck{color:var(--ink)} .win[data-v="a"] .pin .ck.done{color:var(--ink2)}
+.win[data-v="a"] .pin .ck .c{border-color:var(--ink2)} .win[data-v="a"] .pin .ck.done .c{background:var(--ink2);border-color:var(--ink2)}
+.win[data-v="a"] .pin .ck.done .c svg{color:var(--paper)}
+.pinhead{position:absolute;left:50%;top:-6px;width:12px;height:12px;border-radius:50%;transform:translateX(-50%);
+  background:radial-gradient(circle at 35% 30%,rgba(255,255,255,.55),transparent 45%),var(--cc,var(--accent));box-shadow:0 2px 4px rgba(0,0,0,.4)}
+.tape{position:absolute;left:50%;top:-8px;width:58px;height:15px;transform:translateX(-50%) rotate(-2.5deg);background:rgba(255,255,255,.22);border-radius:1px}
+.win:not([data-v="a"]) .pinhead,.win:not([data-v="a"]) .tape{display:none}
+[hidden]{display:none!important}
+.win[data-v="a"] .pin .shotimg .pg .ln{background:var(--ink)}
+.win[data-v="a"] .pin .pill,.win[data-v="a"] .pin .progress .bar{background:color-mix(in srgb,var(--paper) 60%,var(--ink))}
+.win[data-v="a"] .pin .pill{border-color:rgba(0,0,0,.15);color:var(--ink2)}
+.win[data-v="a"] .pin .progress .bar{border:0} .win[data-v="a"] .pin .progress .bar i{background:var(--ink2)}
+.win[data-v="a"] .pin .btn{background:transparent;border-color:rgba(0,0,0,.2);color:var(--ink2)}
+
+/* Mini-Kachel (Anzeige) */
+.miniflex{display:flex;gap:24px;align-items:flex-start;flex-wrap:wrap}
+.mini{width:264px;background:var(--panel);border:1px solid var(--line-strong);border-radius:8px;overflow:hidden;flex:none}
+.mini .mh{display:flex;align-items:center;gap:8px;height:40px;padding:0 12px;border-bottom:1px solid var(--line);font:500 12px/16px Inter,sans-serif;color:var(--text2)}
+.mini .mh .n{margin-left:auto;font:400 13px/18px "Inter Tabular",Inter,sans-serif;color:var(--text3)}
+.mini .mb{padding:12px;display:flex;flex-direction:column;gap:8px}
+.mini .num{font:600 28px/32px "Inter Tabular",Inter,sans-serif;display:flex;align-items:baseline;gap:8px}
+.mini .num span{font:400 12px/16px Inter,sans-serif;color:var(--text3)}
+.mini .rc{display:flex;gap:8px;align-items:center;font-size:12px;line-height:16px;color:var(--text2)}
+.mini .rc .d{width:8px;height:8px;border-radius:50%;flex:none}
+.mini .nb{height:32px;display:flex;align-items:center;gap:6px;border:1px dashed var(--line-strong);border-radius:var(--r);color:var(--text3);font-size:12px;padding:0 10px}
+
+/* Größenklassen: < 1024 Leiste (60), < 600 ohne Seitenleiste (wie torro_gui::layout::of) */
+html[data-size="m"] .side{width:60px;padding:8px 6px}
+html[data-size="m"] .side .word,html[data-size="m"] .side .gt,html[data-size="m"] .syncrow .word{display:none}
+html[data-size="m"] .switcher .word{display:none}
+html[data-size="s"] .side{display:none}
+html[data-size="s"] .main{border-left:0}
+html[data-size="s"] .header{padding:0 12px}
+@media (max-width:700px){.win{height:560px}.lead{font-size:14px;line-height:22px}h1{font-size:22px;line-height:28px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="page">
+<header>
+  <div class="eyebrow"><span>Entwurf · 28. Oktober 2026</span><span>docs/prototypes/pinboard</span></div>
+  <h1>Schwarzes Brett — Pinboard</h1>
+  <p class="lead">Ein Brett in der Suite, an dem Kurzzeitiges hängt: Texte, Screenshots, Bilder, Links — frei
+  angeordnet, Farbe als Kategorie, und Zettel verblassten, wenn sie alt werden. Drei Gestaltungsrichtungen stehen
+  unten zum Ausprobieren: Alles lässt sich ziehen, umfärben, löschen (mit Undo), und Einfügen (⌘V) legt einen
+  neuen Zettel an.</p>
+  <div class="controls">
+    <div class="seg" role="group" aria-label="Gestaltungsrichtung">
+      <button data-v="a">A · Korkbrett</button>
+      <button data-v="b">B · Ruhiges Raster</button>
+      <button data-v="c">C · Zonen</button>
+    </div>
+    <button class="btn ghost" id="reset"><svg class="i s14" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>Zurücksetzen</button>
+    <button class="iconbtn" id="theme" title="Hell und dunkel umschalten"><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg></button>
+  </div>
+</header>
+
+<div class="win" id="win" data-v="b">
+  <aside class="side">
+    <div class="switcher"><span class="logo">T</span><span class="strong grow ell word">Pinboard</span>
+      <button class="iconbtn" title="Search boards" style="width:28px;height:28px"><svg class="i s14" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></button>
+      <button class="iconbtn boxed" title="Board settings" style="width:28px;height:28px"><svg class="i s14" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></button>
+    </div>
+    <div class="gt word">Boards</div>
+    <div class="nav on"><svg class="i s14" viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg><span class="grow ell word">Pinboard</span><span class="n">9</span></div>
+    <div class="nav"><svg class="i s14" viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg><span class="grow ell word">Release 0.2</span><span class="n">7</span></div>
+    <div class="nav"><svg class="i s14" viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg><span class="grow ell word">Vacation</span><span class="n">3</span></div>
+    <div class="gt word">More</div>
+    <div class="nav"><svg class="i s14" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="5" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg><span class="grow ell word">Archive</span><span class="n">4</span></div>
+    <div class="spacer"></div>
+    <div class="syncrow" title="This board lives in the data directory of the core; sync comes later and is optional"><svg class="i s14" viewBox="0 0 24 24"><path d="M22 12H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><path d="M6 16h.01M10 16h.01"/></svg><span class="grow word" style="font-size:12px">Local on this device</span><svg class="i s14 ok" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></div>
+  </aside>
+  <main class="main">
+    <div class="header">
+      <div class="crumbs"><b>Pinboard</b><span class="t3 meta" id="count">9 pins · 1 faded</span></div>
+      <span class="grow"></span>
+      <div class="field flat" style="width:min(260px,44vw)"><svg class="i s14" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input id="q" placeholder="Search pins" aria-label="Search pins"></div>
+      <button class="btn primary" id="new"><svg class="i s14" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>New pin</button>
+    </div>
+    <div class="boardwrap" id="wrap"><div class="board" id="board"></div></div>
+  </main>
+</div>
+<div class="hint"><span>Ziehen verschiebt</span><span>Text anklicken und tippen</span><span>Tab fokussiert einen Zettel, Pfeiltasten schieben</span><span>Entf löscht (mit Undo)</span><span>Strg/⌘+V fügt aus der Zwischenablage ein</span><span>Dateien aufs Brett ziehen</span></div>
+
+<section class="doc" id="richtungen">
+  <h2>Die drei Richtungen</h2>
+  <p>Gleiche Zettel, gleiche Handgriffe — die Richtungen unterscheiden sich nur im Charakter des Bretts.</p>
+  <div class="cards">
+    <div class="fcard"><h3><span class="n">A</span>Korkbrett</h3>
+      <p>Die Metapher ganz: Holz, Papier, Pins, leicht gedrehte Zettel. Sofort verständlich und warm — der Screenshot-Zettel wird zum Polaroid.</p>
+      <p>Passung: Charme, Spaß am Anpinnen.</p>
+      <div class="verdict">Risiko: Spielzeug-Look, schwer neben der ruhigen Torro-Gestaltung; bei vielen Zetteln schnell unruhig.</div></div>
+    <div class="fcard rec"><h3><span class="n">B</span>Ruhiges Raster — Empfehlung</h3>
+      <p>Die Torro-Designsprache zu Ende gedacht: Punktraster statt Holz, Karten wie Terminfarben im Kalender (Balken und Tönung), Magnet auf dem 8-px-Raster des Fenster-Modus (modes.md).</p>
+      <p>Passung: kann dauerhaft als Kachel neben der Arbeit liegen, ohne zu nerven.</p>
+      <div class="verdict">Risiko: weniger selbsterklärend als Kork — aber die Suite liest sich daran gewöhnt.</div></div>
+    <div class="fcard"><h3><span class="n">C</span>Zonen</h3>
+      <p>Wie B, aber mit beschrifteten Bereichen: Heute, Diese Woche, Warten, Ideen. Zonen geben dem Kurzzeit-Alltag Struktur, ohne zu zwingen — Zettel dürfen auch daneben liegen.</p>
+      <p>Passung: wer das Brett als Arbeitsoberfläche nutzt, nicht nur als Erinnerungswand.</p>
+      <div class="verdict">Später denkbar: Zettel mit Termin rutschen automatisch nach „Heute“.</div></div>
+  </div>
+</section>
+
+<section class="doc" id="funktionen">
+  <h2>Was das Brett kann</h2>
+  <div class="cards" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr))">
+    <div class="fcard"><ul class="plain">
+      <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span><b>Typen:</b> Text, Checkliste, Bild und Screenshot, Link, Datei. Später aus Mail und Eingang anpinnen („Pin to board“).</span></li>
+      <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span><b>Frei anordnen:</b> Ziehen mit Magnet auf dem 8-px-Raster — frei, aber nie schief. Zettel kreuzen Zonen frei.</span></li>
+      <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span><b>Farbe als Kategorie:</b> die fünf Standardfarben der Suite — als Balken und Tönung wie Terminfarben im Kalender (in A als Pin-Kopf).</span></li>
+      <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span><b>Vergänglichkeit:</b> Ablauf je Zettel („bis morgen“, „bis nächste Woche“); danach verblasst er. „Aufräumen“ wischt Abgehaktes fort. Was bleibt, verdient eine Notiz.</span></li>
+    </ul></div>
+    <div class="fcard"><ul class="plain">
+      <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span><b>Einfangen:</b> Einfügen (⌘V) und Ziehen von Dateien; später Screenshot direkt, ein globales Kürzel über den Kern (wie die Workspace-Tasten) und „Pin to board…“ im Tray.</span></li>
+      <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span><b>Suchen und finden:</b> Volltext über alle Zettel, Filter je Typ und Farbe.</span></li>
+      <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span><b>Mehrere Bretter:</b> Schwarzes Brett, Release 0.2, Urlaub — je Thema eines. Die Suite startet mit einem leeren „Pinboard“.</span></li>
+      <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span><b>Für Agenten:</b> <code>pinboard_create_pin</code> über MCP — „PR #341 wartet auf dich“ kommt vom Assistenten. Zetteltext wie überall untrusted; Überschreiben und Löschen nur mit Freigabe.</span></li>
+    </ul></div>
+  </div>
+</section>
+
+<section class="doc" id="kachel">
+  <h2>Als Kachel im Workspace</h2>
+  <p>Mini und Leiste sind Anzeigen, keine Mini-Apps: Zahl offener Zettel, die neuesten drei, eine Schnelleingabe. Das große Fenster ist das Brett selbst.</p>
+  <div class="miniflex">
+    <div class="mini" aria-label="Mini-Kachel, Vorschau">
+      <div class="mh"><svg class="i s14" viewBox="0 0 24 24"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/></svg>Pinboard<span class="n">9</span></div>
+      <div class="mb">
+        <div class="num">9<span>pins · 1 faded</span></div>
+        <div class="rc"><span class="d" style="background:var(--c2)"></span><span class="ell">Ask Lena for the invoice template</span></div>
+        <div class="rc"><span class="d" style="background:var(--c4)"></span><span class="ell">PR #341 waits for your review</span></div>
+        <div class="rc"><span class="d" style="background:var(--raised);border:1px solid var(--line-strong)"></span><span class="ell">Release 0.2 · 2 of 4 left</span></div>
+        <div class="nb"><svg class="i s12" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>Quick note…</div>
+      </div>
+    </div>
+    <p class="t2" style="max-width:60ch;margin:0">In einer Workspace-Vorlage liegt die Kachel neben Kalender und
+    Aufgaben; ein Zettel, der bleiben soll, wandert als Notiz in <code style="font:400 12px/18px ui-monospace,monospace;background:var(--raised);border:1px solid var(--line-strong);border-radius:3px;padding:0 4px">torronotes</code>.</p>
+  </div>
+</section>
+
+<section class="doc" id="vorbilder">
+  <h2>Vorbilder — was wir mitnehmen</h2>
+  <ul class="plain">
+    <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span><a href="https://usecorkboard.app/" target="_blank" rel="noopener">Cork</a>, <a href="https://pinslip.app/" target="_blank" rel="noopener">PinSlip</a>, <a href="https://ciiboard.com/en/" target="_blank" rel="noopener">Ciiboard</a> (2026): lokale Bretter mit Kurzbefehl, Magnetismus und teils MCP für Agenten — bestätigen den Weg: lokal zuerst, globales Anpinnen, Agenten pinnen mit.</span></li>
+    <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span>Apple Stickies, Windows Sticky Notes, KDE-Haftnotizen: tippen und loslassen, immer da. <b>Ohne Dialog anpinnen</b>, ohne Konto.</span></li>
+    <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span>Google Keep: Farbe als Kategorie, Erinnerungen, Raster. Wir übernehmen die Farben — aber das Brett ist <b>Blick, nicht Glocke</b>: Ablaufdatum statt Ping.</span></li>
+    <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span>Milanote, <a href="https://digitalsheriffdesigns.com/starmap/" target="_blank" rel="noopener">StarMap</a>: Kartenwände für Kreative. Freie Anordnung, Bereiche nur als Angebot (daher Richtung C).</span></li>
+    <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span>Miro, FigJam, Obsidian Canvas, Scapple: unendliche Leinwand, Zoom, Verbindungen. <b>Bewusst nicht</b> — ein Nebenbeibrett braucht eine feste Leinwand und keinen Werkzeugkasten; Verbindungen vielleicht Stufe 3.</span></li>
+    <li><svg class="i s14" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg><span>PureRef, <a href="https://www.tastemaker.site/" target="_blank" rel="noopener">Tastemaker</a>: Bild-Pinnwände schwebend über der Arbeit. <b>Screenshots sind gleichwertige Bürger</b>, die Kachel zeigt die neuesten.</span></li>
+  </ul>
+</section>
+
+<section class="doc" id="einordnung">
+  <h2>Einordnung in die Suite</h2>
+  <table class="tb"><thead><tr><th>App</th><th>Ihre Frage</th><th>Verhältnis zum Brett</th></tr></thead><tbody>
+    <tr><td>Notizen <code>torronotes</code> (Entwurf)</td><td>„Wo lege ich etwas ab?“</td><td>Dauerhafte Ablage in Markdown auf Nextcloud. Das Brett ist ihr Vorzimmer: „Save as note“ hebt einen Zettel zur Notiz auf.</td></tr>
+    <tr><td>Eingang (Inbox)</td><td>„Was ist reingekommen, braucht es mich?“</td><td>Meldungen im Fluss. „Pin to board“ hält einen Eintrag fest, wenn er über den Tag bleiben soll.</td></tr>
+    <tr><td>Kontext-Board (Idee im Katalog)</td><td>„Woran arbeiten die Agenten gerade?“</td><td>Würde ein eigenes Brett, das Agenten füllen: Branch, Ticket, Plan.</td></tr>
+    <tr><td>Fenster-Modus (modes.md)</td><td>„Wie verteile ich die Suite ohne Tiling?“</td><td>Arbeitsfläche für App-Elemente — deshalb heißt diese App nicht „Board“: <b>Pinboard</b>, Binary <code>torropinboard</code>, Fensterklasse <code>torro-pinboard</code>, Bereich <code>pinboard</code>, MCP-Präfix <code>pinboard_*</code>.</td></tr>
+  </tbody></table>
+  <p style="margin-top:16px"><b class="strong">Lokal zuerst:</b> das Brett braucht kein Konto. Zettel und Bilder liegen
+  im Datenverzeichnis des Kerns (SQLite und Bilddateien); Sync wäre später optional über einen Ordner.</p>
+</section>
+
+<section class="doc" id="bausteine">
+  <h2>Bausteine: Oberfläche, API, MCP</h2>
+  <p>Wie jede Funktion dreimal (docs/api.md). Der Katalog-Eintrag und der Request kommen in die erste Aufgabe; kein Befehl auf <code style="font:400 12px/18px ui-monospace,monospace;background:var(--raised);border:1px solid var(--line-strong);border-radius:3px;padding:0 4px">Never</code>. Agenten pinnen ohne Freigabe (wie <code style="font:400 12px/18px ui-monospace,monospace;background:var(--raised);border:1px solid var(--line-strong);border-radius:3px;padding:0 4px">notes.append_to_note</code>), Überschreiben und Löschen nur mit Freigabe.</p>
+  <table class="tb"><thead><tr><th>Befehl (Bereich pinboard)</th><th>Zugriff</th><th>MCP</th></tr></thead><tbody>
+    <tr><td>pinboard.list_boards {}</td><td>Read</td><td><code>pinboard_list_boards</code></td></tr>
+    <tr><td>pinboard.list_pins {"board?", "query?", "type?", "color?"}</td><td>Read</td><td><code>pinboard_list_pins</code></td></tr>
+    <tr><td>pinboard.create_pin {"board?", "type", "content"|"data", "position?", "color?", "expiry?"}</td><td>Write</td><td><code>pinboard_create_pin</code></td></tr>
+    <tr><td>pinboard.update_pin {"id", "position?", "size?", "color?", "expiry?"}</td><td>Write</td><td><code>pinboard_update_pin</code></td></tr>
+    <tr><td>pinboard.update_pin mit "content" (Text überschreiben)</td><td>Delete</td><td>—</td></tr>
+    <tr><td>pinboard.delete_pin {"id"}</td><td>Delete</td><td><code>pinboard_delete_pin</code></td></tr>
+    <tr><td>pinboard.create_board / rename_board / delete_board</td><td>Write / Delete</td><td><code>pinboard_create_board</code> …</td></tr>
+    <tr><td>inbox.create_pin_from_item {"id"} — später, wie „Save as note“</td><td>Write</td><td><code>inbox_create_pin_from_item</code></td></tr>
+  </tbody></table>
+</section>
+
+<section class="doc" id="naechste">
+  <h2>Nächste Schritte</h2>
+  <ul class="plain">
+    <li><svg class="i s14" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><span><b>Richtung wählen.</b> Empfehlung: B — oder C, wenn dir Zonen bei der Arbeit helfen. A nur, wenn dir die Metapher wichtiger ist als die Ruhe.</span></li>
+    <li><svg class="i s14" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><span><b>Konzept schreiben.</b> Ich schreibe docs/pinboard.md (wie notizen.md: Ziel, Entscheidungen, Stufen P1 Text-Zettel mit Kern, App und MCP · P2 Bilder und Screenshots · P3 Ablauf und Aufräumen · P4 mehrere Bretter, Einfügen aus Mail und Eingang) und lege Issue und Aufgaben in docs/tasks/ an.</span></li>
+    <li><svg class="i s14" viewBox="0 0 24 24"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg><span><b>Offen:</b> Anzeigename („Pinboard“ englisch, „Schwarzes Brett“ deutsch), globales Tastenkürzel über den Kern, Rechte der Agenten (Vorschlag: Anpinnen ohne Freigabe, Überschreiben und Löschen mit).</span></li>
+  </ul>
+</section>
+
+<p class="micro t3" style="margin-top:56px">Prototyp, Oktober 2026 · Token nach torro-design (Standard seit #291) ·
+veröffentlicht als Artefakt aus docs/prototypes/pinboard/index.html</p>
+</div>
+<script>
+"use strict";
+const $=(s,r=document)=>r.querySelector(s), $$=(s,r=document)=>[...r.querySelectorAll(s)];
+const ic=(n,c="")=>`<svg class="i ${c}" viewBox="0 0 24 24" aria-hidden="true">${P[n]||""}</svg>`;
+const P={
+ pin:'<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z"/>',
+ note:'<path d="M16 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11l5-5V5a2 2 0 0 0-2-2z"/><path d="M15 3v4a2 2 0 0 0 2 2h4"/>',
+ check:'<path d="m3 17 2 2 4-4"/><path d="m3 7 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/>',
+ camera:'<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/>',
+ image:'<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
+ link:'<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+ file:'<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z"/><path d="M14 2v5h5"/>',
+ clip:'<path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>',
+ spark:'<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/><path d="M20 3v4"/><path d="M22 5h-4"/><path d="M4 17v2"/><path d="M5 18H3"/>',
+ x:'<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+ clock:'<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+ bell:'<path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/>',
+ trash:'<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+ out:'<path d="M7 7h10v10"/><path d="M7 17 17 7"/>',
+ tick:'<path d="M20 6 9 17l-5-5"/>',
+ up:'<path d="M5 12h14"/><path d="M12 5v14"/>',
+ search:'<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+ mail:'<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/>',
+ undo:'<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+};
+
+const ZONES=[
+ {x:8,y:8,w:500,h:304,l:"Today"},{x:8,y:328,w:500,h:340,l:"This week"},
+ {x:520,y:8,w:492,h:304,l:"Waiting"},{x:520,y:328,w:492,h:340,l:"Ideas"}];
+const SEED=[
+ {id:1,type:"note",color:"c2",x:40,y:56,rot:-1.5,text:"Ask Lena for the invoice template",bell:"Today 16:00"},
+ {id:2,type:"shot",x:300,y:56,rot:-.5,name:"invoice-final.pdf",meta:"Screenshot · today 09:12"},
+ {id:3,type:"check",x:40,y:368,rot:1,title:"Release 0.2",items:[["Fix sigterm handling",1],["Update the changelog",1],["Screenshot the new dialog",0],["Ping the reviewers",0]]},
+ {id:4,type:"file",color:"c1",x:300,y:400,rot:.5,name:"budget-2027.xlsx",meta:"from Mail · 2.4 MB"},
+ {id:5,type:"note",x:300,y:556,rot:-1,text:"Tax consultant: papers sent 14 Oct — follow up",clock:"Since 14 Oct"},
+ {id:6,type:"agent",color:"c4",x:560,y:56,rot:1,text:"PR #341 waits for your review — 2 approvals missing",time:"2 h ago"},
+ {id:7,type:"expired",x:560,y:224,rot:-1.5,text:"Team lunch — vote by Friday",fade:"since 24 Oct"},
+ {id:8,type:"link",color:"c0",x:560,y:376,rot:.5,title:"Pinboard concept",url:"docs/prototypes/pinboard"},
+ {id:9,type:"image",x:560,y:492,rot:1,name:"Whiteboard photo",meta:"Today 08:40"},
+];
+let pins=SEED.map(p=>({...p}));
+const SUN='<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>';
+const MOON='<svg class="i" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>';
+const esc=s=>String(s==null?"":s).replace(/[&<>"]/g,m=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[m]));
+const V=()=>$("#win").dataset.v;
+const pinOf=el=>el?pins.find(q=>q.id===+el.dataset.id):null;
+
+function updateCount(){
+  const faded=pins.filter(p=>p.faded).length;
+  $("#count").textContent=`${pins.length} pin${pins.length===1?"":"s"}${faded?` · ${faded} faded`:""}`;
+  const n=$(".side .nav .n"); if(n)n.textContent=pins.length;
+}
+function applySearch(){
+  const s=($("#q").value||"").trim().toLowerCase();
+  $$("#board .pin").forEach(el=>{
+    const p=pinOf(el);
+    const hit=!s||(p&&[p.text,p.title,p.name,p.url,p.exp].filter(Boolean).some(v=>String(v).toLowerCase().includes(s))
+      ||(p.items||[]).some(i=>String(i[0]).toLowerCase().includes(s)));
+    el.classList.toggle("dim",!hit);
+  });
+}
+function pinHTML(p){
+  const t=p.type==="expired"?"note":p.type;
+  let h="";
+  if(t==="note"){
+    h=`<div class="txt" contenteditable="plaintext-only" spellcheck="false" data-f="text">${esc(p.text)}</div>`;
+    if(p.bell)h+=`<div class="mrow">${ic("bell","s12")}<span>${esc(p.bell)}</span></div>`;
+    if(p.clock)h+=`<div class="mrow">${ic("clock","s12")}<span>${esc(p.clock)}</span></div>`;
+    if(p.exp)h+=`<div class="mrow">${ic("clock","s12")}<span>${esc(p.exp)}</span></div>`;
+  }else if(t==="check"){
+    h=`<h4>${esc(p.title)}</h4>`+p.items.map((it,i)=>
+      `<div class="ck${it[1]?" done":""}" data-i="${i}"><span class="c">${it[1]?ic("tick","s12"):""}</span><span class="t">${esc(it[0])}</span></div>`).join("");
+    const d=p.items.filter(i=>i[1]).length;
+    h+=`<div class="progress"><div class="bar"><i style="width:${Math.round(d/p.items.length*100)}%"></i></div><span class="n">${d}/${p.items.length}</span></div>`;
+  }else if(t==="shot"){
+    h=`<div class="shotimg"><div class="tb"><span class="l"></span><span class="l"></span><span class="l"></span><span class="ell grow">${esc(p.name)}</span></div>
+       <div class="pg"><div class="hd"></div><div class="ln w90"></div><div class="ln w60"></div><div class="ln w75"></div><div class="ln"></div></div></div>
+       <div class="mrow">${ic("clock","s12")}<span>${esc(p.meta)}</span></div>`;
+  }else if(t==="file"){
+    h=`<div class="crow">${ic("file","s14")}<span class="nm strong ell">${esc(p.name)}</span></div>
+       <div class="mrow">${ic("clip","s12")}<span>${esc(p.meta)}</span></div>`;
+  }else if(t==="link"){
+    h=`<div class="crow">${ic("link","s14")}<span class="nm strong ell">${esc(p.title)}</span></div>
+       <div class="mrow">${ic("out","s12")}<span class="ell">${esc(p.url)}</span></div>`;
+  }else if(t==="image"){
+    h=`<div class="photo"></div><div class="crow">${ic("camera","s14")}<span class="nm ell">${esc(p.name)}</span></div>
+       <div class="mrow">${ic("clock","s12")}<span>${esc(p.meta)}</span></div>`;
+  }else if(t==="agent"){
+    h=`<div class="chiprow"><span class="pill">${ic("spark")}Claude · via MCP</span></div>
+       <div class="txt" contenteditable="plaintext-only" spellcheck="false" data-f="text">${esc(p.text)}</div>
+       <div class="pfoot"><span class="t3 meta grow">${esc(p.time)}</span><button class="btn ghost sm" data-act="openpr">Open PR</button></div>`;
+  }
+  if(p.type==="expired")
+    h=`<div class="txt" contenteditable="plaintext-only" spellcheck="false" data-f="text">${esc(p.text)}</div>
+       <div class="chiprow" style="margin:8px 0 0"><span class="pill attn">${ic("clock")}Faded · ${esc(p.fade)}</span></div>
+       <div class="pfoot"><span class="grow"></span><button class="btn sm" data-act="resurface">Resurface</button><button class="btn ghost sm" data-act="del">Dismiss</button></div>`;
+  const head=V()==="a"?`<span class="pinhead"${p.color?` style="--cc:var(--${p.color})"`:""}></span>${(t==="shot"||t==="image")?'<span class="tape"></span>':""}`:"";
+  const acts=`<div class="acts">${["c0","c1","c2","c3","c4"].map(k=>
+      `<button class="ab cd" data-act="color" data-c="${k}" style="background:var(--${k})" aria-label="Set color"></button>`).join("")}
+    <button class="ab cd none" data-act="color" data-c="" aria-label="No color"></button><span class="sep"></span>
+    <button class="ab" data-act="expiry" aria-label="Expiry">${ic("clock","s14")}</button>
+    <button class="ab" data-act="del" aria-label="Remove">${ic("trash","s14")}</button></div>`;
+  return `<div class="pin w-${t}${p.faded?" fade":""}" data-id="${p.id}"${p.color?` data-c="${p.color}"`:""} tabindex="0"
+    style="left:${p.x}px;top:${p.y}px;${p.rot!=null?`--rot:${p.rot}deg;`:""}">${head}${acts}${h}</div>`;
+}
+function render(){
+  $("#board").innerHTML=ZONES.map(z=>
+    `<div class="zone" style="left:${z.x}px;top:${z.y}px;width:${z.w}px;height:${z.h}px"><span class="zl">${z.l}</span></div>`).join("")
+    +pins.map(pinHTML).join("");
+  updateCount();applySearch();
+}
+
+/* Toast mit Undo */
+let toastTimer=null;
+function hideToast(){const t=$("#toast");if(t)t.hidden=true;}
+function toast(msg,undoFn){
+  let t=$("#toast");
+  if(!t){t=document.createElement("div");t.id="toast";t.className="toast";t.style.paddingLeft="16px";document.body.appendChild(t);}
+  t.innerHTML=`<span class="grow">${esc(msg)}</span>${undoFn?`<button>${ic("undo","s14")}Undo</button>`:""}`;
+  t.hidden=false;
+  if(undoFn)$("button",t).onclick=()=>{undoFn();hideToast();};
+  clearTimeout(toastTimer);toastTimer=setTimeout(hideToast,5000);
+}
+let lastDel=null;
+function removePin(p){
+  const i=pins.indexOf(p);if(i<0)return;
+  pins.splice(i,1);lastDel={p,i};render();
+  toast("Pin removed",()=>{pins.splice(Math.min(lastDel.i,pins.length),0,lastDel.p);render();});
+}
+
+/* Ziehen: Pointer erfassen, in b/c Magnet auf 8 px, in A frei; Brettrand hält */
+let z=10;
+$("#board").addEventListener("pointerdown",e=>{
+  if(e.button!==0)return;
+  const el=e.target.closest(".pin");if(!el)return;
+  const p=pinOf(el);if(!p)return;
+  const sx=e.clientX,sy=e.clientY,ox=p.x,oy=p.y;
+  const b=$("#board"),bw=b.clientWidth-el.offsetWidth,bh=b.clientHeight-el.offsetHeight;
+  let moved=false;
+  const mv=ev=>{
+    const dx=ev.clientX-sx,dy=ev.clientY-sy;
+    if(!moved&&Math.hypot(dx,dy)<4)return;
+    if(!moved){moved=true;el.classList.add("drag");el.style.zIndex=++z;
+      const a=document.activeElement;if(a&&a.isContentEditable)a.blur();}
+    let nx=ox+dx,ny=oy+dy;
+    if(V()!=="a"){nx=Math.round(nx/8)*8;ny=Math.round(ny/8)*8;}
+    p.x=Math.max(0,Math.min(nx,bw));p.y=Math.max(0,Math.min(ny,bh));
+    el.style.left=p.x+"px";el.style.top=p.y+"px";
+  };
+  const up=()=>{el.removeEventListener("pointermove",mv);el.removeEventListener("pointerup",up);
+    el.removeEventListener("pointercancel",up);if(moved)el.classList.remove("drag");};
+  el.addEventListener("pointermove",mv);el.addEventListener("pointerup",up);el.addEventListener("pointercancel",up);
+  try{el.setPointerCapture(e.pointerId)}catch{}
+});
+
+/* Klicks im Brett: Checklisten, Farben, Ablauf, Löschen, Zettel-Aktionen */
+$("#board").addEventListener("click",e=>{
+  const el=e.target.closest(".pin");if(!el)return;
+  const p=pinOf(el);if(!p)return;
+  const ck=e.target.closest(".ck");
+  if(ck){const i=+ck.dataset.i;p.items[i][1]=p.items[i][1]?0:1;render();return;}
+  const b=e.target.closest("[data-act]");if(!b)return;
+  const a=b.dataset.act;
+  if(a==="color"){if(b.dataset.c)p.color=b.dataset.c;else delete p.color;render();}
+  else if(a==="expiry"){
+    if(p.faded){p.faded=false;p.type="note";delete p.fade;}
+    else{const E=[null,"Until tomorrow","For 1 week"];p.exp=E[(E.indexOf(p.exp)+1)%E.length];}
+    render();
+  }
+  else if(a==="del")removePin(p);
+  else if(a==="resurface"){p.faded=false;p.type="note";p.exp="For 1 week";delete p.fade;render();
+    toast("Pin resurfaced — expires in one week");}
+  else if(a==="openpr")toast("Opening PR #341 in the browser — demo");
+});
+$("#board").addEventListener("input",e=>{
+  const el=e.target.closest(".txt");if(!el||!el.dataset.f)return;
+  const p=pinOf(el.closest(".pin"));if(p)p[el.dataset.f]=el.textContent;
+});
+$("#board").addEventListener("keydown",e=>{
+  const el=e.target.closest(".pin");if(!el)return;
+  if(e.target.isContentEditable||e.target.closest("button"))return;
+  const p=pinOf(el);if(!p)return;
+  const b=$("#board"),step=e.shiftKey?1:8;
+  const mv={ArrowLeft:[-step,0],ArrowRight:[step,0],ArrowUp:[0,-step],ArrowDown:[0,step]}[e.key];
+  if(mv){e.preventDefault();
+    p.x=Math.max(0,Math.min(p.x+mv[0],b.clientWidth-el.offsetWidth));
+    p.y=Math.max(0,Math.min(p.y+mv[1],b.clientHeight-el.offsetHeight));
+    el.style.left=p.x+"px";el.style.top=p.y+"px";}
+  else if(e.key==="Delete"||e.key==="Backspace"){e.preventDefault();removePin(p);}
+});
+
+/* Suche dimmt, was nicht passt */
+$("#q").addEventListener("input",applySearch);
+
+/* „Neu“-Menü */
+let menuEl=null;
+function closeMenu(){if(menuEl){menuEl.remove();menuEl=null;}}
+function addPin(o){
+  const id=Math.max(0,...pins.map(p=>p.id))+1;
+  const pos={x:40+(addN%3)*264,y:176+Math.floor(addN/3)*152};addN++;
+  pins.push({id,x:Math.min(pos.x,776),y:Math.min(pos.y,520),rot:V()==="a"?(addN%2?1:-1)*.8:0,...o});
+  render();
+}
+let addN=0;
+function pasteFromClipboard(){
+  if(navigator.clipboard&&navigator.clipboard.readText)
+    navigator.clipboard.readText().then(t=>{t&&t.trim()?addPin({type:"note",text:t.trim().slice(0,200)}):toast("Clipboard is empty");})
+      .catch(()=>toast("Press ⌘V to paste from the clipboard"));
+  else toast("Press ⌘V to paste from the clipboard");
+}
+function openMenu(){
+  closeMenu();
+  const w=$("#win"),b=$("#new"),wr=w.getBoundingClientRect(),br=b.getBoundingClientRect();
+  menuEl=document.createElement("div");menuEl.className="menu";menuEl.id="pinmenu";
+  menuEl.innerHTML=[["note","note","Text note","T"],["check","check","Checklist","C"],["camera","shot","Screenshot","S"],
+    ["image","image","Image","I"],["link","link","Link","L"]]
+    .map(([i,t,l,k])=>`<button class="item" data-new="${t}">${ic(i,"s14")}<span>${l}</span><kbd>${k}</kbd></button>`).join("")
+    +`<div class="sep"></div><button class="item" data-new="paste">${ic("clip","s14")}<span>Paste from clipboard</span><kbd>⌘V</kbd></button>`;
+  menuEl.style.left=Math.max(8,Math.min(br.left-wr.left,wr.width-232))+"px";
+  menuEl.style.top=(br.bottom-wr.top+6)+"px";
+  w.appendChild(menuEl);
+  menuEl.addEventListener("click",e=>{
+    const it=e.target.closest("[data-new]");if(!it)return;
+    closeMenu();const k=it.dataset.new;
+    if(k==="paste"){pasteFromClipboard();return;}
+    const seed={note:{type:"note",text:"New note"},check:{type:"check",title:"Checklist",items:[["First item",0]]},
+      shot:{type:"shot",name:"Screenshot",meta:"Just now"},image:{type:"image",name:"Image",meta:"Just now"},
+      link:{type:"link",title:"Link",url:"https://example.com"}}[k];
+    if(seed)addPin(seed);
+  });
+}
+$("#new").addEventListener("click",()=>menuEl?closeMenu():openMenu());
+document.addEventListener("click",e=>{if(menuEl&&!e.target.closest("#pinmenu")&&!e.target.closest("#new"))closeMenu();});
+document.addEventListener("keydown",e=>{if(e.key==="Escape")closeMenu();});
+
+/* Einfügen und Dateien: Text wird Zettel, Bilder Bild-Zettel */
+document.addEventListener("paste",e=>{
+  if(e.target.closest&&e.target.closest(".txt,input"))return;
+  const dt=e.clipboardData;if(!dt)return;
+  if(dt.files&&dt.files.length){handleFiles(dt.files);e.preventDefault();return;}
+  const t=dt.getData?dt.getData("text/plain"):"";
+  if(t&&t.trim())addPin({type:"note",text:t.trim().slice(0,200)});
+  e.preventDefault();
+});
+function handleFiles(fl){
+  let n=0;
+  for(const f of fl){
+    if(n>=4)break;
+    if(f.type&&f.type.startsWith("image/"))addPin({type:"image",name:f.name,meta:"Just now"});
+    else addPin({type:"file",name:f.name,meta:`${Math.max(1,Math.round(f.size/1024))} KB`});
+    n++;
+  }
+  if(n)toast(n+(n===1?" pin added":" pins added"));
+}
+const wrap=$("#wrap");
+wrap.addEventListener("dragover",e=>e.preventDefault());
+wrap.addEventListener("drop",e=>{e.preventDefault();if(e.dataTransfer&&e.dataTransfer.files.length)handleFiles(e.dataTransfer.files);});
+
+/* Richtung, Thema, Größenklasse, Zurücksetzen */
+function setVariant(v){
+  if(!["a","b","c"].includes(v))v="b";
+  $("#win").dataset.v=v;
+  $$(".seg button").forEach(b=>b.classList.toggle("on",b.dataset.v===v));
+  try{localStorage.setItem("pb-v",v)}catch{}
+  if(location.hash!=="#"+v)location.hash=v;
+}
+$$(".seg button").forEach(b=>b.addEventListener("click",()=>setVariant(b.dataset.v)));
+function effTheme(){return document.documentElement.dataset.theme||(matchMedia("(prefers-color-scheme: light)").matches?"light":"dark");}
+function setTheme(t){
+  if(t)document.documentElement.dataset.theme=t;else delete document.documentElement.dataset.theme;
+  try{localStorage.setItem("pb-theme",t||"sys")}catch{}
+  $("#theme").innerHTML=effTheme()==="light"?MOON:SUN;
+}
+$("#theme").addEventListener("click",()=>setTheme(effTheme()==="light"?"dark":"light"));
+$("#reset").addEventListener("click",()=>{
+  pins=SEED.map(p=>({...p}));$("#q").value="";addN=0;render();toast("Demo reset");
+});
+function setSize(){
+  const p=new URLSearchParams(location.search).get("size");
+  document.documentElement.dataset.size=["l","m","s"].includes(p)?p:(innerWidth>=1024?"l":innerWidth>=600?"m":"s");
+}
+addEventListener("resize",setSize);
+
+/* Start: ?v= und Hash vor localStorage, ?theme= vor gespeichertem Thema */
+const params=new URLSearchParams(location.search);
+let stored=null;try{stored=localStorage.getItem("pb-v")}catch{}
+setVariant(params.get("v")||location.hash.slice(1)||stored||"b");
+const th=params.get("theme");
+if(th==="light"||th==="dark")setTheme(th);
+else{let t=null;try{t=localStorage.getItem("pb-theme")}catch{}setTheme(t==="light"||t==="dark"?t:null);}
+setSize();
+render();
+</script>
+</body>
+</html>
