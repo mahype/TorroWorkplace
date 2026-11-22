@@ -802,12 +802,45 @@ Regeln:
 
 ## 9. Sichtprüfung (Pflicht bei UI-Änderungen)
 
-Tests reichen bei Oberfläche nicht. Jede geänderte Ansicht in **allen Größenklassen** ansehen.
+Tests reichen bei Oberfläche nicht. Jede geänderte Ansicht wird als Bild angesehen, **gezielt**: nur die
+Zustände, die die Änderung berührt, und nur in den Größen, in denen sie wirklich erscheinen (#646).
 Aktionsfeedback immer mitprüfen: laufend, bestätigter Erfolg, Fehler, Teilerfolg und Abbruch.
 Für das Speicher-Untermenü gibt es in `torroinbox` die nebenwirkungsfreien Demo-Zustände
 `save-running`, `save-success`, `save-error`, `save-partial`, `save-choosing`, `save-cancelled`,
 `save-shortened`. Der Demo-Spinner hat einen festen Winkel ohne Timer; echte Dialoge und Bewegung
-zusätzlich von Hand prüfen. Alle drei Abstandsstufen sowie Hell/Dunkel sind Pflicht.
+zusätzlich von Hand prüfen.
+
+**Gezielte Prüfung (Standard).** Vor dem ersten Bild festlegen und im Bericht nennen, was gezeichnet wird:
+
+1. **Zustände:** aus dem Diff die `--open`-Zustände (bzw. `--section`, `--view`), deren Ansicht sich ändert.
+   Unberührte Zustände und andere Apps bleiben weg.
+2. **Größen:** Breit, Mittel und Schmal mit `--shot-size 1600x1000 --shot-size 800x600 --shot-size 480x900`.
+   Mini (240×160), Mini hoch (320×480) und Leiste (1200×200) nur, wenn die Ansicht dort tatsächlich erscheint
+   (in der Steuerzentrale zeigen sie nur die Übersichts-Kachel) oder die Änderung genau diese Layouts betrifft.
+3. **Erscheinungsbild:** jeder gewählte Zustand hell und dunkel (`--appearance light` und `--appearance dark`).
+4. **Abstandsstufen:** `--design comfort` und `--design dense` nur, wo die Änderung neue Gruppen, Zeilen oder
+   Höhen bringt; dann genügt ein Zustand in einer Größe (meist Mittel). Sonst nur die Standardstufe `torro`.
+
+```bash
+sizes=(--shot-size 1600x1000 --shot-size 800x600 --shot-size 480x900)
+for look in dark light; do
+  .claude/skills/torro-design/shots.sh torroworkplace "$SCRATCH/design" setup-ai setup-done -- \
+    --appearance "$look" "${sizes[@]}"
+done
+.claude/skills/torro-design/shots.sh torroworkplace "$SCRATCH/design" setup-ai -- \
+  --appearance dark --design dense --shot-size 800x600
+```
+
+So entstehen für zwei Zustände zwölf Bilder statt 24 je Stufe, dazu eins je zusätzlicher Stufe. Die Dateien heißen
+mit `--shot-size` nur nach der Größe, z. B. `torroworkplace-setup-ai-dark-800x600.png`.
+
+**Nachprüfung nach Korrekturen:** nur die korrigierten Zustände in den Größen und Erscheinungsbildern neu zeichnen,
+in denen der Befund lag, nicht den ganzen Satz.
+
+**Voller Lauf (Ausnahme, mit Anlass):** alle Zustände der Ansicht, alle sechs Größen (`shots.sh` ohne
+`--shot-size`), hell und dunkel, alle drei Abstandsstufen. Nur vor einem Release (`release-check`), bei Änderungen,
+die jede Ansicht treffen (Theme, Tokens, Schrift, `torro_gui`-Bausteine, Fensteraufbau) oder auf ausdrücklichen
+Wunsch. Den Anlass im Bericht nennen.
 
 **Der Weg auf jedem System: `shots.sh`, ohne Fenster (#492).** Die App zeichnet ihre Demo-Ansicht im
 Speicher (`--demo --shots <ordner>`, `torro_gui::shots`) und legt sie als PNG ab: kein Fenster, kein
@@ -836,7 +869,7 @@ Retina-Bildschirm: Mini (240×160 logisch) ist ein Bild von 480×320 Pixeln. Gle
 Kante bis 4096; ersetzt die sechs, Datei `<präfix>-1000x700.png`). Der erste Fehler bricht mit seinem Exit-Code ab
 (64: unbekannter Parameter oder Wert).
 
-- **Immer beide Erscheinungsbilder:** je Ansicht `--appearance dark` und `--appearance light`. Ohne
+- **Immer beide Erscheinungsbilder:** je gewähltem Zustand `--appearance dark` und `--appearance light`. Ohne
   Fenster kennt die App das Hell/Dunkel des Systems nicht.
 - **Nicht im Bild:** die Fensterhülle (Ampel, Titelleiste), Hover-Zustände, die Mindestgröße des
   Fensters (jede Größe wird gezeichnet, auch eine, die das Fenster nicht zuließe), die Erinnerung über
@@ -906,8 +939,8 @@ nicht. `--appearance
 light|dark|system` überschreibt nur für diesen Prozess die gespeicherte Einstellung (damit
 entfällt jedes im Code erzwungene „hell“); `--design <id>` (nur mit `--demo`, alle Apps und die
 Steuerzentrale) zeichnet mit der Abstandsstufe `<id>`: `torro` (Standard), `comfort` oder `dense` (#484; eigene
-Designs aus einem Ordner gibt es nicht mehr) – jede Ansicht in allen drei Stufen ansehen, also auch mit
-`--design comfort` und `--design dense`; `--font` und `--color-scheme` wählen Schrift (z. B. `plex`) und Farben
+Designs aus einem Ordner gibt es nicht mehr) – `--design comfort` und `--design dense` gezielt dort, wo neue
+Gruppen oder Höhen hinzukommen (siehe „Gezielte Prüfung“), alle drei Stufen im vollen Lauf; `--font` und `--color-scheme` wählen Schrift (z. B. `plex`) und Farben
 ebenso (eigene aus ihren Ordnern mit `TORRO_DATA_HOME` auf ein Temp-Verzeichnis, damit die echten unberührt bleiben); `--now 2026-10-13T10:30` (Kalender, Aufgaben) fixiert
 „jetzt“ samt Demo-Daten für wiederholbare Bilder (auch im Aufgaben-Detail).
 Unbekannte Werte: Fehlermeldung mit den gültigen Werten, Exit-Code 64. Beispiel:
@@ -950,7 +983,9 @@ Fenster nicht die angeforderte Größe (Mindestgröße), ist das ein Befund.
 - [ ] Jede Aktion reagiert unmittelbar sichtbar; laufend/Erfolg/Fehler unterscheidbar, Teilerfolg und
       Abbruch nie als voller Erfolg; Erklärung erreichbar, keine Bewegung ohne tatsächliche Arbeit
 - [ ] Tastatur: Fokus sichtbar, Enter/Escape/Pfeile, Kurzbefehle
-- [ ] In allen sechs Größen angesehen: Layout wechselt sinnvoll, nichts abgeschnitten, groß nicht gestreckt
+- [ ] Berührte Zustände gezielt angesehen (Abschnitt 9): Breit, Mittel, Schmal hell und dunkel, Mini, Mini hoch
+      und Leiste nur, wo die Ansicht dort erscheint; Layout wechselt sinnvoll, nichts abgeschnitten, groß nicht
+      gestreckt. Voller Lauf über alle sechs Größen und drei Stufen nur mit Anlass (Release, Theme, Wunsch)
 - [ ] Alle Texte über `tr()`, englisch, Satzschreibung
 
 ## 11. Aufräumen einer App
