@@ -8,6 +8,10 @@
 //! The language comes from `TORRO_LANG` (`en`, `de`), else from the language chosen in the
 //! control centre (`settings.json`), else from `LC_ALL`, `LC_MESSAGES`, `LANG` (anything
 //! starting with `de` → German), else English. It is read once per process.
+//!
+//! Processes started by Cargo (`cargo test`, `cargo run`) get `TORRO_LANG=en` from
+//! `.cargo/config.toml` unless it is already set, so tests never depend on the real home's
+//! `settings.json` or the machine's locale.
 
 mod de;
 
@@ -109,6 +113,15 @@ fn german() -> &'static HashMap<&'static str, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `.cargo/config.toml` sets `TORRO_LANG` for every test, so no test falls back to the real
+    /// home's `settings.json` or the machine's locale (issue #955).
+    #[test]
+    fn tests_get_a_fixed_language_from_cargo() {
+        let forced = std::env::var("TORRO_LANG").unwrap_or_default();
+        assert!(!forced.trim().is_empty(), "TORRO_LANG is missing; see [env] in .cargo/config.toml");
+        assert_eq!(lang(), detect(|key| (key == "TORRO_LANG").then(|| forced.clone())));
+    }
 
     fn env<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
         move |key| pairs.iter().find(|(k, _)| *k == key).map(|(_, v)| v.to_string())

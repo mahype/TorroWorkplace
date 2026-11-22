@@ -12,3 +12,10 @@ runner = "scripts/macos-dev-run.sh"
 # 2 MiB of a test thread hold (issue #643; several core tests overflowed on main already).
 [env]
 RUST_MIN_STACK = "8388608"
+
+# Every test (and a `cargo run`) speaks English unless `TORRO_LANG` is set: without it,
+# `torro_core::i18n::lang()` would read the language chosen in the real home's `settings.json` and then
+# `LANG`, so tests ran in a different language on every machine (issue #955). Not forced, so
+# `TORRO_LANG=de cargo test` still runs in German. Installed apps are started without Cargo and keep the
+# order `TORRO_LANG` → `settings.json` → environment.
+TORRO_LANG = "en"
