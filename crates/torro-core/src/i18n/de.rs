@@ -2526,6 +2526,21 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Hooks", "Hooks"),
     ("Script", "Skript"),
     ("{agent} hooks", "Hooks von {agent}"),
+    // Connecting a client through the service, without the main application (#538)
+    ("There is no client {target}; one of {known}.", "Es gibt keinen Client {target}, möglich sind {known}."),
+    (
+        "{client} is already connected. Disconnect it first.",
+        "{client} ist schon verbunden. Trenne die Verbindung zuerst.",
+    ),
+    ("{client} was not found on this computer.", "{client} wurde auf diesem Computer nicht gefunden."),
+    (
+        "{client} is set up by hand. Create a key to copy instead.",
+        "{client} wird von Hand eingerichtet. Erstelle stattdessen einen Schlüssel zum Kopieren.",
+    ),
+    (
+        "A client of the kind {kind} is removed with clients.remove_client.",
+        "Ein Client der Art {kind} wird mit clients.remove_client entfernt.",
+    ),
     ("Access", "Zugriff"),
     ("Access to", "Zugriff auf"),
     ("None", "Keiner"),
