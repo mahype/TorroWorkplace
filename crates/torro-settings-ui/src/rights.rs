@@ -1515,7 +1515,13 @@ pub fn area_summary(rights: &Rights, areas: &[Area]) -> String {
             }
             let level = format!("{}: {}", area_label(area), widgets::level_label(granted.level));
             match Pick::ALL.into_iter().find(|pick| pick.area() == area) {
-                Some(pick) => Some(format!("{level} · {}", selection_words(pick, pick.of(rights)))),
+                Some(pick) => {
+                    let words = format!("{level} · {}", selection_words(pick, pick.of(rights)));
+                    Some(match hidden_words(pick, rights) {
+                        Some(hidden) => format!("{words} · {hidden}"),
+                        None => words,
+                    })
+                }
                 None => Some(level),
             }
         })
@@ -1523,6 +1529,20 @@ pub fn area_summary(rights: &Rights, areas: &[Area]) -> String {
     match parts.is_empty() {
         true => tr("No access").to_string(),
         false => parts.join(" · "),
+    }
+}
+
+/// The hidden address books a client reaches by name, in words ("1 hidden", "2 hidden"); `None` for
+/// other selections or none named (issue #688). They are never part of "All" nor counted in the
+/// selection, so without this a client reading only a hidden book would read "0 address books".
+fn hidden_words(pick: Pick, rights: &Rights) -> Option<String> {
+    if pick != Pick::AddressBooks {
+        return None;
+    }
+    match rights.hidden_address_books.len() {
+        0 => None,
+        1 => Some(tr("1 hidden").to_string()),
+        n => Some(trf("{n} hidden", &[("n", &n)])),
     }
 }
 
@@ -2924,6 +2944,26 @@ mod tests {
         assert_eq!(selection_words(Pick::AddressBooks, &rights.address_books), tr("1 address book"));
         rights.address_books = Selection::Only(vec![BOOK.into(), TEAM.into()]);
         assert_eq!(selection_words(Pick::AddressBooks, &rights.address_books), trf("{n} address books", &[("n", &2)]));
+    }
+
+    /// Issue #688: the summary names the hidden books a client reaches by name; with an empty
+    /// selection and one hidden book it does not read as if no contacts were reached.
+    #[test]
+    fn the_summary_counts_hidden_address_books() {
+        let mut rights = Rights::none();
+        rights.areas.insert(Area::Contacts, AreaRights { level: Level::Read, admin: false });
+        rights.address_books = Selection::Only(Vec::new());
+        let level = format!("{}: {}", area_label(Area::Contacts), widgets::level_label(Level::Read));
+        let none = trf("{n} address books", &[("n", &0)]);
+        assert_eq!(area_summary(&rights, &[Area::Contacts]), format!("{level} · {none}"));
+        rights.hidden_address_books = vec![RECENT.into()];
+        assert_eq!(area_summary(&rights, &[Area::Contacts]), format!("{level} · {none} · {}", tr("1 hidden")));
+        rights.address_books = Selection::Only(vec!["acc/work".into()]);
+        rights.hidden_address_books.push(SYSTEM.into());
+        let two = trf("{n} hidden", &[("n", &2)]);
+        assert_eq!(area_summary(&rights, &[Area::Contacts]), format!("{level} · {} · {two}", tr("1 address book")));
+        rights.areas.insert(Area::Calendar, AreaRights { level: Level::Read, admin: false });
+        assert!(!area_summary(&rights, &[Area::Calendar]).contains(tr("1 hidden")), "only for address books");
     }
 
     /// Issue #353: both groups show while "Contacts" has a level and not at "No access"; the hidden

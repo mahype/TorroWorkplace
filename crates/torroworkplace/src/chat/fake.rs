@@ -11,8 +11,8 @@ use torro_chat::{ChatError, ConversationKind, FileRef, Mention, MessageKind, Not
 
 use super::remote::tests::message;
 use super::remote::{
-    CallPeople, Caps, DavPath, FileError, Picture, Reference, RemoteHit, RemoteMessage, RemotePerson, RemoteQuote,
-    RemoteRing, RemoteRoom, RemoteStatus, Sending, ShareMeta, Uploaded,
+    CallPeople, Caps, DavPath, FileError, FileFacts, Picture, Reference, RemoteHit, RemoteMessage, RemotePerson,
+    RemoteQuote, RemoteRing, RemoteRoom, RemoteStatus, Sending, ShareMeta, Uploaded,
 };
 
 /// The user id of the fake's own person.
@@ -55,6 +55,10 @@ pub struct State {
     pub refuse_shares: bool,
     /// The cards the server knows, by link.
     pub references: BTreeMap<String, Reference>,
+    /// What the public shares name, by token (issue #924).
+    pub share_infos: BTreeMap<String, FileFacts>,
+    /// What `PROPFIND` tells of the person's files and folders, by path (`/Projects/Offer.pdf`; issue #924).
+    pub file_infos: BTreeMap<String, FileFacts>,
     /// The previews the server draws, by file id.
     pub previews: BTreeMap<u64, Picture>,
     /// The pictures of cards, by id.
@@ -166,6 +170,8 @@ impl Default for Server {
                 shares: Vec::new(),
                 refuse_shares: false,
                 references: BTreeMap::new(),
+                share_infos: BTreeMap::new(),
+                file_infos: BTreeMap::new(),
                 previews: BTreeMap::new(),
                 card_pictures: BTreeMap::new(),
                 free: None,
@@ -560,6 +566,16 @@ impl Server {
     pub async fn resolve(&self, link: &str) -> Result<Option<Reference>, FileError> {
         let state = self.call(format!("resolve {link}"))?;
         Ok(state.references.get(link).cloned())
+    }
+
+    pub async fn share_info(&self, token: &str) -> Result<Option<FileFacts>, FileError> {
+        let state = self.call(format!("share_info {token}"))?;
+        Ok(state.share_infos.get(token).cloned())
+    }
+
+    pub async fn file_info(&self, _user: &str, path: &DavPath) -> Result<Option<FileFacts>, FileError> {
+        let state = self.call(format!("file_info {}", path.as_path()))?;
+        Ok(state.file_infos.get(&path.as_path()).cloned())
     }
 
     pub async fn share(&self, token: &str, path: &DavPath, meta: &ShareMeta) -> Result<(), FileError> {

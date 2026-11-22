@@ -709,7 +709,8 @@ nebeneinander. Beispiel beim Nutzer: ein 32:9-Monitor mit 7680×2160 bei Skalier
 funktionieren.
 
 **Größenklassen** (logische Pixel), geprüft in dieser Reihenfolge – `torro_gui::layout::of(size)`
-(K.18), nie eigene Schwellen in Views:
+(K.18), nie eigene Schwellen in Views. Alle Schwellen mit Fundstellen im Code, auch die auf der Inhaltsbreite:
+[`docs/groessenklassen.md`](../../../docs/groessenklassen.md).
 
 | # | Klasse | Bedingung | Rand | Chrom | Beispiel Kalender / Aufgaben |
 |---|---|---|---|---|---|

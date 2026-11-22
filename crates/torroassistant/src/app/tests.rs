@@ -1409,6 +1409,8 @@ fn the_bot_editor_saves_the_bot_and_never_its_access() {
                         | Request::RemoveClient { .. }
                         | Request::NewClientKey { .. }
                         | Request::ClientActivity { .. }
+                        | Request::ConnectClient { .. }
+                        | Request::DisconnectClient { .. }
                 ),
                 "the editor touches a client: {request:?}"
             );

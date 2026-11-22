@@ -311,6 +311,10 @@ pub struct LinkFile {
     /// The folder it is in, as the server shows it (`Projects/Customer`); empty when unknown.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub folder: String,
+    /// Its id on the server, when the server named it (issue #924): only for the core, which takes the card's
+    /// picture (the server's preview) by it. Never sent, so the wire, API and MCP stay as they are.
+    #[serde(skip)]
+    pub id: Option<u64>,
 }
 
 /// A chat message a [`LinkCard`] quotes (issue #790). Its text is foreign text.

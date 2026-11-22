@@ -2401,7 +2401,7 @@ impl Ui {
             }
             (HeadForm::MenuOfPage, Some((name, back))) => {
                 let arrow = widgets::icon_button(Icon::ChevronLeft, tr("Back"), Some(back));
-                (vec![arrow], widgets::menu_button(nav, Some(section.icon()), widgets::path_menu_label(&name), menu))
+                (vec![arrow], widgets::path_menu_here(nav, Some(section.icon()), name, menu))
             }
             // How many apps are installed and wait for an update stands at the catalog's title on Overview
             // (issue #803), not beside the page's title.

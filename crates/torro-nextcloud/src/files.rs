@@ -70,6 +70,16 @@ const MAX_SEGMENT_BYTES: usize = 255;
 const SHARES: &str = "/ocs/v2.php/apps/files_sharing/api/v1/shares";
 const CHAT: &str = "/ocs/v2.php/apps/spreed/api/v1/chat";
 
+/// The most bytes of an answer that only describes one file ([`FileFacts`]).
+const FACTS_MAX_BYTES: u64 = 256 * 1024;
+
+/// The properties [`Nextcloud::file_info`] asks for.
+const FACTS_PROPFIND: &str = concat!(
+    r#"<?xml version="1.0"?><d:propfind xmlns:d="DAV:" xmlns:oc="http://owncloud.org/ns"><d:prop>"#,
+    "<oc:fileid/><oc:size/><d:getcontentlength/><d:getcontenttype/><d:resourcetype/>",
+    "</d:prop></d:propfind>",
+);
+
 /// Why a call of this file failed. As [`OcsError`], no message holds a name, a path or the
 /// server's words.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,6 +249,23 @@ pub struct ReferenceFile {
     pub mimetype: Option<String>,
 }
 
+/// What the server tells of one file or folder by itself, without a link card (issue #924): for a public share
+/// ([`Nextcloud::share_info`]) and for a file the person names by folder and name ([`Nextcloud::file_info`]). Its
+/// name and media type are foreign text, made one line.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileFacts {
+    /// The file's id on the server, for its preview; `None` when it names none.
+    pub id: Option<u64>,
+    /// The file's name, one line; empty when the server names none.
+    pub name: String,
+    /// Bytes.
+    pub size: Option<u64>,
+    /// Its media type (`application/pdf`; `httpd/unix-directory` for a folder of a share).
+    pub mimetype: Option<String>,
+    /// It is a folder.
+    pub folder: bool,
+}
+
 impl Nextcloud {
     /// Whether a file or folder `path` of the user `user` is there (`PROPFIND`, `Depth: 0`).
     pub async fn file_exists(&self, user: &str, path: &DavPath) -> Result<bool, FilesError> {
@@ -389,6 +416,45 @@ impl Nextcloud {
         let data = self.exchange(Method::GET, url, None, None).await?.success()?;
         let found = data.as_ref().and_then(|data| data.pointer("/references")).and_then(|all| all.get(link));
         Ok(found.and_then(|reference| self.read_reference(reference)))
+    }
+
+    /// What the public share `token` names: its file's id, name, size and media type, as the share's page knows
+    /// them (`POST /index.php/apps/files_sharing/shareinfo` with `t` and `depth=0`, so a folder's content is not
+    /// listed). `None` for a share that is not there, has a password or may not be read. The owner's path is never
+    /// told, so a share has no folder.
+    pub async fn share_info(&self, token: &str) -> Result<Option<FileFacts>, FilesError> {
+        let token_ok = (1..=64).contains(&token.len())
+            && token.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"-_".contains(&byte));
+        if !token_ok {
+            return Err(FilesError::Invalid);
+        }
+        let url = self.endpoint::<&str>("/index.php/apps/files_sharing/shareinfo", &[], &[])?;
+        let request = self.plain(Method::POST, url).form(&[("t", token), ("depth", "0")]);
+        let bytes = match read_body(request, FACTS_MAX_BYTES).await {
+            Ok((bytes, _)) => bytes,
+            Err(FilesError::NotFound | FilesError::Forbidden) => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        let answer: Value = serde_json::from_slice(&bytes).map_err(|_| FilesError::Invalid)?;
+        Ok(share_facts(&answer))
+    }
+
+    /// What the server tells of the file or folder `path` of `user` (`PROPFIND`, `Depth: 0`): its id, size and
+    /// media type, its name being the last segment of `path`. `None` when it is not there.
+    pub async fn file_info(&self, user: &str, path: &DavPath) -> Result<Option<FileFacts>, FilesError> {
+        let request = self
+            .plain(method(b"PROPFIND")?, self.dav_url(user, path)?)
+            .header("Depth", "0")
+            .header(header::CONTENT_TYPE, "application/xml; charset=utf-8")
+            .body(FACTS_PROPFIND);
+        let bytes = match read_body(request, FACTS_MAX_BYTES).await {
+            Ok((bytes, _)) => bytes,
+            Err(FilesError::NotFound) => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        let text = std::str::from_utf8(&bytes).map_err(|_| FilesError::Invalid)?;
+        let facts = dav_facts(text).ok_or(FilesError::Invalid)?;
+        Ok(Some(FileFacts { name: crate::rich::line(path.name(), &Value::Null), ..facts }))
     }
 
     /// Shares the file `path` into the conversation `token` (share type 10) with `meta` as
@@ -549,6 +615,53 @@ fn read_file(reference: &Value) -> Option<ReferenceFile> {
         size: number("size"),
         path: text("path"),
         mimetype: text("mimetype"),
+    })
+}
+
+/// The facts of a share's answer (`id`, `name`, `size`, `mimetype`, `type`); `None` when it names no file.
+fn share_facts(answer: &Value) -> Option<FileFacts> {
+    let text = |key: &str| {
+        answer
+            .get(key)
+            .and_then(Value::as_str)
+            .map(|text| crate::rich::line(text, &Value::Null))
+            .filter(|t| !t.is_empty())
+    };
+    let name = text("name")?;
+    Some(FileFacts {
+        id: answer.get("id").and_then(Value::as_u64).filter(|id| *id > 0),
+        name,
+        size: answer.get("size").and_then(Value::as_u64),
+        mimetype: text("mimetype"),
+        folder: text("type").as_deref() == Some("dir"),
+    })
+}
+
+/// The facts of a `PROPFIND` answer of one file (`Depth: 0`), without its name: the first non-empty value of each
+/// property (those the server does not have stand empty in a `404` part). `None` for an answer that is no XML.
+fn dav_facts(text: &str) -> Option<FileFacts> {
+    const DAV: &str = "DAV:";
+    const OC: &str = "http://owncloud.org/ns";
+    let document = roxmltree::Document::parse(text).ok()?;
+    let value = |namespace: &str, name: &str| {
+        document
+            .descendants()
+            .filter(|node| node.tag_name().namespace() == Some(namespace) && node.tag_name().name() == name)
+            .find_map(|node| node.text().map(str::trim).filter(|text| !text.is_empty()))
+    };
+    let number = |namespace: &str, name: &str| value(namespace, name).and_then(|text| text.parse::<u64>().ok());
+    let folder = document.descendants().any(|node| {
+        node.tag_name().namespace() == Some(DAV)
+            && node.tag_name().name() == "collection"
+            && node.parent().is_some_and(|parent| parent.tag_name().name() == "resourcetype")
+    });
+    Some(FileFacts {
+        // `oc:fileid` is the plain id (`123`), unlike the header `OC-FileId`.
+        id: number(OC, "fileid").filter(|id| *id > 0),
+        name: String::new(),
+        size: number(OC, "size").or_else(|| number(DAV, "getcontentlength")),
+        mimetype: value(DAV, "getcontenttype").map(|text| crate::rich::line(text, &Value::Null)),
+        folder,
     })
 }
 
@@ -1051,5 +1164,94 @@ mod tests {
         assert_eq!(found.iter().map(|m| m.id).collect::<Vec<_>>(), [120, 110]);
         assert_eq!(found[0].files.first().map(|file| file.id), Some(4501));
         assert_eq!(account(&server).shared_items(&token(), "../x", None, 5).await, Err(TalkError::Invalid));
+    }
+
+    /// Issue #924: a public share names its file's id, name, size and type; a share that is gone, or has a
+    /// password, names nothing; a token that is none is not sent.
+    #[tokio::test]
+    async fn a_share_names_its_file_and_a_gone_or_locked_one_nothing() {
+        let server = MockServer::start_async().await;
+        let info = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/index.php/apps/files_sharing/shareinfo")
+                    .header("authorization", AUTHORIZATION)
+                    .body_includes("t=AbC123xyz")
+                    .body_includes("depth=0");
+                then.status(200).body(
+                    r#"{"id":123,"parentId":5,"mtime":1,"name":"Offer\npdf.pdf","permissions":1,
+                        "mimetype":"application/pdf","size":20480,"type":"file","etag":"e"}"#,
+                );
+            })
+            .await;
+        let gone = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/index.php/apps/files_sharing/shareinfo").body_includes("t=Gone");
+                then.status(404);
+            })
+            .await;
+        let locked = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/index.php/apps/files_sharing/shareinfo").body_includes("t=Locked");
+                then.status(403);
+            })
+            .await;
+        let account = account(&server);
+        let facts = account.share_info("AbC123xyz").await.expect("asked").expect("a file");
+        assert_eq!(
+            facts,
+            FileFacts {
+                id: Some(123),
+                name: "Offer pdf.pdf".into(),
+                size: Some(20480),
+                mimetype: Some("application/pdf".into()),
+                folder: false
+            }
+        );
+        assert_eq!(account.share_info("Gone").await, Ok(None));
+        assert_eq!(account.share_info("Locked").await, Ok(None));
+        assert_eq!(account.share_info("../x").await, Err(FilesError::Invalid));
+        assert_eq!((info.calls_async().await, gone.calls_async().await, locked.calls_async().await), (1, 1, 1));
+    }
+
+    /// Issue #924: `PROPFIND` of a file by its path names its id, size and type, the name is the path's; a folder's
+    /// missing properties stand empty and are none; a path that is not there is `None`.
+    #[tokio::test]
+    async fn a_file_by_its_path_names_its_id_size_and_type() {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.path("/remote.php/dav/files/anna/Projects/Customer/Offer.pdf")
+                    .header("depth", "0")
+                    .header("authorization", AUTHORIZATION)
+                    .body_includes("oc:fileid");
+                then.status(207).body(include_str!("../tests/fixtures/propfind_file.xml"));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.path("/remote.php/dav/files/anna/Projects").header("depth", "0");
+                then.status(207).body(include_str!("../tests/fixtures/propfind_folder.xml"));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.path("/remote.php/dav/files/anna/Gone.pdf");
+                then.status(404);
+            })
+            .await;
+        let account = account(&server);
+        let file = account.file_info("anna", &path("/Projects/Customer/Offer.pdf")).await;
+        let expected = FileFacts {
+            id: Some(123),
+            name: "Offer.pdf".into(),
+            size: Some(20480),
+            mimetype: Some("application/pdf".into()),
+            folder: false,
+        };
+        assert_eq!(file, Ok(Some(expected)));
+        let folder = account.file_info("anna", &path("/Projects")).await.expect("asked").expect("a folder");
+        assert_eq!((folder.id, folder.size, folder.mimetype, folder.folder), (Some(77), Some(4096), None, true));
+        assert_eq!(account.file_info("anna", &path("/Gone.pdf")).await, Ok(None));
     }
 }

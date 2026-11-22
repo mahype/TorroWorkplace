@@ -22,6 +22,14 @@ Konzept: `docs/core.md`. Arbeit läuft über GitHub-Issues; `docs/tasks/` ist di
 - **Detailfragen:** Zuerst [`docs/entscheidungsregeln.md`](docs/entscheidungsregeln.md) anwenden und die
   Regelnummer im PR nennen, statt nachzufragen. Nur wenn keine Regel passt, fragen und eine neue vorschlagen.
 
+## Arbeitsweise und Akzeptanzprüfungen
+
+Entscheidung von Sven, 2026-11-21: [`docs/tasks/akzeptanzpruefungen.md`](docs/tasks/akzeptanzpruefungen.md).
+
+- Umsetzen, umsetzen, umsetzen: Issues konsequent abarbeiten und PRs erstellen, statt lange zu planen.
+- Prüfungen von Hand (Label `manual-check` und gleichartige Prüflisten) arbeitet Sven später gesammelt ab. Sie
+  blockieren die weitere Umsetzung nicht.
+
 ## Issue-Workflow
 
 Änderungen laufen über GitHub-Issues, mit den Skills des Plugins **enon-tools** (dieselben wie im
@@ -98,3 +106,14 @@ dann prüft `pre-commit` Format und Design, `pre-push` nach Umfang des Push-Bere
 
 Conventional Commits auf Englisch, z. B. `feat(torro-wm): parse hyprland clients #188`. Commits nach
 Zweck getrennt, die Issue-Nummer in jeder Message (Ausnahme: `quick-fix`).
+
+## Pull Requests
+
+Vorlage: `.github/pull_request_template.md`.
+
+- **Jeder PR endet mit einem Abschnitt `## TL;DR`:** wenige kurze Sätze mit dem Issue als Link
+  (`https://github.com/mahype/TorroWorkplace/issues/N`, sonst „kein Issue“), dem behobenen Problem, der Änderung und,
+  falls es welche gab, den Besonderheiten.
+- **Ändert ein PR etwas Sichtbares an der Oberfläche,** enthält er Vorher-nachher-Screenshots, aufgenommen mit den
+  Werkzeugen im Repo (z. B. `.claude/skills/torro-design/shots.sh`): vorher auf `main`, bevor die Änderung drin ist,
+  nachher auf dem Branch. Ändert sich nichts Sichtbares, entfällt der Abschnitt „Screenshots (vorher / nachher)“.

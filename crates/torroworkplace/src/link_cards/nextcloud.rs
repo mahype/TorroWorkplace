@@ -1,14 +1,16 @@
 //! Files of the own Nextcloud server (issue #790, `docs/inhaltskarten.md` "Nextcloud-Datei"): their links
 //! ([`parse`]), the own server a link lies on ([`own_server`]) and their cards ([`resolve`]: name, type, folder,
 //! the server's preview), without Settings › Privacy, since no foreign provider is asked; only for a reader who
-//! may read the chat of that Nextcloud account ([`reads_files`]).
+//! may read the chat of that Nextcloud account ([`reads_files`]). A share and a link by folder and name, which the
+//! server's references know no file of, get size, type and id from the server's share info and `PROPFIND`
+//! (issue #924).
 
 use torro_chat::{ChatError, LinkCard, LinkCardKind, LinkFile};
 use url::Url;
 
 use super::{FileLink, LinkKind};
 use crate::chat::ChatService;
-use crate::chat::remote::FileError;
+use crate::chat::remote::{DavPath, FileError, FileFacts, Remote};
 use crate::pim::Reach;
 use torro_ipc::Request;
 
@@ -120,14 +122,17 @@ pub fn reads_files(reach: Reach<'_>, account: &str) -> bool {
 ///
 /// - Checks [`reads_files`] first: without the right nothing is asked and the answer is `Ok(None)`.
 /// - Then the own server resolves `link` (`references/resolve`; no Settings › Privacy, no foreign provider): its
-///   name, its media type when the server names one, the folder of a `?dir=` link.
+///   name, its media type when the server names one, the folder of a `?dir=` link. A share and a link by folder and
+///   name, whose answer names no file, are asked of the server besides ([`facts`], issue #924): name, size, media
+///   type and id, and so the picture.
 /// - `Ok(None)`: no card – no right, a link on another server than `account`'s, or a file the server does not show
 ///   the person (gone, not shared with them). The caller then shows **no card at all**, the address stays a link:
 ///   never a page card through [`super::web`], since the own server would name the file in it all the same.
 /// - `Err`: the server cannot be asked now (offline, busy, sign-in refused); asked again with the next read.
 ///
-/// The card's picture is the server's preview of the file (`Remote::preview` with the file id the link names,
-/// [`FileLink::Id`]), fetched when a window asks for it, not here. Logs no address.
+/// The card's picture is the server's preview of the file (`Remote::preview` with the file's id, [`LinkFile::id`]:
+/// the id the link names, else the one the server told), fetched when a window asks for it, not here. Logs no
+/// address.
 pub async fn resolve(
     chat: &ChatService,
     reach: Reach<'_>,
@@ -146,48 +151,109 @@ pub async fn resolve(
     if !torro_nextcloud::same_origin(link, &remote.server()) {
         return Ok(None);
     }
-    let resolved = remote.resolve(link).await.map_err(|err| match err {
-        FileError::Chat(err) => err,
-        FileError::Exists | FileError::NoSpace | FileError::TooLarge => ChatError::NotFound,
-    });
-    match chat.asked(account, resolved).await {
-        Ok(reference) => Ok(reference.map(|reference| card_of(link, file, reference))),
-        Err(ChatError::NotFound | ChatError::Forbidden(_)) => Ok(None),
-        Err(err) => Err(err),
+    let resolved = remote.resolve(link).await.map_err(chat_error);
+    let reference = match chat.asked(account, resolved).await {
+        Ok(reference) => reference,
+        Err(ChatError::NotFound | ChatError::Forbidden(_)) => None,
+        Err(err) => return Err(err),
+    };
+    let told = reference.as_ref().and_then(|reference| reference.file.as_ref());
+    let facts = if told.is_some_and(|told| told.id.is_some() && told.size.is_some()) {
+        None
+    } else {
+        match facts(chat, account, &remote, file).await {
+            Ok(facts) => facts,
+            Err(ChatError::NotFound | ChatError::Forbidden(_)) => None,
+            // The card the references gave stands without the details; without one, asked again later.
+            Err(_) if reference.is_some() => None,
+            Err(err) => return Err(err),
+        }
+    };
+    Ok(card_of(link, file, reference, facts))
+}
+
+/// What the server tells of the file of a share (its share info) or of a link by folder and name (`PROPFIND` on
+/// `dir/name` in the person's files); `None` for a link by id, which the references describe, and for a link to a
+/// folder alone or with a name that is no path.
+async fn facts(
+    chat: &ChatService,
+    account: &str,
+    remote: &Remote,
+    file: &FileLink,
+) -> Result<Option<FileFacts>, ChatError> {
+    match file {
+        FileLink::Id(_) | FileLink::Files { file: None, .. } => Ok(None),
+        FileLink::Share(token) => chat.asked(account, remote.share_info(token).await.map_err(chat_error)).await,
+        FileLink::Files { dir, file: Some(name) } => {
+            let Some(path) = DavPath::parse(dir).and_then(|dir| dir.join(name)) else { return Ok(None) };
+            let (_, _, user) = chat.known(account).await?;
+            chat.asked(account, remote.file_info(&user, &path).await.map_err(chat_error)).await
+        }
     }
 }
 
-/// The card of `file` from what the own server resolved of `link`. For a file Nextcloud names it in the title; its
-/// size, folder and media type come from the file provider's details ([`torro_nextcloud::ReferenceFile`]), the media
-/// type otherwise from the description (any other description is no type). A `?dir=` link names its folder itself.
-fn card_of(link: &str, file: &FileLink, reference: torro_nextcloud::Reference) -> LinkCard {
-    let details = reference.file.unwrap_or_default();
+/// A file call's error as the chat's: the refusals only files have count as a file that is not there.
+fn chat_error(err: FileError) -> ChatError {
+    match err {
+        FileError::Chat(err) => err,
+        FileError::Exists | FileError::NoSpace | FileError::TooLarge => ChatError::NotFound,
+    }
+}
+
+/// The card of `file` from what the own server resolved of `link` (`reference`) and told of the file (`facts`);
+/// `None` when it gave neither. For a file Nextcloud names it in the title; its size, folder and media type come
+/// from the file provider's details ([`torro_nextcloud::ReferenceFile`]), else from the facts, the media type
+/// otherwise from the description (any other description is no type). A `?dir=` link names its folder itself; a
+/// share has none, since the server never tells the owner's path.
+fn card_of(
+    link: &str,
+    file: &FileLink,
+    reference: Option<torro_nextcloud::Reference>,
+    facts: Option<FileFacts>,
+) -> Option<LinkCard> {
+    if reference.is_none() && facts.is_none() {
+        return None;
+    }
+    let (title, description, image, details) = match reference {
+        Some(reference) => (reference.title, reference.description, reference.image, reference.file),
+        None => (String::new(), None, None, None),
+    };
+    let details = details.unwrap_or_default();
+    let facts = facts.unwrap_or_default();
+    let title = if title.is_empty() { facts.name } else { title };
     let content_type = details
         .mimetype
         .filter(|text| is_media_type(text))
-        .or_else(|| reference.description.filter(|text| is_media_type(text)))
+        .or_else(|| description.filter(|text| is_media_type(text)))
+        .or_else(|| facts.mimetype.filter(|text| is_media_type(text)))
         .unwrap_or_default();
     let folder = match file {
         FileLink::Files { dir, .. } => dir.trim_matches('/').to_owned(),
         FileLink::Id(_) | FileLink::Share(_) => details.path.as_deref().map(folder_of).unwrap_or_default(),
     };
+    let id = match file {
+        FileLink::Id(id) => Some(*id),
+        FileLink::Share(_) | FileLink::Files { .. } => details.id.or(facts.id),
+    };
     let domain = Url::parse(link).ok().and_then(|url| url.host_str().map(str::to_owned)).unwrap_or_default();
-    LinkCard {
+    Some(LinkCard {
         url: link.to_owned(),
-        title: reference.title.clone(),
+        title: title.clone(),
         description: None,
         domain,
-        image: reference.image.is_some() || matches!(file, FileLink::Id(_)),
+        // A folder has no preview; a file with an id has the server's.
+        image: image.is_some() || (id.is_some() && !facts.folder),
         kind: LinkCardKind::NextcloudFile,
         // The size is 0 ("not told") when the server's answer has no file details.
         file: Some(Box::new(LinkFile {
-            name: reference.title,
-            size: details.size.unwrap_or_default(),
+            name: title,
+            size: details.size.or(facts.size).unwrap_or_default(),
             content_type,
             folder,
+            id: id.filter(|_| !facts.folder),
         })),
         ..LinkCard::default()
-    }
+    })
 }
 
 /// The folder of a file's path as the server shows it: `/Projects/Customer/Offer.pdf` is `Projects/Customer`; a
@@ -368,5 +434,86 @@ mod tests {
         server.state().offline = true;
         let link = format!("{SERVER}/f/123");
         assert_eq!(resolve(&chat, Reach::Suite, ACCOUNT, &link, &FileLink::Id(123)).await, Err(ChatError::Offline));
+    }
+
+    fn facts(id: u64, name: &str, size: u64, folder: bool) -> FileFacts {
+        let mimetype = Some(if folder { "httpd/unix-directory" } else { "application/pdf" }.into());
+        FileFacts { id: Some(id), name: name.into(), size: Some(size), mimetype, folder }
+    }
+
+    /// Issue #924: a share the references know no file of gets name, size, type and its picture from the server's
+    /// share info; it has no folder, since the server never tells the owner's path. A shared folder has no picture.
+    #[tokio::test]
+    async fn a_share_gets_size_type_and_picture_from_the_share_info() {
+        let (chat, server) = service();
+        server.state().share_infos.insert("AbC123xyz".into(), facts(34, "Offer.pdf", 20480, false));
+        let link = format!("{SERVER}/s/AbC123xyz");
+        let share = FileLink::Share("AbC123xyz".into());
+        let card = resolve(&chat, Reach::Suite, ACCOUNT, &link, &share).await.expect("asked").expect("a card");
+        assert_eq!((card.title.as_str(), card.kind, card.image), ("Offer.pdf", LinkCardKind::NextcloudFile, true));
+        let details = card.file.clone().expect("details");
+        assert_eq!(
+            (details.size, details.content_type.as_str(), details.folder.as_str()),
+            (20480, "application/pdf", "")
+        );
+        assert_eq!(details.id, Some(34));
+        let found = super::super::web::Resolved::found(Some(card), &LinkKind::NextcloudFile(share));
+        assert_eq!(found.picture, Some(super::super::web::CardPicture::File(34)), "the server's preview");
+        assert_eq!(server.count("share_info AbC123xyz"), 1);
+
+        server.state().share_infos.insert("Folder1".into(), facts(35, "Projects", 4096, true));
+        let link = format!("{SERVER}/s/Folder1");
+        let folder = FileLink::Share("Folder1".into());
+        let card = resolve(&chat, Reach::Suite, ACCOUNT, &link, &folder).await.expect("asked").expect("a card");
+        assert!(!card.image, "a folder has no preview");
+        let found = super::super::web::Resolved::found(Some(card), &LinkKind::NextcloudFile(folder));
+        assert_eq!(found.picture, None);
+    }
+
+    /// Issue #924: a link by folder and name gets size, type and its picture from `PROPFIND` on that path in the
+    /// person's files; the folder is the link's own.
+    #[tokio::test]
+    async fn a_link_by_name_gets_size_type_and_picture_from_propfind() {
+        let (chat, server) = service();
+        server.state().file_infos.insert("/Projects/Customer/Offer.pdf".into(), facts(56, "Offer.pdf", 20480, false));
+        let link = format!("{SERVER}/index.php/apps/files?dir=/Projects/Customer&scrollto=Offer.pdf");
+        let file = FileLink::Files { dir: "/Projects/Customer".into(), file: Some("Offer.pdf".into()) };
+        let card = resolve(&chat, Reach::Suite, ACCOUNT, &link, &file).await.expect("asked").expect("a card");
+        assert_eq!((card.title.as_str(), card.image), ("Offer.pdf", true));
+        let details = card.file.clone().expect("details");
+        assert_eq!(
+            (details.size, details.folder.as_str(), details.content_type.as_str()),
+            (20480, "Projects/Customer", "application/pdf")
+        );
+        let found = super::super::web::Resolved::found(Some(card), &LinkKind::NextcloudFile(file));
+        assert_eq!(found.picture, Some(super::super::web::CardPicture::File(56)));
+        assert_eq!(server.count("file_info /Projects/Customer/Offer.pdf"), 1);
+
+        // A link to a folder alone asks nothing besides the references.
+        let only_dir = FileLink::Files { dir: "/Projects".into(), file: None };
+        let link = format!("{SERVER}/apps/files/?dir=/Projects");
+        assert_eq!(resolve(&chat, Reach::Suite, ACCOUNT, &link, &only_dir).await, Ok(None));
+        assert_eq!(server.count("file_info"), 1);
+    }
+
+    /// Issue #924: a share that is gone and a name that is not there have no card; while the server cannot be
+    /// reached the card is asked again later; a client without the right asks nothing at all.
+    #[tokio::test]
+    async fn a_gone_share_or_name_has_no_card_and_an_offline_server_is_asked_again() {
+        let (chat, server) = service();
+        let share = FileLink::Share("Gone".into());
+        let link = format!("{SERVER}/s/Gone");
+        assert_eq!(resolve(&chat, Reach::Suite, ACCOUNT, &link, &share).await, Ok(None));
+        let name = FileLink::Files { dir: "/A".into(), file: Some("Gone.pdf".into()) };
+        let named = format!("{SERVER}/apps/files?dir=/A&openfile=Gone.pdf");
+        assert_eq!(resolve(&chat, Reach::Suite, ACCOUNT, &named, &name).await, Ok(None));
+
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.chat_accounts = torro_ipc::api::Selection::Only(Vec::new());
+        assert_eq!(resolve(&chat, Reach::Client(&rights), ACCOUNT, &link, &share).await, Ok(None));
+        assert_eq!(server.count("share_info"), 1, "nothing asked before the right");
+
+        server.state().offline = true;
+        assert_eq!(resolve(&chat, Reach::Suite, ACCOUNT, &link, &share).await, Err(ChatError::Offline));
     }
 }

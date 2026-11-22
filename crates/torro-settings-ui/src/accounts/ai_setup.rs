@@ -38,6 +38,9 @@ pub struct State {
     choices: BTreeMap<String, usize>,
     expanded: BTreeSet<String>,
     sorting: bool,
+    /// Whether the window offers a chat (issue #591): the mail window has none (#545), so there the
+    /// page neither suggests nor sets a model for Chat.
+    chat: bool,
     form: Option<(AiProvider, Option<String>, String)>,
     key: Secret,
     install: bool,
@@ -72,6 +75,7 @@ impl Default for State {
             choices: BTreeMap::new(),
             expanded: BTreeSet::new(),
             sorting: true,
+            chat: true,
             form: None,
             key: Secret::default(),
             install: false,
@@ -221,6 +225,22 @@ pub fn allow_sorting(state: &mut State, allowed: bool) {
     state.sorting = allowed;
     if !allowed {
         state.queue.retain(|(slot, _)| *slot != AiSlot::Decide);
+    }
+}
+
+/// The window the page stands in has no chat (issue #591: the mail window, #545): the page then
+/// suggests and prepares only the model for Sorting.
+pub fn without_chat(state: &mut State) {
+    state.chat = false;
+    state.queue.retain(|(slot, _)| *slot != AiSlot::Chat);
+}
+
+/// Whether the page may suggest and prepare a model for `slot`: Sorting only while the host allows it,
+/// Chat only where the window has a chat.
+fn offers(state: &State, slot: AiSlot) -> bool {
+    match slot {
+        AiSlot::Chat => state.chat,
+        AiSlot::Decide => state.sorting,
     }
 }
 
@@ -454,7 +474,7 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
                 .flat_map(|r| &r.preparations)
                 .filter(|p| {
                     Some(&p.account) == state.selected.as_ref()
-                        && (state.sorting || p.slot != AiSlot::Decide)
+                        && offers(state, p.slot)
                         && data.settings().ai_slots.get(p.slot).is_none()
                 })
                 .filter_map(|p| {
@@ -531,7 +551,7 @@ fn suggestion(state: &State, data: &dyn Seen, replace: bool, only: Option<AiSlot
         .filter(|p| {
             p.account == account
                 && only.is_none_or(|slot| p.slot == slot)
-                && (state.sorting || p.slot != AiSlot::Decide)
+                && offers(state, p.slot)
                 && (replace || data.settings().ai_slots.get(p.slot).is_none())
         })
         .filter_map(|p| p.candidates.get(*state.choices.get(p.slot.key()).unwrap_or(&0)).cloned().map(|c| (p.slot, c)))
@@ -596,9 +616,8 @@ pub fn preparing(state: &State) -> bool {
 }
 
 fn next(state: &mut State) -> Action {
-    if !state.sorting {
-        state.queue.retain(|(slot, _)| *slot != AiSlot::Decide);
-    }
+    let (chat, sorting) = (state.chat, state.sorting);
+    state.queue.retain(|(slot, _)| if *slot == AiSlot::Chat { chat } else { sorting });
     if state.queue.is_empty() {
         state.current = None;
         return refresh(state);
@@ -626,7 +645,7 @@ pub fn answered(state: &mut State, owner: u64, run: u64, result: &Result<Respons
         return Action::None;
     }
     let Some(work) = state.flight.take() else { return Action::None };
-    if !state.sorting && state.current.as_ref().is_some_and(|(slot, _)| *slot == AiSlot::Decide) {
+    if state.current.as_ref().is_some_and(|(slot, _)| !offers(state, *slot)) {
         state.current = None;
         state.pull = None;
         return next(state);
@@ -835,7 +854,7 @@ fn can_use(state: &State, data: &dyn Seen) -> bool {
                 .iter()
                 .filter(|p| {
                     Some(&p.account) == state.selected.as_ref()
-                        && (state.sorting || p.slot != AiSlot::Decide)
+                        && offers(state, p.slot)
                         && data.settings().ai_slots.get(p.slot).is_none()
                 })
                 .any(|p| {
@@ -1109,7 +1128,12 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
         // Hosted by the first-run setup, the suggestion shows before an account is chosen: its "Use
         // suggestion" takes the suggested one (issue #326).
         let shown = if state.hosted { suggested_account(state) } else { state.selected.as_deref() };
-        for preparation in recommendation.preparations.iter().filter(|p| Some(p.account.as_str()) == shown) {
+        // Without a chat in the window, no Chat row (issue #591); Sorting stays visible while its choice waits.
+        for preparation in recommendation
+            .preparations
+            .iter()
+            .filter(|p| Some(p.account.as_str()) == shown && (state.chat || p.slot != AiSlot::Chat))
+        {
             let index = *state.choices.get(preparation.slot.key()).unwrap_or(&0);
             if let Some(candidate) = preparation.candidates.get(index) {
                 let fit =
@@ -1183,6 +1207,7 @@ fn view_in<'a>(state: &'a State, data: &'a dyn Seen, narrow: bool) -> Element<'a
         }
         for suggestion in recommendation.slots.iter().filter(|s| {
             s.engine.as_deref() == shown
+                && (state.chat || s.slot != AiSlot::Chat)
                 && !recommendation
                     .preparations
                     .iter()
@@ -2167,5 +2192,36 @@ mod tests {
         let (_, _, request) = tag(answered(&mut state, owner, run, &answer));
         assert!(matches!(request, Request::AiRecommend), "no model enable, download or slot request follows");
         assert!(state.current.is_none() && state.queue.is_empty());
+    }
+
+    /// Issue #591: in a window without a chat (the mail window) the page suggests and sets only the
+    /// model for Sorting; elsewhere it keeps both slots.
+    #[test]
+    fn without_a_chat_only_sorting_is_suggested_and_set() {
+        let mut data = super::super::demo::demo_data();
+        data.settings.ai_slots.chat = None;
+        data.settings.ai_slots.decide = None;
+        let mut state = State::default();
+        demo(&mut state, "cloud-connected", &data);
+        let slots = |state: &State| suggestion(state, &data, false, None).into_iter().map(|(slot, _)| slot).collect();
+        let both: Vec<AiSlot> = slots(&state);
+        assert_eq!(both, [AiSlot::Chat, AiSlot::Decide], "with a chat both slots are suggested");
+
+        without_chat(&mut state);
+        let only: Vec<AiSlot> = slots(&state);
+        assert_eq!(only, [AiSlot::Decide]);
+        assert!(!can_use_suggestion(&state, &data, false, Some(AiSlot::Chat)));
+        assert!(can_use(&state, &data));
+        drop(view(&state, &data));
+
+        let (owner, run, request) = tag(update(&mut state, Message::Use, &data));
+        assert!(matches!(request, Request::AiModels { .. }));
+        assert!(state.current.as_ref().is_some_and(|(slot, _)| *slot == AiSlot::Decide));
+        assert!(state.queue.is_empty(), "no Chat model waits to be set");
+        let account = state.selected.clone().expect("account");
+        let answer = Ok(Response::AiModels { account, models: vec![] });
+        drop(answered(&mut state, owner, run, &answer));
+        assert!(state.queue.iter().all(|(slot, _)| *slot != AiSlot::Chat));
+        assert!(state.current.as_ref().is_none_or(|(slot, _)| *slot != AiSlot::Chat));
     }
 }

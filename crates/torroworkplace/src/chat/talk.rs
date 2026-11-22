@@ -21,8 +21,8 @@ use torro_nextcloud::{
 };
 
 use super::remote::{
-    Caps, DavPath, FileError, Patch, Picture, Reference, RemoteHit, RemoteMessage, RemotePerson, RemoteQuote,
-    RemoteRoom, RemoteStatus, Sending, ShareMeta, Uploaded,
+    Caps, DavPath, FileError, FileFacts, Patch, Picture, Reference, RemoteHit, RemoteMessage, RemotePerson,
+    RemoteQuote, RemoteRoom, RemoteStatus, Sending, ShareMeta, Uploaded,
 };
 
 /// The most statuses asked for in one page, and the most pages: 2,000 users with a status.
@@ -526,6 +526,14 @@ pub async fn card_picture(client: &Nextcloud, id: &str) -> Result<Picture, FileE
 
 pub async fn resolve(client: &Nextcloud, link: &str) -> Result<Option<Reference>, FileError> {
     client.resolve_reference(link).await.map_err(file_error)
+}
+
+pub async fn share_info(client: &Nextcloud, token: &str) -> Result<Option<FileFacts>, FileError> {
+    client.share_info(token).await.map_err(file_error)
+}
+
+pub async fn file_info(client: &Nextcloud, user: &str, path: &DavPath) -> Result<Option<FileFacts>, FileError> {
+    client.file_info(user, path).await.map_err(file_error)
 }
 
 pub async fn share(client: &Nextcloud, conversation: &str, path: &DavPath, meta: &ShareMeta) -> Result<(), FileError> {
