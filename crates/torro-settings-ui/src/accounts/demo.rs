@@ -170,22 +170,35 @@ pub fn demo_data() -> Data {
         demo_network_account(),
     ];
     let sources = vec![
-        SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None },
-        SourceInfo { source: SourceRef::agent("claude-code"), open: 3, muted: false, health: None },
-        SourceInfo { source: SourceRef::script("backup"), open: 1, muted: false, health: None },
-        SourceInfo { source: SourceRef::script("nightly-build"), open: 0, muted: true, health: None },
+        SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None, notice: None },
+        SourceInfo { source: SourceRef::agent("claude-code"), open: 3, muted: false, health: None, notice: None },
+        SourceInfo { source: SourceRef::script("backup"), open: 1, muted: false, health: None, notice: None },
+        SourceInfo { source: SourceRef::script("nightly-build"), open: 0, muted: true, health: None, notice: None },
         // The remote sources (task E5.14): Talk of the first Nextcloud muted, the second Nextcloud
         // offline like its account.
-        SourceInfo { source: SourceRef::github("anna-dev"), open: 4, muted: false, health: None },
-        SourceInfo { source: SourceRef::nextcloud("anna@cloud.example.org"), open: 2, muted: false, health: None },
-        SourceInfo { source: SourceRef::talk("anna@cloud.example.org"), open: 0, muted: true, health: None },
+        SourceInfo { source: SourceRef::github("anna-dev"), open: 4, muted: false, health: None, notice: None },
+        SourceInfo {
+            source: SourceRef::nextcloud("anna@cloud.example.org"),
+            open: 2,
+            muted: false,
+            health: None,
+            notice: None,
+        },
+        SourceInfo {
+            source: SourceRef::talk("anna@cloud.example.org"),
+            open: 0,
+            muted: true,
+            health: None,
+            notice: None,
+        },
         SourceInfo {
             source: SourceRef::nextcloud("anna@work.example.net"),
             open: 0,
             muted: false,
             health: Some(SourceHealth::Offline),
+            notice: None,
         },
-        SourceInfo { source: SourceRef::ntfy("push.example.org"), open: 1, muted: false, health: None },
+        SourceInfo { source: SourceRef::ntfy("push.example.org"), open: 1, muted: false, health: None, notice: None },
     ];
     let settings = Settings {
         start_at_login: true,

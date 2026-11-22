@@ -1814,6 +1814,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Notifications need a classic token with repo (notifications alone may leave out private repositories), or the GitHub CLI sign-in.",
         "Benachrichtigungen brauchen ein klassisches Token mit repo (mit notifications allein fehlen eventuell private Repos) oder die Anmeldung der GitHub CLI.",
     ),
+    (
+        "Only public repositories: the token has no repo scope. See Permissions on the account's page under Accounts.",
+        "Nur öffentliche Repos: Dem Token fehlt der Scope repo. Siehe „Rechte“ auf der Seite des Kontos unter „Konten“.",
+    ),
     ("This sign-in may not read notifications.", "Diese Anmeldung darf keine Benachrichtigungen lesen."),
     ("This Nextcloud has no Talk.", "Diese Nextcloud hat kein Talk."),
     (

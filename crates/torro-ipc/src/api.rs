@@ -5114,7 +5114,9 @@ static LIST_SOURCES: Command = Command {
                   person's own `suite`) with their number of open entries (of a GitHub source only those of \
                   repositories this key may see) and whether the person muted them. `health` says why a remote \
                   source brings nothing now: `missing_app` (the server lacks the app), `missing_scope` (the sign-in \
-                  may not read notifications), `signed_out`, `offline`; left out while it works.",
+                  may not read notifications), `signed_out`, `offline`; left out while it works. `notice` says what a source \
+                  that works still leaves out: `public_only` (a classic GitHub token without the `repo` scope, so \
+                  notifications of private repositories never come); left out when there is nothing to say.",
 };
 
 static POST_ITEM: Command = Command {
@@ -10615,8 +10617,8 @@ mod tests {
             agent: None,
         };
         let listed = [
-            SourceInfo { source: SourceRef::script("nightly"), open: 1, muted: false, health: None },
-            SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None },
+            SourceInfo { source: SourceRef::script("nightly"), open: 1, muted: false, health: None, notice: None },
+            SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None, notice: None },
         ];
         let accounts = [
             account("mail:anna@mailbox.org", "mail"),
