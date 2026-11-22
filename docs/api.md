@@ -158,7 +158,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `chat` ³⁰ | `list_conversations`, `get_messages`, `suggest_mentions`, `find_people`, `search_messages`, `get_upload`, `get_preview`, `get_attachment`, `list_shared`, `get_call` | `send_message` (nach außen, auch mit `files` und `items`), `mark_read`, `mark_unread`, `create_conversation` (nach außen), `react` (nach außen), `set_favorite`, `set_notification_level`, `prepare_file` (`source: path` **nur App-Schlüssel**, Punkt 10 unten), `upload_file`, `cancel_upload`, `save_attachment` (`to: file`/`folder` **nur App-Schlüssel**), `show_card` (**nur App-Schlüssel**, Punkt 14), `decline_call`, `leave_call` | `edit_message`, `delete_message` (beide nach außen), `release_files` | |
 | `presence` ³⁰ | `list_people`, `find_people`, `get_own_status` | `add_person`, `remove_person`, `set_own_status` (nach außen) | | |
 | `workflows` (#556) | Vorlagen, Abläufe, Regeln, Läufe, Dokumentstücke und lokale Vorschau (siehe unten) | Entwürfe, getestete Abläufe, Start/Abbruch, Öffnen/Zeigen | Ablauf/Regel entfernen | Regeln verwalten; Dauergrant erteilen/widerrufen **nur App-Schlüssel** |
-| `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305) |
+| `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav`, `connect_mail` und `reconfigure_mail` (die letzten fünf **nur App-Schlüssel**, Punkt 5 unten), `set_search_key` (**nur App-Schlüssel**, Punkt 5, #305), `start_ai_sign_in`, `check_ai_sign_in`, `cancel_ai_sign_in` (**nur App-Schlüssel**, Punkt 5, #324) |
 | `settings` ³¹ | `get_settings`, `list_designs` ⁹, `list_fonts` ⁹, `list_color_schemes` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `ai` | `list_models` ²¹, `list_assignments`, `find_local_servers` | | | `set_assignment`, `set_model_enabled` ²¹ |
 | `apps` | `list_apps`, `list_catalog`, `app_job`, `list_announcements` (#485) | `open_app` ¹³, `check_updates`, `cancel_app_job`, `dismiss_announcement` (#485) | | `uninstall_app`, `install_app` und `update_apps` (die letzten zwei **nur App-Schlüssel**, Punkt 11 unten, #411) |
@@ -1246,7 +1246,9 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
 5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,
    Anmeldung mit Passwort `accounts.connect_caldav`, `accounts.connect_mail` und
    `accounts.reconfigure_mail` (Zugangsdaten eines Mail-Kontos prüfen und speichern, #343), API-Schlüssel eines
-   KI-Kontos `accounts.connect_ai` oder `accounts.connect_local_ai` (auch ohne Schlüssel: Menschen wählen Datenziele), Anmeldung bei ntfy `accounts.set_ntfy_login`, Schlüssel eines
+   KI-Kontos `accounts.connect_ai` oder `accounts.connect_local_ai` (auch ohne Schlüssel: Menschen wählen Datenziele),
+   Anmeldung eines KI-Kontos im Browser `accounts.start_ai_sign_in`, `accounts.check_ai_sign_in` und
+   `accounts.cancel_ai_sign_in` (#324, „Sign in with ChatGPT“: die Tokens bleiben im Schlüsselbund des Dienstes), Anmeldung bei ntfy `accounts.set_ntfy_login`, Schlüssel eines
    Websuche-Anbieters `accounts.set_search_key` (#305), Import aus einem fremden Schlüsselbund): nur mit
    dem App-Schlüssel, also nur aus der Oberfläche. Ein Agent nimmt nie ein Passwort entgegen und
    reicht es weiter. Darum setzt auch **Server und vertraute Zertifikate eines Mail-Kontos** nur ein Mensch

@@ -1,0 +1,19 @@
+{
+    "##": [
+        "The DLLs the assistant needs beside its program on Windows (issue #773): sherpa-onnx as a DLL instead of",
+        "static libraries built against the static C runtime. Both DLLs carry their own C runtime (k2-fsa's",
+        "`shared-MT` build), so no Visual C++ runtime is needed. `sherpa_onnx` must match sherpa-onnx-sys in",
+        "Cargo.lock; packaging/assistant_runtime.py refuses a mismatch. On an update of sherpa-onnx: new version,",
+        "archive hash and DLL hashes here, the rest follows."
+    ],
+    "schema": 1,
+    "sherpa_onnx": "2.0.1",
+    "target": "x86_64-pc-windows-msvc",
+    "archive": "sherpa-onnx-v2.0.1-win-x64-shared-MT-Release-lib.tar.bz2",
+    "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/v2.0.1/sherpa-onnx-v2.0.1-win-x64-shared-MT-Release-lib.tar.bz2",
+    "sha256": "afa4de3ca4ab0afd53bb4aab40d28ee15608364b549ffc0fe0caf6489bfc39a5",
+    "files": {
+        "sherpa-onnx-c-api.dll": "0965a6e4c0254da2beff489cf7a8aaffaf7dc94f90b43b3e66448b8cab4177ea",
+        "onnxruntime.dll": "7f66f939a881baf4f46a2216496798edf4a1429878b646d12674aa62f27d8a25"
+    }
+}

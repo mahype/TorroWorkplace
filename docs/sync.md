@@ -30,7 +30,7 @@ geändert, sagt er mir, wo, und ich entscheide.
 
 Antriebe haben auf jedem Rechner dieselbe Kennung (`ai:ollama@localhost:11434`, `claude-code`). Fehlt
 ein Antrieb auf diesem Rechner, zeigt der Bot „Not available on this computer“ und bietet einen
-anderen an. Die Wahl gilt dann für alle Rechner (Offen, Punkt 3).
+anderen an. Die Wahl gilt dann für alle Rechner (Entscheidung 3).
 
 ## Grundidee: Jeder Rechner schreibt nur in sein eigenes Protokoll
 
@@ -186,8 +186,8 @@ Darum gilt:
    *Linux-PC* wants to sync. Allow?“, mit Kurzform des Schlüssels). Erst dann trägt der Kern dessen
    Einträge ein. Abschnitte ohne gültige Signatur werden nicht eingetragen und gemeldet. So kann auch
    jemand, der in den Ordner schreiben kann (eine andere App mit App-Passwort, ein Sync-Client),
-   nichts in den Prompt schmuggeln. Bestätigen geht nur mit dem App-Schlüssel (neuer Punkt 9 in „Was
-   nie nach außen geht“, wie das Bestätigen eines Bots).
+   nichts in den Prompt schmuggeln. Bestätigen geht nur mit dem App-Schlüssel (neuer Punkt „Einen
+   Rechner für den Sync bestätigen“ in „Was nie nach außen geht“, wie das Bestätigen eines Bots).
 2. **Rechte wandern nie mit.** Ein Bot kommt ohne seinen Client. Auf jedem Rechner bekommt er einen
    eigenen neuen Client mit `Rights::none`, und die Person vergibt die Rechte dort (Punkt 2). Der
    Eingang meldet: „Bot *Reiseplaner* came from *MacBook*. Grant access?“
@@ -211,7 +211,7 @@ Darum gilt:
    Namen von Rechnern, keine Texte.
 9. **Inhalt auf dem Server:** In Stufe 1 liegen die Einträge unverschlüsselt in den eigenen
    Nextcloud-Dateien, wie Kalender und Aufgaben auch. Nextcloud hält Versionen und Papierkorb, das ist
-   ein Backup nebenbei. Ende-zu-Ende-Verschlüsselung mit einer Passphrase ist Stufe 2 (Offen, Punkt 2).
+   ein Backup nebenbei. Ende-zu-Ende-Verschlüsselung mit einer Passphrase ist Stufe 2 (Entscheidung 2).
 
 ## Wo die Logik liegt
 
@@ -238,11 +238,11 @@ gesperrt (`loops_back`), sonst könnten sie über einen Konflikt ihre eigene Per
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
 | Stand lesen (an/aus, Konto, Bereiche, letzter Abgleich, Fehler, Zahl der Konflikte) | Steuerzentrale › Sync | `sync.get_status` · Read | `sync_get_status` |
-| Ein-/ausschalten, Konto und Bereiche wählen | ebenda | `sync.update_sync { enabled?, account?, areas? }` · Admin (Freigabe) | `sync_update_sync` |
+| Ein-/ausschalten, Konto, Bereiche und „Keep mail contents on this computer“ wählen | ebenda | `sync.update_sync { enabled?, account?, areas?, keep_mail_local? }` · Admin (Freigabe) | `sync_update_sync` |
 | Jetzt abgleichen | „Sync now“, Tray | `sync.run_now` · Write | `sync_run_now` |
 | Rechner auflisten (Name, System, zuletzt gesehen, bestätigt) | Sync › Computers | `sync.list_devices` · Read | `sync_list_devices` |
 | Diesen Rechner umbenennen | ebenda | `sync.rename_device` · Write | `sync_rename_device` |
-| Rechner bestätigen | ebenda, Eingang, Benachrichtigung | `sync.confirm_device` · Admin | **Never** (neuer Punkt 9: Daten in den Prompt lassen entscheidet nur ein Mensch) |
+| Rechner bestätigen | ebenda, Eingang, Benachrichtigung | `sync.confirm_device` · Admin | **Never** (neuer Punkt „Rechner bestätigen“: Daten in den Prompt lassen entscheidet nur ein Mensch) |
 | Rechner entfernen oder ablehnen; mit der eigenen Kennung „Remove this computer from sync“ | ebenda | `sync.remove_device` · Admin (Freigabe; wie `accounts.remove_account`) | `sync_remove_device` |
 | Konflikte auflisten | Sync › Conflicts, Hinweis auf Persona-Seite und im Bot-Editor | `sync.list_conflicts` · Read; die Fassungen nur mit Leserecht im Bereich des Schlüssels (`assistant`, `bots`, `settings`), sonst nur Kennung, Art und Rechner | `sync_list_conflicts` |
 | Konflikt lösen (eine Fassung behalten, auch „Restore?“ = `keep: other`) | ebenda | `sync.resolve_conflict { id, keep }` · Admin (Freigabe), zusätzlich das Recht des passenden Fachbefehls (`assistant.update_profile`, `assistant.forget`, `bots.save_bot`, `settings.set_setting`) | `sync_resolve_conflict` |
@@ -253,22 +253,26 @@ Neue Konflikte und neue Rechner kommen außerdem als Eintrag in den Eingang (Spu
 ## Reihenfolge
 
 Stufe 1 ist der ganze Assistent plus Einstellungen: Aufgaben N.1–N.8 in
-[tasks/sync.md](tasks/sync.md). Stufe 2 (später, eigene Planung): Filterlisten (Offener Punkt 3 in
-[github.md](github.md)), eigene Designs, Regeln des Eingangs, Workspace-Vorlagen je Fenstermanager,
+[tasks/sync.md](tasks/sync.md). Stufe 2 (später, eigene Planung): Filterlisten
+([github.md](github.md)), eigene Designs, Regeln des Eingangs, Workspace-Vorlagen je Fenstermanager,
 Ende-zu-Ende-Verschlüsselung, `notify_push`.
 
 ## Offen
 
-1. **Schnittstellen:** neuer Bereich `sync`, Punkt 9 in „Was nie nach außen geht“ und das optionale
-   Feld `device` an `Entry` (von welchem Rechner ein Eintrag kommt). Das ändert festgelegte
-   Schnittstellen (`Area`, `api.md`, `torro-ipc`) und braucht eine Freigabe.
-2. **Verschlüsselung:** Stufe 1 ohne (wie Kalender und Aufgaben)? Vorschlag: ja. Ende-zu-Ende mit
-   Passphrase in Stufe 2.
-3. **Antrieb fehlt auf einem Rechner:** Vorschlag Stufe 1: Antrieb und Modell gleichen sich ab, ein
-   fehlender wird angezeigt, und die Auswahl eines anderen gilt überall. Ein Antrieb je Rechner
-   („hier Ollama, dort OpenRouter“) wäre ein Feld, das nicht abgeglichen wird. Später, falls nötig.
-4. **Mail-Inhalte in Unterhaltungen:** Werkzeug-Ergebnisse können Mail-Text enthalten. Vorschlag: Sie
-   gehen mit (eigener Server, wie der Mail-Cache auf der Platte). Ein Schalter „Keep mail contents on
-   this computer“ ersetzt sie in den Einträgen durch „withheld“.
-5. **Ordner:** fest `Torro Workplace/Sync/` oder wählbar? Vorschlag: fest in Stufe 1.
-6. **`zoom`** je Rechner (Vorschlag) oder abgleichen?
+Nichts.
+
+## Entscheidungen
+
+Getroffen am 2026-10-14.
+
+1. **Schnittstellen freigegeben:** neuer Bereich `sync`, ein neuer Punkt in „Was nie nach außen
+   geht“ (Rechner bestätigen nur durch einen Menschen) und das optionale Feld `device` an `Entry`. Damals
+   war es Punkt 9; die Nummer ist inzwischen vergeben, N.1 hängt den Punkt mit der nächsten freien Nummer an.
+2. **Stufe 1 ohne Verschlüsselung:** Die Einträge liegen wie Kalender und Aufgaben in den eigenen
+   Nextcloud-Dateien. Ende-zu-Ende mit Passphrase kommt in Stufe 2.
+3. **Fehlender Antrieb:** Antrieb und Modell gleichen sich ab. Ein fehlender Antrieb wird angezeigt
+   („Not available on this computer“), und die Wahl eines anderen gilt auf allen Rechnern.
+4. **Mail-Inhalte gehen mit.** Ein Schalter „Keep mail contents on this computer“ (Standard aus,
+   in `sync.update_sync`) ersetzt sie in den Einträgen durch „withheld“.
+5. **Ordner fest:** `Torro Workplace/Sync/`.
+6. **`zoom` bleibt je Rechner.**

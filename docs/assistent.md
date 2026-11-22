@@ -874,8 +874,16 @@ höchstens ein Modell, und das lädt ein Knopf in Einstellungen › Assistent �
 - **Sprache der Erkennung:** Whisper hört auf die gewählte Sprache, ohne Wahl die der Suite; „Automatic“ lässt
   Whisper raten, was bei kurzen Sätzen und beim Weckwort oft danebengeht. Parakeet erkennt die Sprache selbst.
 - **Bauen:** sherpa-onnx lädt beim ersten Bau fertige Bibliotheken (ca. 23 MB je Ziel) von GitHub, ohne Netz
-  über `SHERPA_ONNX_ARCHIVE_DIR`; unter Linux braucht der Bau `libasound2-dev` (bzw. `alsa-lib`), für das Mikrofon über PipeWire (Issue #772) kommt nichts dazu: Der PulseAudio-Weg ist reines Rust. Vorlesen und Signalton laufen weiter über ALSA. Unter Windows gibt es sherpa-onnx nur gegen die statische C-Laufzeit gebaut, deshalb linkt die Suite
-  dort mit `+crt-static` (`.cargo/config.toml`). Auf dem Mac
+  über `SHERPA_ONNX_ARCHIVE_DIR`; unter Linux braucht der Bau `libasound2-dev` (bzw. `alsa-lib`), für das Mikrofon über PipeWire (Issue #772) kommt nichts dazu: Der PulseAudio-Weg ist reines Rust. Vorlesen und Signalton laufen weiter über ALSA. Unter Windows bindet der Assistent sherpa-onnx als DLL ein (Feature `shared`,
+  Issue #773): Die statischen Bibliotheken gibt es dort nur gegen die statische C-Laufzeit gebaut, und `+crt-static`
+  hätte für alle Programme der Suite gegolten. Neben `torroassistant.exe` liegen deshalb `sherpa-onnx-c-api.dll` und
+  `onnxruntime.dll` (beide mit eigener C-Laufzeit); der Bau legt sie in `target/` neben das Programm, das Release
+  liefert sie als eigenes Archiv `torroassistant-runtime-x86_64-pc-windows-msvc.zip`, das Setup, der App-Installer
+  des Dienstes und Scoop mitbringen und mit dem Assistenten wieder entfernen (`packaging/windows/README.md`). Den
+  PowerShell-Installer von dist, der von sich aus nur das Programm kopiert, ergänzt der globale Release-Job: Er lädt
+  das Archiv samt `.sha256` aus demselben Release, prüft es und jede DLL gegen ihre feste SHA-256 und legt die DLLs
+  neben das Programm. Ein Deinstallieren kennt dieser Weg nicht, wie bei allen Programmen. Die C-Laufzeit der Programme ist wieder wie vor #762:
+  `cargo build` linkt sie dynamisch, das Release statisch (dist setzt `msvc-crt-static` von sich aus). Auf dem Mac
   fragt das System beim ersten Diktieren nach dem Mikrofon (`NSMicrophoneUsageDescription`).
 
 - **Standard aus.** Einschalten nur in den Einstellungen des Assistenten (Zahnrad › Voice), mit
@@ -1275,6 +1283,9 @@ Sprache (C.9) kommt zuletzt, wenn der Chat steht. Persönlichkeit und Gedächtni
 
 Ein Terminal-Werkzeug für den Assistenten ist als Konzept in [terminal.md](terminal.md) beschrieben, noch nicht entschieden
 (Issue #706).
+
+Computer-Use, also Fenster fremder Programme sehen und bedienen über den Treiber `cua-driver`, ist als Konzept in
+[bildschirm.md](bildschirm.md) beschrieben, noch nicht entschieden (Issue #755).
 
 Fremde MCP-Server im Chat sind mit #302 gebaut (Entscheidung 9): Ihre Werkzeuge bekommt der Assistent nur über
 den Kern, mit der Stufe je Server, nur nach Zustimmung der Person zu jedem Werkzeug und mit Freigabe, wo der

@@ -666,6 +666,9 @@ impl State {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Message {
+    /// "Manage usage" on the page of an account that uses a plan (issue #324): the provider's page where the person
+    /// sets how much of the plan the suite may use.
+    ManageUsage(AiProvider),
     /// The divider beside the providers' column (issue #604). The window handles it with
     /// [`drag_providers`], which knows the content's width; [`update`] leaves it alone.
     Providers(SplitEvent),
@@ -955,6 +958,10 @@ pub fn update(state: &mut State, message: Message, data: &dyn Seen) -> Action {
         },
         Message::SyncNow => Action::Send(Request::Sync),
         Message::OpenApp(app) => Action::Send(Request::OpenApp { app: app.to_string(), target: None }),
+        Message::ManageUsage(provider) => provider
+            .sign_in()
+            .and_then(|sign_in| sign_in.usage_url)
+            .map_or(Action::None, |url| Action::OpenUrl(url.to_string())),
         // Only an open detail page has an account to remove.
         Message::AskRemove => {
             state.confirm_remove = selected(state, data).is_some();
@@ -4169,10 +4176,32 @@ fn models_group<'a>(state: &'a State, account: &'a AccountInfo) -> Element<'a, M
     }
     let footer = tr("The assistant, its bots and every other module offer only the models that are on.");
     let group = widgets::group(tr("Models"), rows, Some(footer.to_string()));
-    match &page.refused {
-        Some(refused) => column![group, notice(refused.clone())].spacing(layout::item_gap()).into(),
-        None => group,
+    let mut parts = column![group].spacing(layout::item_gap());
+    if let Some(refused) = &page.refused {
+        parts = parts.push(notice(refused.clone()));
     }
+    // Signed in with a plan (issue #324): the usage counts there, and the limit is set there.
+    if let Some(provider) = provider.filter(|provider| provider.sign_in().is_some()) {
+        parts = parts.push(
+            typo::text(
+                typo::meta(),
+                trf(
+                    "Uses your {provider} plan. Set how much Torro Workplace may use in {provider}.",
+                    &[("provider", &provider.name())],
+                ),
+            )
+            .style(theme::text_2),
+        );
+        if provider.sign_in().and_then(|sign_in| sign_in.usage_url).is_some() {
+            parts = parts.push(widgets::text_button(
+                Some(Icon::ArrowUpRight),
+                tr("Manage usage"),
+                style::button::ghost,
+                Some(Message::ManageUsage(provider)),
+            ));
+        }
+    }
+    parts.into()
 }
 
 /// The search field over an AI account's models, at OpenRouter (`closed_filter`) with "Show closed

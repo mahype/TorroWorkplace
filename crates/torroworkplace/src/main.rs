@@ -63,6 +63,7 @@ mod mcp;
 mod notify;
 mod pim;
 mod places;
+mod postponements;
 mod presence;
 mod reminders;
 mod settings_service;
