@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>M3 Calendar settings</title><link rel="stylesheet" href="mock.css"></head>
+<body>
+<h1>M3 · Kalender-Einstellungen: eine Navigation, Zeit auf einer Seite, Regler nah am Text</h1>
+<div class="sub">Befunde F-02, F-03, F-14, F-15 · gilt sinngemäß für Aufgaben, Mail, Assistent.</div>
+<div class="pair">
+  <div class="col"><span class="tag before">Vorher · echtes Bildschirmfoto</span>
+    <div class="win tall"><img src="../screenshots/calendar/settings-reminders_dark_wide.png" style="position:absolute;left:0;top:0;width:1600px;transform-origin:0 0;transform:scale(.5075)"></div>
+  </div>
+  <div class="col"><span class="tag after">Nachher</span><span class="tag mock">Mockup, kein Bildschirmfoto</span>
+    <div class="win tall">
+      <div class="railw"><span class="ico"></span><span class="ico"></span><span class="ico"></span><span class="ico"></span></div>
+      <div class="side" style="width:170px">
+        <div class="title">Settings</div>
+        <div class="item"><span class="ico"></span>Calendars</div>
+        <div class="item on"><span class="ico"></span>Reminders and time</div>
+        <div class="item"><span class="ico"></span>Accounts</div>
+        <div class="item"><span class="ico"></span>API and MCP</div>
+        <div class="grp">Suite</div>
+        <div class="item"><span class="ico"></span>Appearance ↗</div>
+        <div class="item"><span class="ico"></span>All settings ↗</div>
+      </div>
+      <div class="main">
+        <div class="top"><span class="crumb">Settings ›</span>Reminders and time</div>
+        <div class="content" style="padding-top:4px">
+          <div class="tabs"><span class="on">Reminders</span><span>Working hours</span><span>Night</span></div>
+          <div class="gt">Reminders</div>
+          <div class="rows" style="max-width:560px">
+            <div class="row"><div class="l">Show reminders</div><div class="tog on"></div></div>
+            <div class="row"><div class="l">Default reminder<div class="d">For events without their own reminder</div></div><div class="btn">1 min before ⌄</div></div>
+            <div class="row"><div class="l">On all displays<div class="d">A full-screen reminder covers every display</div></div><div class="tog on"></div></div>
+            <div class="row"><div class="l">Sound</div><div class="tog on"></div></div>
+          </div>
+          <div class="gt">Which events</div>
+          <div class="rows" style="max-width:560px">
+            <div class="row"><div class="l">Only events I accepted</div><div class="tog on"></div></div>
+            <div class="row"><div class="l">All-day events</div><div class="tog"></div></div>
+            <div class="row"><div class="l">Outside work hours</div><div class="tog on"></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="callout"><b>Was sich ändert:</b> (1) Beim Öffnen der Einstellungen klappt die Seitenleiste der App zur Leiste ein, statt Mini-Monat und Ansichten neben der Einstellungsliste stehen zu lassen (Mail zeigt dieses Muster schon). (2) „Night“ und „Working hours“ (je eine Zeile „From … Until …“) werden zusammen mit „Reminders“ zu einer Seite „Reminders and time“ mit drei Reitern: vier statt sechs Einträge in der Liste. (3) Zeilen mit Schalter bekommen eine Lesebreite von 560–720; der Schalter sitzt nicht 1400 px vom Text. <b>Entscheidung nötig</b> für (3), weil #464 volle Breite beschlossen hat (siehe E-03).</div>
+</body></html>

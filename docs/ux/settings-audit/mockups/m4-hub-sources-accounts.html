@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>M4 Hub sources and accounts</title><link rel="stylesheet" href="mock.css"></head>
+<body>
+<h1>M4 · Notification Hub / App Feed: Quellen und Konten auf einer Seite</h1>
+<div class="sub">Befunde F-04, F-05, F-16 · „Sources“ und „Accounts“ zeigen heute dieselben Konten zweimal; „Notifications“ ist eine Seite mit einem Schalter.</div>
+<div class="pair">
+  <div class="col"><span class="tag before">Vorher · echtes Bildschirmfoto (Sources)</span>
+    <div class="win tall"><img src="../screenshots/hub/settings-sources_dark_wide.png" style="position:absolute;left:0;top:0;width:1600px;transform-origin:0 0;transform:scale(.5075)"></div>
+  </div>
+  <div class="col"><span class="tag after">Nachher</span><span class="tag mock">Mockup, kein Bildschirmfoto</span>
+    <div class="win tall">
+      <div class="railw"><span class="ico"></span><span class="ico"></span><span class="ico"></span></div>
+      <div class="side" style="width:170px">
+        <div class="title">Settings</div>
+        <div class="item"><span class="ico"></span>General</div>
+        <div class="item on"><span class="ico"></span>Sources</div>
+        <div class="item"><span class="ico"></span>Rules<span class="n">4</span></div>
+        <div class="item"><span class="ico"></span>API and MCP</div>
+        <div class="grp">Suite</div>
+        <div class="item"><span class="ico"></span>Appearance ↗</div>
+        <div class="item"><span class="ico"></span>All settings ↗</div>
+      </div>
+      <div class="main">
+        <div class="top"><span class="crumb">Settings ›</span>Sources</div>
+        <div class="content" style="padding-top:4px">
+          <div class="tabs"><span class="on">Nextcloud</span><span>GitHub</span><span>Mail</span><span>ntfy</span></div>
+          <div class="gt">anna@cloud.example.org · <span style="color:#3fb984">● Connected</span></div>
+          <div class="rows" style="max-width:600px">
+            <div class="row"><div class="l">Notifications<div class="d">From Nextcloud and its apps</div></div><div class="tog on"></div></div>
+            <div class="row"><div class="l">Talk<div class="d">Unread conversations and mentions</div></div><div class="tog"></div></div>
+            <div class="adv"><span>↗</span> Account settings in the control centre</div>
+          </div>
+          <div class="gt">anna@work.example.net · <span style="color:#e5484d">● Problem: the server did not answer</span></div>
+          <div class="rows" style="max-width:600px">
+            <div class="row"><div class="l">Notifications<div class="d">From Nextcloud and its apps</div></div><div class="tog on"></div></div>
+            <div class="row"><div class="l">Talk<div class="d">Unread conversations and mentions</div></div><div class="tog on"></div></div>
+            <div class="adv"><span>↗</span> Sign in again</div>
+          </div>
+          <div class="gt">General</div>
+          <div class="rows" style="max-width:600px"><div class="row"><div class="l">Quiet during busy events<div class="d">Only urgent entries pop up while a busy event runs; a summary follows</div></div><div class="tog on"></div></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="callout"><b>Was sich ändert:</b> „Accounts“ entfällt als eigene Seite in dieser App: Jede Quelle zeigt ihren Konto-Status und den Weg zu den Kontoeinstellungen in der Steuerzentrale, wo Konten ohnehin verwaltet werden (#663). Der einzelne Schalter „Quiet during busy events“ zieht auf die Seite General, die zugleich die Lesebreite für Zeilen mit Schalter bekommt. Aus fünf Einträgen werden vier. <b>Entscheidung nötig:</b> E-04 (Konten je App).</div>
+</body></html>

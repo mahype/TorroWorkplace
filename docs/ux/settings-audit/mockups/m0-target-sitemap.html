@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>M0 Target sitemap</title>
+<link rel="stylesheet" href="mock.css">
+<style>
+ body{width:1696px}
+ .map{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;align-items:start}
+ .card{background:#1a1c21;border:1px solid #343845;border-radius:8px;padding:12px 14px}
+ .card h2{font-size:14px;font-weight:600;margin-bottom:6px;color:#fff}
+ .card .grp{padding-left:0}
+ .pg{padding:3px 0 3px 10px;border-left:2px solid #343845;margin:4px 0;font-size:13px;color:#dcdfe5}
+ .pg small{display:block;color:#9aa0ab;font-size:11px;line-height:15px}
+ .chg{color:#9ee7bf} .del{color:#ffb4b8;text-decoration:line-through}
+ .legend{margin:0 0 14px;font-size:12px;color:#c9ccd2}
+</style></head>
+<body>
+<h1>M0 · Zielstruktur (Sitemap) der Einstellungen — Vorschlag, nichts davon ist gebaut</h1>
+<div class="legend"><span class="chg">grün</span> = neu oder umgezogen · <span class="del">durchgestrichen</span> = entfällt als eigene Seite · sonst unverändert. Tiefe höchstens: Bereich → Seite → Reiter.</div>
+<div class="map">
+  <div class="card"><h2>Steuerzentrale (Suite)</h2>
+    <div class="grp">Ohne Gruppe</div><div class="pg">Overview <small>Dienst · Konten · Apps</small></div>
+    <div class="grp">Connect</div><div class="pg">Accounts <small>Konten und Dienste</small></div><div class="pg">AI</div><div class="pg">MCP servers <small>Reiter Built-in · Catalog · Your servers</small></div>
+    <div class="grp">Access</div><div class="pg">API clients</div><div class="pg">MCP clients</div><div class="pg">Approvals <small>Arbeitsliste, keine Einstellung: bleibt, bekommt aber Zähler im Tray</small></div>
+    <div class="grp">This computer</div><div class="pg">Workspaces</div><div class="pg">Appearance</div><div class="pg">Privacy</div><div class="pg chg">General <small>Reiter: Suite · Contacts and maps · Chat; „Advanced“ eingeklappt</small></div>
+  </div>
+  <div class="card"><h2>Kalender</h2>
+    <div class="pg">Calendars</div>
+    <div class="pg chg">Reminders and time <small>Reiter Reminders · Working hours · Night</small></div>
+    <div class="pg del">Night</div><div class="pg del">Working hours</div>
+    <div class="pg">Accounts <small>kompakt, Verweis in die Steuerzentrale</small></div><div class="pg">API and MCP</div>
+    <h2 style="margin-top:14px">Aufgaben</h2>
+    <div class="pg chg">Lists <small>Sichtbarkeit und GitHub-Filterlisten an einer Stelle</small></div><div class="pg">Accounts</div><div class="pg">API and MCP</div>
+  </div>
+  <div class="card"><h2>Mail</h2>
+    <div class="pg">Accounts <small>Konto-Detail: Reiter Overview · Settings→Details · Storage · Folders · Sync · Backup</small></div>
+    <div class="pg chg">Reading and writing <small>Reiter Reading · Writing · Attachments</small></div><div class="pg del">Attachments</div>
+    <div class="pg">Categorization <small>Reiter Categories · AI</small></div>
+    <div class="pg">Automation <small>Reiter statt Segmente: Workflows · Rules · Runs</small></div>
+    <div class="pg chg">Statistics → Mail-Übersicht <small>Bericht, keine Einstellung (Entscheidung E-05)</small></div>
+    <div class="pg">AI</div><div class="pg">API and MCP</div>
+  </div>
+  <div class="card"><h2>Notification Hub / App Feed</h2>
+    <div class="pg chg">General <small>nimmt „Notifications“ auf</small></div><div class="pg del">Notifications</div>
+    <div class="pg chg">Sources <small>Reiter je Anbieter, Konto-Status und Link</small></div><div class="pg del">Accounts</div>
+    <div class="pg">Rules</div><div class="pg">API and MCP</div>
+    <h2 style="margin-top:14px">Assistent</h2>
+    <div class="pg">General <small>Reiter Chats · Profile · History</small></div><div class="pg">Voice <small>Reiter Read aloud · Conversation · Models</small></div>
+    <div class="pg">Skills</div><div class="pg">Bots</div>
+    <div class="pg chg">Access <small>nimmt „Used by the assistant“ aus API and MCP auf</small></div><div class="pg">AI</div><div class="pg">API and MCP <small>nur Clients von außen</small></div>
+    <h2 style="margin-top:14px">Chat · Kontakte</h2><div class="pg chg">Settings <small>heute keine eigene Einstellungsseite; Entscheidung E-06</small></div>
+  </div>
+</div>
+</body></html>

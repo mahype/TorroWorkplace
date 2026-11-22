@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>M2 General progressive disclosure</title><link rel="stylesheet" href="mock.css"></head>
+<body>
+<h1>M2 · Steuerzentrale › General: nach App gruppiert, Technisches eingeklappt</h1>
+<div class="sub">Befunde F-11, F-12 · Vorschlag: Die Seite zeigt nur, was man täglich ändert; Adressen von Kartendiensten stehen hinter „Advanced“.</div>
+<div class="pair">
+  <div class="col"><span class="tag before">Vorher · echtes Bildschirmfoto</span>
+    <div class="win tall"><img src="../screenshots/cc/section-general_dark_wide.png" style="position:absolute;left:-380px;top:-52px;width:1600px"></div>
+  </div>
+  <div class="col"><span class="tag after">Nachher</span><span class="tag mock">Mockup, kein Bildschirmfoto</span>
+    <div class="win tall">
+      <div class="main">
+        <div class="top"><span class="crumb">This computer ›</span>General</div>
+        <div class="content" style="padding-top:4px">
+          <div class="tabs"><span class="on">Suite</span><span>Contacts and maps</span><span>Chat</span></div>
+          <div class="gt">Language</div>
+          <div class="rows"><div class="row"><div class="l">App language</div><div class="seg"><span class="on">System</span><span>English</span><span>Deutsch</span></div></div></div>
+          <div class="gt">Startup</div>
+          <div class="rows">
+            <div class="row"><div class="l">Start at login</div><div class="tog on"></div></div>
+            <div class="row"><div class="l">Workspaces<div class="d">Save and restore window layouts</div></div><div class="tog on"></div></div>
+            <div class="row"><div class="l">First-run setup<div class="d">Nextcloud, components, accounts and AI, step by step</div></div><div class="btn">Run setup again</div></div>
+          </div>
+          <div class="gt">Maps · shown on the “Contacts and maps” tab</div>
+          <div class="rows">
+            <div class="row"><div class="l">Maps and place search<div class="d">Find places and see small maps in the calendar and contacts</div></div><div class="tog"></div></div>
+            <div class="row"><div class="l">Open in Maps with</div><div class="seg"><span class="on">OpenStreetMap</span><span>Google Maps</span><span>Apple Maps</span></div></div>
+            <div class="row"><div class="l">Stored map data<div class="d">12.4 MB of map tiles · 38 contact places</div></div><div class="btn">Clear</div></div>
+            <div class="adv"><span>›</span> Advanced: place search and map tile services (2)</div>
+          </div>
+          <div class="note">Both services are run by others, under their own rules. Off until you turn it on.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="callout"><b>Was sich ändert:</b> General hat heute vier Gruppen ohne Reiter (Language · Maps · Startup · Chat) und zeigt zwei Adressfelder (Photon-URL, Kachel-URL) und deren Auswahl dauerhaft. Nach der Reiter-Regel (mehr als drei Gruppen) bekommt die Seite Reiter; die Adressfelder liegen hinter einer eingeklappten Zeile „Advanced“. <b>Entscheidung nötig:</b> ob Chat und Karten in General bleiben oder eine eigene kleine Einstellungsseite in den Apps Chat und Kontakte bekommen (F-13).</div>
+</body></html>

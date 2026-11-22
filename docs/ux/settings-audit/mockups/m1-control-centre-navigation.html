@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>M1 Control centre navigation</title><link rel="stylesheet" href="mock.css"></head>
+<body>
+<h1>M1 · Steuerzentrale: gruppierte Navigation und Suche in den Einstellungen</h1>
+<div class="sub">Befunde F-01, F-24 · Vorschlag A: dieselben 11 Seiten, nur gruppiert und durchsuchbar. Nichts wandert, nichts entfällt.</div>
+<div class="pair">
+  <div class="col"><span class="tag before">Vorher · echtes Bildschirmfoto</span>
+    <div class="win"><img src="../screenshots/cc/section-general_dark_wide.png" style="position:absolute;left:0;top:0;width:1600px;transform-origin:0 0;transform:scale(.5075)"></div>
+  </div>
+  <div class="col"><span class="tag after">Nachher</span><span class="tag mock">Mockup, kein Bildschirmfoto</span>
+    <div class="win">
+      <div class="side">
+        <div class="title">Control centre</div>
+        <div class="search"><span>Search settings</span><span class="kbd">⌘K</span></div>
+        <div class="item"><span class="ico"></span>Overview</div>
+        <div class="grp">Connect</div>
+        <div class="item"><span class="ico"></span>Accounts<span class="n">7</span></div>
+        <div class="item"><span class="ico"></span>AI<span class="n">2</span></div>
+        <div class="item"><span class="ico"></span>MCP servers<span class="n">5</span></div>
+        <div class="grp">Access</div>
+        <div class="item"><span class="ico"></span>API clients<span class="n">1</span></div>
+        <div class="item"><span class="ico"></span>MCP clients<span class="n">2</span></div>
+        <div class="item"><span class="ico"></span>Approvals<span class="n">3</span></div>
+        <div class="grp">This computer</div>
+        <div class="item"><span class="ico"></span>Workspaces</div>
+        <div class="item"><span class="ico"></span>Appearance</div>
+        <div class="item"><span class="ico"></span>Privacy</div>
+        <div class="item on"><span class="ico"></span>General</div>
+      </div>
+      <div class="main">
+        <div class="top"><span class="crumb">This computer ›</span>General</div>
+        <div class="content">
+          <div class="gt">Language</div>
+          <div class="rows"><div class="row"><div class="l">App language</div><div class="seg"><span class="on">System</span><span>English</span><span>Deutsch</span></div></div></div>
+          <div class="gt">Startup</div>
+          <div class="rows">
+            <div class="row"><div class="l">Start at login</div><div class="tog on"></div></div>
+            <div class="row"><div class="l">Workspaces<div class="d">Save and restore window layouts</div></div><div class="tog on"></div></div>
+          </div>
+          <div class="note">Search finds every setting of the suite and of the apps: typing “maps” leads to General › Contacts and Calendar › Maps.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="callout"><b>Was sich ändert:</b> Die flache Liste aus 11 Einträgen bekommt drei leise Gruppentitel (Connect · Access · This computer, wie Linear). „General“ steht in der Gruppe statt abgesetzt am Fuß. Oben ein Suchfeld für Einstellungen (⌘K), das auch Seiten der Apps findet. <b>Aufwand klein bis mittel</b>, kein Zielkonflikt mit #803 (die Suche dort war die Inhaltssuche, nicht die der Einstellungen).</div>
+</body></html>

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>M5 Narrow header actions</title><link rel="stylesheet" href="mock.css"></head>
+<body style="width:1100px">
+<h1>M5 · Schmale Kopfzeile: Seitenaktionen laufen nicht in den Einstellungsknopf</h1>
+<div class="sub">Befunde F-08, F-09 · Mail › Categorization in 480 px: „Sort existing mail…“ überdeckt den Einstellungsknopf; der Abschnittsname („Remind…“) wird gekürzt, obwohl links Platz ist.</div>
+<div class="pair" style="gap:24px">
+  <div style="width:520px"><span class="tag before">Vorher · echtes Bildschirmfoto (Ausschnitt, 2×)</span>
+    <img src="../evidence/mail-categorization-narrow-header.png" style="width:520px;display:block;border:1px solid #000;border-radius:6px">
+    <img src="../evidence/calendar-narrow-section-menu.png" style="width:520px;display:block;border:1px solid #000;border-radius:6px;margin-top:10px">
+  </div>
+  <div style="width:520px"><span class="tag after">Nachher</span><span class="tag mock">Mockup, kein Bildschirmfoto</span>
+    <div style="background:var(--bg);border:1px solid #000;border-radius:6px;height:110px;display:flex;align-items:center;gap:12px;padding:0 16px;font-weight:500">
+      <span class="ico"></span>Mail<span style="flex:1"></span><span class="ico"></span><span class="btn ghost" style="font-size:14px">🏷 Categorization ⌄</span><span class="btn ghost">⋯</span><span class="ico"></span>
+    </div>
+    <div style="background:var(--bg);border:1px solid #000;border-radius:6px;height:110px;display:flex;align-items:center;gap:12px;padding:0 16px;font-weight:500;margin-top:10px">
+      <span class="ico"></span>Calendar<span style="flex:1"></span><span class="ico"></span><span class="btn ghost" style="font-size:14px">🔔 Reminders ⌄</span><span class="ico"></span>
+    </div>
+    <div class="note" style="max-width:none">Regel: Seitenaktionen („Sort existing mail…“) rutschen in schmaler Kopfzeile in ein „⋯“-Menü, bevor etwas überlappt; der Abschnittsname im Menüknopf wird erst gekürzt, wenn der Platz wirklich fehlt.</div>
+  </div>
+</div>
+</body></html>
