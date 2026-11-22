@@ -2275,6 +2275,19 @@ done"#;
             target_start(&template, &dirs, Some(control)),
             open("/Applications/Torro Workplace.app", &["ui", "--template=dev"])
         );
+        // Issue #651: a click on a chat in the list opens its window from "Torro Chat.app", the bundle
+        // scripts/macos-dev-bundles.sh makes and torro_gui::source::bundle_program finds for AppId::CHAT.
+        let conversation = "nextcloud:anna@cloud.example.org/ben4chat";
+        let chat = Opened::Chat { conversation: Some(conversation.into()) };
+        assert_eq!(target_entry(&chat), AppId::CHAT);
+        let chat_bundle = Path::new("/Applications/Torro Chat.app");
+        assert_eq!(
+            target_start(&chat, &dirs, Some(chat_bundle)),
+            open("/Applications/Torro Chat.app", &[&format!("--conversation={conversation}")])
+        );
+        let exe = Path::new("/Applications/Torro Workplace.app/Contents/MacOS/torroworkplace");
+        let program = Path::new("/Applications/Torro Chat.app/Contents/MacOS/torrochat");
+        assert_eq!(bundle_for(AppId::CHAT, Some(exe), None, |path| path == program), Some(chat_bundle.to_path_buf()));
 
         assert_eq!(
             target_start(&task, &dirs, None),
