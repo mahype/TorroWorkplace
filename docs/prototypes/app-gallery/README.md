@@ -9,7 +9,7 @@ Studie zu Issue [#970](https://github.com/mahype/TorroWorkplace/issues/970). **N
   einheitlichen, nüchternen Karte (Icon + Text); die Karte ist sauber, aber die Apps sind nur am Namen zu erkennen.
 - **15 Karten-Mockups** mit je eigenem Motiv (8 Katalog-Apps, die Hauptanwendung und 6 geplante Apps), alle in einer
   Bildsprache: getönter Grund in der Appfarbe, Glühen, Punktraster, darauf eine abstrahierte Szene der App (Abschnitt 5).
-- **Drei Gesamtlayouts**: A Editorial, B Creative Suite, C Product Preview, je hell und dunkel, dazu B in Mittel, Schmal und Mini
+- **Drei Gesamtlayouts**: A Editorial, B Creative Suite, C Product Preview, je hell und dunkel, dazu B in Mittel, Schmal und kleinstem Schmal (360)
   (Abschnitt 6). **Empfehlung: B**, mit dem Detail aus C als Seitenpaneel und dem Spotlight aus A nur für Updates.
 - **Welcome-Screens** für jede App aus *einer* Vorlage plus Hero-Varianten L/M/S (Abschnitt 7).
 - **Befund aus der Kontrastprüfung:** Das Hell-Grün der Aufgaben (`#1F9D68`) erreicht auf seiner eigenen Tönung nur 2,88:1.
