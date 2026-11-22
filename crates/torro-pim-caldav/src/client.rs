@@ -30,7 +30,7 @@ use reqwest::{Method, StatusCode, Url};
 use torro_core::account::Secret;
 use torro_pim::{Collection, CollectionKind, Event, ProviderError, Todo};
 
-use crate::{CalDavAccount, http_error, ical};
+use crate::{CONNECT_TIMEOUT, CalDavAccount, REQUEST_TIMEOUT, WRITE_TIMEOUT, http_error, ical};
 
 pub(crate) const NS_DAV: &str = "DAV:";
 const NS_CALDAV: &str = "urn:ietf:params:xml:ns:caldav";
@@ -56,6 +56,8 @@ pub struct CalDavClient {
     /// Plain text only for the `Authorization` header of each request; it arrives as a
     /// [`Secret`] and is left out of `Debug`.
     pub(crate) password: String,
+    /// The limit for each request of a save ([`crate::WRITE_TIMEOUT`]); tests make it shorter.
+    pub(crate) write_timeout: Duration,
 }
 
 impl fmt::Debug for CalDavClient {
@@ -125,7 +127,13 @@ impl CalDavClient {
     /// account URL that does not parse.
     pub fn new(http: reqwest::Client, account: &CalDavAccount, password: Secret) -> Result<Self, ProviderError> {
         let base = Url::parse(&account.url).map_err(|err| ProviderError::Other(format!("{}: {err}", account.url)))?;
-        Ok(CalDavClient { http, base, username: account.username.clone(), password: password.expose().to_string() })
+        Ok(CalDavClient {
+            http,
+            base,
+            username: account.username.clone(),
+            password: password.expose().to_string(),
+            write_timeout: WRITE_TIMEOUT,
+        })
     }
 
     /// A client for `account` that connects to `addresses` only (task M2.7b), for signing in to
@@ -148,8 +156,8 @@ impl CalDavClient {
         let http = reqwest::Client::builder()
             .no_proxy()
             .dns_resolver(Arc::new(dns))
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(60))
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|err| ProviderError::Other(err.to_string()))?;
         CalDavClient::new(http, account, password)
@@ -330,11 +338,26 @@ impl CalDavClient {
         depth: &str,
         body: &str,
     ) -> Result<String, ProviderError> {
+        self.request_within(method, url, depth, body, None).await
+    }
+
+    /// [`CalDavClient::request`], given up after `timeout` instead of the client's own limit when
+    /// one is named: a request of a save ([`crate::WRITE_TIMEOUT`]).
+    pub(crate) async fn request_within(
+        &self,
+        method: &str,
+        url: &Url,
+        depth: &str,
+        body: &str,
+        timeout: Option<Duration>,
+    ) -> Result<String, ProviderError> {
         let method = Method::from_bytes(method.as_bytes()).map_err(|err| ProviderError::Other(err.to_string()))?;
         let url = self.on_server(url.clone())?;
-        let response = self
-            .http
-            .request(method, url.clone())
+        let mut request = self.http.request(method, url.clone());
+        if let Some(timeout) = timeout {
+            request = request.timeout(timeout);
+        }
+        let response = request
             .basic_auth(&self.username, Some(&self.password))
             .header("Depth", depth)
             .header("Content-Type", "application/xml; charset=utf-8")

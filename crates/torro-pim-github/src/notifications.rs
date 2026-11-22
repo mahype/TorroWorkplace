@@ -18,7 +18,9 @@
 //! holds it or GitHub's own words ([`NotificationsError::public_message`]).
 //!
 //! These endpoints work only with classic personal access tokens (`notifications` or `repo`
-//! scope); a fine-grained token gets `403`, which is [`NotificationsError::NeedsScope`].
+//! scope); a fine-grained token gets `403`, which is [`NotificationsError::NeedsScope`]. The
+//! listing itself filters nothing: it holds the threads of private repositories as soon as the
+//! token reaches them, so the advice is `repo` (issue #433, `docs/github-mitteilungen.md`).
 
 use std::fmt;
 use std::time::Duration;
@@ -383,7 +385,7 @@ impl fmt::Display for NotificationsError {
         match self {
             NotificationsError::Refused => f.write_str("GitHub no longer accepts the token. Sign in to GitHub again."),
             NotificationsError::NeedsScope => f.write_str(
-                "GitHub does not let this token read notifications. Use a classic token with the notifications scope.",
+                "GitHub does not let this token read notifications. Use a classic token with the repo scope, which private repositories need too.",
             ),
             NotificationsError::Throttled { .. } => {
                 f.write_str("GitHub asks to wait before reading notifications again. They are read again later.")

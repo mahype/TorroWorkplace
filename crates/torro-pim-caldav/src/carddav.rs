@@ -469,7 +469,14 @@ impl CalDavClient {
         body: Option<(&str, String)>,
     ) -> Result<Answer, ContactsError> {
         let url = self.on_server(url.clone()).map_err(|_| off_server())?;
+        // A write and the GET after a refused one touch one card: within the limit of a save, so a
+        // server that never answers does not hold the save for a minute (issue #876). Listings and
+        // syncs keep the client's own, longer limit.
+        let write = matches!(method, Method::PUT | Method::DELETE | Method::GET);
         let mut request = self.http.request(method, url).basic_auth(&self.username, Some(&self.password));
+        if write {
+            request = request.timeout(self.write_timeout);
+        }
         for (name, value) in headers {
             request = request.header(*name, *value);
         }
@@ -1191,6 +1198,22 @@ mod tests {
         propfind_at(&server, BOOK_PATH, "0", &multistatus(BOOK_PATH, own)).await;
         let put = client.put(&server.url(BOOK_PATH), Some("gone.vcf"), "gone", VCARD, Some("\"g1\"")).await;
         assert_eq!(put, Err(ContactsError::NotFound));
+    }
+
+    /// Issue #876: a contact saved to a server that holds the connection but never answers comes
+    /// back offline within the limit of a save, not after the minute of a sync.
+    #[tokio::test]
+    async fn a_save_to_a_server_that_never_answers_is_offline_within_the_save_limit() {
+        let url = crate::testing::silent_server().await;
+        let account = CalDavAccount { url: url.clone(), username: "anna".into() };
+        let http = crate::http_client().expect("http");
+        let mut client = CalDavClient::new(http, &account, Secret::new("secret")).expect("client");
+        client.write_timeout = std::time::Duration::from_millis(300);
+        let book = format!("{url}addressbooks/users/anna/contacts/");
+        let started = std::time::Instant::now();
+        assert_eq!(client.put(&book, None, "ben", VCARD, None).await, Err(ContactsError::Offline), "a new card");
+        assert_eq!(client.delete(&book, "ben.vcf", Some("\"1\"")).await, Err(ContactsError::Offline), "a delete");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
     }
 
     #[tokio::test]

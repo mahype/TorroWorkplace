@@ -38421,6 +38421,7 @@ done"#,
             smtp: Arc<FakeSmtp>,
             id: String,
             app_key: Key,
+            secrets: MemoryTokens,
         }
 
         async fn invited() -> Invited {
@@ -38442,7 +38443,7 @@ done"#,
             let found = crate::mail::inbox_feed::linked_mail(&core.mail, ANNA, "p1@example.com").await;
             let id = found.expect("the invitation synced").id;
             let app_key = crate::clients::tests::app_key(dir.path());
-            Invited { _dir: dir, core, fake, server, smtp, id, app_key }
+            Invited { _dir: dir, core, fake, server, smtp, id, app_key, secrets }
         }
 
         fn respond(id: &str, answer: InvitationAnswer, collection: Option<&str>) -> Request {
@@ -38903,6 +38904,36 @@ done"#,
             assert!(String::from_utf8_lossy(&room.smtp.sent()[2].1).contains("PARTSTAT=DECLINED"));
             assert_eq!(kept_answer(core, &room.id).await, Some(InvitationAnswer::Decline));
             assert!(room.server.flags("INBOX", 1).is_empty(), "the invitation stays unread");
+        }
+
+        /// Issue #654: the answer is kept with the mail. Another mail program then moves it into the
+        /// archive (a new UID there, so the next sync stores it under a new id), and the core
+        /// restarts: `mail.get_message` – the same request for the window, the API and MCP – still
+        /// says what was answered.
+        #[tokio::test]
+        async fn an_answer_outlives_a_move_elsewhere_a_sync_and_a_restart() {
+            let room = invited().await;
+            let (core, key) = (&room.core, Some(&room.app_key));
+            let answered = ask(core, key, respond(&room.id, InvitationAnswer::Tentative, None)).await;
+            assert!(matches!(answered, Response::InvitationAnswered { .. }), "{answered:?}");
+
+            let [(uid, _, raw)] = room.server.messages("INBOX").try_into().expect("the invitation");
+            room.server.add_folder("Archive", "\\Archive", 9);
+            room.server.add("Archive", &raw, &["\\Seen"]);
+            room.server.expunge("INBOX", uid);
+            core.mail.sync_all(Reach::Suite).await.expect("synced");
+
+            let restarted = service_in(room._dir.path(), &room.secrets);
+            restarted.reload().await;
+            restarted.sync_all(Reach::Suite).await.expect("synced after the restart");
+            let core = core_on(room._dir.path(), &room.fake).with_mail(restarted);
+            let moved = crate::mail::inbox_feed::linked_mail(&core.mail, ANNA, "p1@example.com").await;
+            let moved = moved.expect("the invitation in the archive").id;
+            assert_ne!(moved, room.id, "stored anew");
+            let read = Request::GetMail { id: moved, include_body: true, include_html: false };
+            let Response::MailMessage { message } = ask(&core, key, read).await else { panic!("the mail") };
+            let invite = message.summary.invite.expect("still an invitation");
+            assert_eq!(invite.answered, Some(InvitationAnswer::Tentative));
         }
 
         /// The UID comes from outside: an event with it that the suite did not make of a mail is never
