@@ -4660,7 +4660,7 @@ pub enum Request {
     /// itself. A normal message is never a job. Answers [`Response::Job`]; `not-found` for an unknown engine or
     /// conversation, `unsupported` for another engine, a bot's conversation or one about a mail, `busy` while
     /// the conversation answers, `conflict` when it has an open job, the model's error code (`offline` …) when
-    /// it does not answer.
+    /// it does not answer, `error` for a goal that is empty or longer than [`assistant::MAX_TEXT_CHARS`].
     #[serde(rename = "assistant.start_job")]
     StartJob {
         /// What the job is to do, as the person would write it.
@@ -4678,8 +4678,10 @@ pub enum Request {
         without: Vec<Area>,
     },
     /// The assistant's jobs ([`Response::Jobs`]), the oldest first; with `conversation` only its jobs.
+    /// `not-found` for an unknown conversation.
     #[serde(rename = "assistant.list_jobs")]
     ListJobs {
+        /// Only the jobs of this conversation; left out, every job.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation: Option<String>,
     },

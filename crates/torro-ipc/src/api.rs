@@ -6506,8 +6506,8 @@ static RESOLVE_JOB_STEP: Command = Command {
     access: Access::Admin,
     mcp: Mcp::Tool,
     description: "Decides the outcome of an uncertain step of a job: `done` true when it did happen (the mail went \
-                  out), false when it did not, so it may run again. Waits for a person's approval, since only a \
-                  person can know; check the outcome yourself before you ask.",
+                  out), false when it did not, and then the job may run that step again when it resumes. Waits for \
+                  a person's approval, since only a person can know; check the outcome yourself before you ask.",
 };
 
 static INTERRUPT: Command = Command {

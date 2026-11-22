@@ -3654,7 +3654,7 @@ Lists the assistant's long-running jobs with their state (queued, running, await
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
-| `conversation` | string | nein |  |
+| `conversation` | string | nein | Only the jobs of this conversation; left out, every job. |
 
 ### `assistant.get_job`
 
@@ -3702,7 +3702,7 @@ Cancels a job of the assistant for good: its answer stops and nothing of it runs
 
 Zugriff `admin` · MCP-Tool `assistant_resolve_job_step`
 
-Decides the outcome of an uncertain step of a job: `done` true when it did happen (the mail went out), false when it did not, so it may run again. Waits for a person's approval, since only a person can know; check the outcome yourself before you ask.
+Decides the outcome of an uncertain step of a job: `done` true when it did happen (the mail went out), false when it did not, and then the job may run that step again when it resumes. Waits for a person's approval, since only a person can know; check the outcome yourself before you ask.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
