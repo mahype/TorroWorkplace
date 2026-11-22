@@ -4194,8 +4194,13 @@ impl Core {
         self.ai.start();
         // The first start after the switches came (task S.24): what the suite uses stays on. The
         // readers of the switches wait for it (`hold_until_kept` above).
+        // The assistant's jobs a restart interrupted (issue #961) go on once the models in use are known, so a model
+        // of theirs is not taken for gone while the accounts still load.
         let core = Arc::clone(self);
-        tokio::spawn(async move { core.keep_used_models_on().await });
+        tokio::spawn(async move {
+            core.keep_used_models_on().await;
+            core.assistant.recover_jobs().await;
+        });
         self.ntfy.start();
         self.start_contacts();
         self.start_chat();
@@ -8307,6 +8312,13 @@ impl Core {
             | Request::SendMessage { .. }
             | Request::CheckAbout { .. }
             | Request::CancelAnswer { .. }
+            | Request::StartJob { .. }
+            | Request::ListJobs { .. }
+            | Request::GetJob { .. }
+            | Request::PauseJob { .. }
+            | Request::ResumeJob { .. }
+            | Request::CancelJob { .. }
+            | Request::ResolveJobStep { .. }
             | Request::RenameConversation { .. }
             | Request::ChooseModel { .. }
             | Request::DeleteConversation { .. }

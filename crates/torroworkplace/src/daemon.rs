@@ -1341,6 +1341,13 @@ fn describe(request: &Request) -> String {
         Request::InterruptAnswer { conversation } => format!("interrupt the answer in conversation {conversation}"),
         Request::RenameConversation { id, .. } => format!("rename conversation {id}"),
         Request::ChooseModel { id, .. } => format!("choose the model of conversation {id}"),
+        Request::StartJob { .. } => "start a job of the assistant".into(),
+        Request::ListJobs { .. } => "list the jobs of the assistant".into(),
+        Request::GetJob { id } => format!("read job {id}"),
+        Request::PauseJob { id } => format!("pause job {id}"),
+        Request::ResumeJob { id, .. } => format!("resume job {id}"),
+        Request::CancelJob { id } => format!("cancel job {id}"),
+        Request::ResolveJobStep { id, step, .. } => format!("decide step {step} of job {id}"),
         Request::DeleteConversation { id } => format!("delete conversation {id}"),
         Request::PinConversation { id, pinned } => {
             format!("{} conversation {id}", if *pinned { "pin" } else { "unpin" })

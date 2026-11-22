@@ -4273,6 +4273,57 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{file} exists and was not written by Torro Workplace, so it was left as it is.",
         "{file} ist vorhanden und wurde nicht von Torro Workplace geschrieben, daher wurde es nicht verändert.",
     ),
+    // Assistant: long-running jobs (issue #961)
+    (
+        "A command of this job still waits for approval. Nothing runs until it is decided and the job is resumed.",
+        "Ein Befehl dieses Auftrags wartet noch auf Freigabe. Nichts läuft, bis sie entschieden und der Auftrag fortgesetzt ist.",
+    ),
+    (
+        "A step of this job changes something, and it is not known whether it happened. It does not run again by itself: check it, mark it as done or not done, then resume the job.",
+        "Ein Schritt dieses Auftrags ändert etwas, und es ist nicht bekannt, ob er passiert ist. Er läuft nicht von selbst noch einmal: Prüf ihn, markier ihn als erledigt oder nicht erledigt und setz den Auftrag dann fort.",
+    ),
+    ("Already done in this job; not run again", "In diesem Auftrag schon erledigt; nicht noch einmal ausgeführt"),
+    (
+        "Go on with this job where it stopped, and do not repeat what is already done.\n\nGoal: {goal}\nDone so far: {done}",
+        "Mach mit diesem Auftrag dort weiter, wo er stehen geblieben ist, und wiederhole nichts, was schon erledigt ist.\n\nZiel: {goal}\nBisher erledigt: {done}",
+    ),
+    (
+        "The answer was stopped, so the job is paused. Resume it to go on.",
+        "Die Antwort wurde gestoppt, darum ist der Auftrag pausiert. Setz ihn fort, um weiterzumachen.",
+    ),
+    (
+        "The assistant has no access set up any more. The job is paused; nothing ran.",
+        "Für den Assistenten ist kein Zugriff mehr eingerichtet. Der Auftrag ist pausiert; nichts wurde ausgeführt.",
+    ),
+    (
+        "The assistant may no longer run {tool}. The job is paused; change its access, then resume it.",
+        "Der Assistent darf {tool} nicht mehr ausführen. Der Auftrag ist pausiert; ändere seinen Zugriff und setz ihn dann fort.",
+    ),
+    ("The conversation of this job is gone.", "Die Unterhaltung dieses Auftrags gibt es nicht mehr."),
+    (
+        "The job could not go on. Resume it to try again.",
+        "Der Auftrag konnte nicht weitermachen. Setz ihn fort, um es noch einmal zu versuchen.",
+    ),
+    ("The job is paused. Resume it to go on.", "Der Auftrag ist pausiert. Setz ihn fort, um weiterzumachen."),
+    ("The job was cancelled.", "Der Auftrag wurde abgebrochen."),
+    ("The job's first message could not be stored.", "Die erste Nachricht des Auftrags ließ sich nicht speichern."),
+    (
+        "The job's journal cannot be used. The job is paused; nothing ran.",
+        "Das Journal des Auftrags lässt sich nicht nutzen. Der Auftrag ist pausiert; nichts wurde ausgeführt.",
+    ),
+    (
+        "The model {model} chosen for this job is not available. The job does not go on with another model by itself.",
+        "Das für diesen Auftrag gewählte Modell {model} ist nicht verfügbar. Der Auftrag macht nicht von selbst mit einem anderen Modell weiter.",
+    ),
+    (
+        "The model {model} is not available ({code}). The job is paused: resume it once the model is back, or resume it with another model.",
+        "Das Modell {model} ist nicht erreichbar ({code}). Der Auftrag ist pausiert: Setz ihn fort, sobald das Modell wieder da ist, oder setz ihn mit einem anderen Modell fort.",
+    ),
+    (
+        "The unclear step was decided. Resume the job to go on.",
+        "Der unklare Schritt ist entschieden. Setz den Auftrag fort, um weiterzumachen.",
+    ),
+    ("nothing yet", "noch nichts"),
     // Assistant page in the control centre (C.6)
     ("1 year", "1 Jahr"),
     (
