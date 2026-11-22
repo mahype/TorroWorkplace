@@ -11229,6 +11229,7 @@ dependencies = [
  "chrono",
  "httpmock",
  "reqwest 0.13.5",
+ "roxmltree 0.21.1",
  "serde_json",
  "tokio",
  "torro-core",

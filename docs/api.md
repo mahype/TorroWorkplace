@@ -164,7 +164,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `apps` | `list_apps`, `list_catalog`, `app_job`, `list_announcements` (#485) | `open_app` ¹³, `check_updates`, `cancel_app_job`, `dismiss_announcement` (#485) | | `uninstall_app`, `install_app` und `update_apps` (die letzten zwei **nur App-Schlüssel**, Punkt 11 unten, #411) |
 | `tools` ²² | `list_tools`, `web_search`, `fetch_page`, `list_search_providers` ²², `list_folder`, `find_files` | `create_pdf`, `open_file`, `save_file_as` (**nur App-Schlüssel**, Punkt 9 unten), `create_folder`, `copy_file`, `move_file` | `trash_file` | |
 | `extensions` ²⁵ | `list_extensions`, `get_extension`, `list_catalog`, `list_tools`, `read_logs` (**nur App-Schlüssel**, Punkt 10 unten) | `set_enabled` (einschalten **nur App-Schlüssel**) | `call_tool` (Zugriff des Werkzeugs, ²⁵) | `remove_extension`, `install_extension`, `confirm_tools`, `update_extension`, `set_secret`, `set_folder` (die letzten fünf **nur App-Schlüssel**) |
-| `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
+| `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity`, `detect_clients`, `connect_client`, `disconnect_client` (#538) (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
 | `assistant` (Karten, #784) | `get_cards`, `get_card_picture` (Bild einer Link-Karte wie `chat.get_preview`: mit dem Recht „Bildinhalte“, nur für Karten, die `get_cards` dem Client zeigt; holt nichts Neues) | `show_items` (Treffer als Karten; nur Kennungen, die der Assistent in dieser Unterhaltung gelesen hat, höchstens 10, auch für Bots), `show_card` (**nur App-Schlüssel**, Punkt 14) | | |
 
@@ -1233,7 +1233,14 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Ausnahme: Der Schlüssel eines **neuen Clients** geht einmal an die Steuerzentrale (Antwort auf
    `clients.create_client` bzw. `clients.new_key`, nur App-Schlüssel), die ihn in die Konfiguration
    des Agenten oder in eine Schlüsseldatei (0600, unter `<config>/hooks/`) schreibt oder bei
-   „Script“ einmal zum Kopieren zeigt. Danach kennt ihn nur noch der Client.
+   „Script“ einmal zum Kopieren zeigt. Ebenso druckt `torroworkplace ctl clients add` bzw. `new-key` ihn
+   einmal ins Terminal. Danach kennt ihn nur noch der Client. **Ohne Hauptanwendung** (#538) übernimmt der
+   Abschnitt „Connections“ jeder App diese Rolle: Gelistete Clients trägt der **Dienst selbst** ein
+   (`clients.connect_client`, nur App-Schlüssel): Er schreibt den Schlüssel des neuen Clients direkt in dessen
+   Konfiguration bzw. in die Schlüsseldatei der Hooks unter `<config>/hooks/` und gibt ihn in keiner Antwort
+   heraus, auch nicht an die App. Den Schlüssel zum Kopieren zeigt die App nur als Notlösung für andere Clients
+   und Skripte, über `clients.create_client` wie die Steuerzentrale ([einzelne-apps.md](einzelne-apps.md),
+   „API-Schlüssel und MCP-Clients ohne Hauptanwendung“).
 2. **Agenten und ihre Rechte verwalten** (`clients.*`): nur mit dem App-Schlüssel. Sonst könnte
    sich ein Agent selbst mehr Rechte geben.
 3. **Freigaben entscheiden** (`approvals.decide_approval`): nur mit dem App-Schlüssel, also nur
@@ -1506,7 +1513,8 @@ ihrem eigenen Bereich (Kalender `calendar`, Aufgaben `tasks` und `github`, Notif
 Mail `mail` und mit #556 `workflows`, Assistent `assistant` und `bots`) und ändert sie dort. Es sind dieselben Rechte desselben Clients,
 einmal im Dienst gespeichert; die Steuerzentrale zeigt sie gesammelt. Die App sendet nur `clients.update_client`
 (App-Schlüssel, `Mcp::Never`), nur für die Arten `script` und die MCP-Arten, nie für Assistent, Bots oder Hooks.
-Schlüssel anlegen und Clients verbinden bleibt in der Steuerzentrale (in einer einzelnen App: #538). Es gibt kein
+Schlüssel anlegen und Clients verbinden bleibt mit Hauptanwendung in der Steuerzentrale; ohne sie kommt mit #538
+der Abschnitt „Connections“ in jede App ([einzelne-apps.md](einzelne-apps.md)). Es gibt kein
 MCP-Tool dafür: Agenten ändern nie Rechte („Was nie nach außen geht“, Punkt 2).
 
 ### Je Client
@@ -1776,6 +1784,24 @@ clients“ nur „API“, und beide Abschnitte hatten einen Schalter („Allow A
   bestätigt; entfernt den Schlüssel aus dem Client, wenn möglich). Unter MCP zusätzlich die Gruppe „Notification
   Hub“: Schalter „Report when waiting or done“ legt den Hook-Client an und schreibt die Hooks bzw. nimmt beides
   heraus.
+- **Ohne Hauptanwendung** (#538): Jede App zeigt hinter dem Zahnrad den Abschnitt „Connections“ (die Oberfläche
+  fehlt noch, das Design kommt vom Designer): Client aus der Liste wählen, der Dienst trägt ihn mit eigenem Token
+  und immer mit seinen Hooks ein; Skript-Schlüssel anlegen, „Create new key“ und „Revoke…“; der Schlüssel zum
+  Kopieren mit Schalter „Read only“ nur als Notlösung. Befehle, alle `Area::Clients`, `Admin`, nur App-Schlüssel,
+  `Mcp::Never`:
+  - `clients.detect_clients { path }`: die erkannten Clients mit Ort des Eintrags (`detected-clients`).
+  - `clients.connect_client { target, read_only, path }`: Client anlegen und eintragen, Hooks dazu; Antwort
+    `client-connected` ohne Schlüssel (`place`, `hooks` bzw. `hooks_error`). Scheitert der Eintrag, wird der Client
+    wieder entfernt. Ohne `read_only` gilt *Read only*. Ist das Ziel schon mit einem bestehenden Client verbunden:
+    `conflict` (erst trennen), damit kein alter Schlüssel gültig liegen bleibt.
+  - `clients.disconnect_client { id }`: Client und seine Hook-Clients entfernen (Schlüssel sofort ungültig), dann
+    Eintrag, Skill, Hooks und Schlüsseldatei heraus.
+
+  `path` ist der `PATH` der App, zuerst durchsucht: Ein beim Anmelden gestarteter Dienst hat oft einen kürzeren.
+  Nur absolute Einträge zählen.
+  Die Clients landen in derselben Ablage (`clients.json`, `client_setup.json`), so dass eine später installierte
+  Steuerzentrale sie übernimmt. Einzelheiten: [einzelne-apps.md](einzelne-apps.md), „API-Schlüssel und
+  MCP-Clients ohne Hauptanwendung (#538)“.
 - **Abschnitt „Approvals“** (oder Gruppe in Overview, solange es wenige sind): offene Freigaben mit
   „Allow“/„Deny“, darunter die zuletzt entschiedenen.
 

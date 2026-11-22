@@ -3353,6 +3353,10 @@ pub struct Core {
     /// The assistant's own tools and the register of their files (issue #225, task WZ.4): the user's
     /// ([`crate::tools::Tools::system`]); tests bring theirs with temporary roots ([`Core::with_tools`]).
     tools: Arc<crate::tools::Tools>,
+    /// Where the core connects coding agents by itself (issue #538, `clients.connect_client`): the
+    /// user's home and the real commands ([`crate::client_setup::Service::system`]); tests bring a
+    /// temporary home ([`Core::with_client_setup`]).
+    client_setup: crate::client_setup::Service,
     /// How the template keys stand (issue #243), as the part that binds them last reported it
     /// ([`Core::report_shortcuts`]): bound or not, and why not. `None` until it reports, and where
     /// nothing binds them; `system.status` then names no `shortcuts`.
@@ -3535,6 +3539,7 @@ impl Core {
             accounts_read: tokio::sync::watch::Sender::new(true),
             reminders: Arc::new(Reminders::system()),
             tools: Arc::new(crate::tools::Tools::system()),
+            client_setup: crate::client_setup::Service::system(),
             shortcuts: std::sync::Mutex::new(None),
             // Tests never read or write the user's ledger of bound keys.
             keys: if cfg!(test) {
@@ -3895,6 +3900,13 @@ impl Core {
                 Response::Error { code: "error".into(), message }
             }
         }
+    }
+
+    /// The core connecting clients in `setup` instead of the user's home, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_client_setup(mut self, setup: crate::client_setup::Service) -> Core {
+        self.client_setup = setup;
+        self
     }
 
     /// The core with `tools` instead of the user's, for tests.
@@ -7983,6 +7995,9 @@ impl Core {
             Request::NewClientKey { id } => issued(self.clients.new_key(&id).await),
             Request::RemoveClient { id } => self.remove_client(&id).await,
             Request::ClientActivity { id } => self.client_activity(id).await,
+            Request::DetectClients { path } => self.detect_clients(&path).await,
+            Request::ConnectClient { target, read_only, path } => self.connect_client(&target, read_only, &path).await,
+            Request::DisconnectClient { id } => self.disconnect_client(&id).await,
             // A client's own approvals are answered in `handle_from`, which knows who asks; here a
             // client sees none, and it never decides.
             Request::ListApprovals if client => Response::Approvals { approvals: Vec::new() },
@@ -13825,6 +13840,189 @@ impl Core {
         Response::Ok
     }
 
+    /// `clients.detect_clients` (issue #538): the clients the core can connect by itself, searched
+    /// with the app's `path` first. Without a home directory nothing is found.
+    async fn detect_clients(&self, path: &[String]) -> Response {
+        let Some(env) = self.client_setup.env(&paths_of(path)) else {
+            return Response::DetectedClients { clients: Vec::new() };
+        };
+        let found = tokio::task::spawn_blocking(move || crate::client_setup::detect(&env)).await.unwrap_or_default();
+        let clients = found
+            .into_iter()
+            .map(|found| torro_ipc::DetectedClient {
+                target: found.target.kind().to_string(),
+                name: found.target.label().to_string(),
+                guided: matches!(found.method, crate::client_setup::Method::Guided { .. }),
+                place: found.place,
+            })
+            .collect();
+        Response::DetectedClients { clients }
+    }
+
+    /// `clients.connect_client` (issue #538): what the control centre's "Connect client" does, done
+    /// by the core for an app without the main application. The key goes from [`Clients`] straight
+    /// into the client's configuration ([`crate::client_setup::connect`]) and never into an answer.
+    /// A coding agent with hooks also gets its hook client and hooks
+    /// ([`crate::client_setup::connect_hooks`]), always (decided with #538); when they fail the
+    /// hook client goes again and the answer says why, the connection stays.
+    ///
+    /// A target whose client is still connected is `conflict`: connecting again would leave the
+    /// older client with a valid key that nothing uses any more.
+    async fn connect_client(&self, target: &str, read_only: bool, path: &[String]) -> Response {
+        use crate::client_setup::{self as setup, Method, Target};
+        let Some(target) = Target::from_kind(target) else {
+            let known: Vec<&str> = Target::ALL.iter().map(|target| target.kind()).collect();
+            let message = trf(
+                "There is no client {target}; one of {known}.",
+                &[("target", &format!("{target:?}")), ("known", &known.join(", "))],
+            );
+            return refusal("error", message);
+        };
+        let Some(env) = self.client_setup.env(&paths_of(path)) else {
+            return setup::SetupError::NoHome.response();
+        };
+        let looked = {
+            let env = env.clone();
+            tokio::task::spawn_blocking(move || {
+                setup::connected_client(&env, target).map(|connected| (connected, setup::detect(&env)))
+            })
+            .await
+        };
+        let (connected, found) = match looked {
+            Ok(Ok(looked)) => looked,
+            Ok(Err(err)) => return err.response(),
+            Err(_) => return refusal("error", tr("Something went wrong. Try again.").to_string()),
+        };
+        if connected.is_some_and(|id| self.client_kind(&id).is_some()) {
+            let message = trf("{client} is already connected. Disconnect it first.", &[("client", &target.label())]);
+            return refusal("conflict", message);
+        }
+        let mine: Vec<setup::Found> = found.into_iter().filter(|found| found.target == target).collect();
+        let Some(found) = mine.iter().find(|found| !matches!(found.method, Method::Guided { .. })).cloned() else {
+            let (code, message) = match mine.is_empty() {
+                true => ("not-found", trf("{client} was not found on this computer.", &[("client", &target.label())])),
+                false => (
+                    "unsupported",
+                    trf("{client} is set up by hand. Create a key to copy instead.", &[("client", &target.label())]),
+                ),
+            };
+            return refusal(code, message);
+        };
+        let template = if read_only {
+            torro_ipc::api::RightsTemplate::ReadOnly
+        } else {
+            torro_ipc::api::RightsTemplate::ReadAndWrite
+        };
+        let (client, key) = match self.clients.add_client(target.label(), target.kind(), None, template.rights()).await
+        {
+            Ok(added) => added,
+            Err(err) => return clients_error(&err),
+        };
+        let written = {
+            let (env, runner, id, key) =
+                (env.clone(), self.client_setup.runner(), client.id.clone(), IssuedKey::new(key));
+            tokio::task::spawn_blocking(move || {
+                setup::connect(&env, target, &found.method, &id, &key, runner.as_ref()).map_err(|err| err.response())
+            })
+            .await
+            .unwrap_or_else(|_| Err(refusal("error", tr("Something went wrong. Try again.").to_string())))
+        };
+        if let Err(refused) = written {
+            // Nothing uses the key now; it must not stay valid.
+            let _ = self.remove_client(&client.id).await;
+            return refused;
+        }
+        let (hooks, hooks_error) = match target.agent() {
+            Some(agent) => match self.connect_hooks(&env, agent, &client.id).await {
+                Ok(place) => (Some(place), None),
+                Err(why) => (None, Some(why)),
+            },
+            None => (None, None),
+        };
+        Response::ClientConnected { client, place: found.place, hooks, hooks_error }
+    }
+
+    /// The hook client of `agent` for the agent client `owner`, with its hooks written; where they
+    /// went, for people. When writing fails the hook client is removed again.
+    async fn connect_hooks(
+        &self,
+        env: &crate::client_setup::Env,
+        agent: torro_inbox::AgentKind,
+        owner: &str,
+    ) -> Result<String, String> {
+        let name = trf("{agent} hooks", &[("agent", &agent.label())]);
+        // The core narrows any template to `Rights::hook`; "Full access" leaves exactly that.
+        let rights = torro_ipc::api::RightsTemplate::FullAccess.rights();
+        let (hook, key) = self
+            .clients
+            .add_client(&name, torro_ipc::api::HOOK_CLIENT, Some(agent), rights)
+            .await
+            .map_err(|err| err.to_string())?;
+        let (env, owner, id, key) = (env.clone(), owner.to_string(), hook.id.clone(), IssuedKey::new(key));
+        let written = tokio::task::spawn_blocking(move || {
+            crate::client_setup::connect_hooks(&env, agent, Some(&owner), &id, &key)
+                .map(|()| env.shown(&crate::client_setup::hook_file(&env, agent)))
+                .map_err(|err| err.message())
+        })
+        .await
+        .unwrap_or_else(|_| Err(tr("Something went wrong. Try again.").to_string()));
+        if written.is_err() {
+            let _ = self.remove_client(&hook.id).await;
+        }
+        written
+    }
+
+    /// `clients.disconnect_client` (issue #538): removes the MCP client `id` and the hook clients
+    /// noted for it first, so their keys stop working whatever follows, then takes out what was
+    /// written for them ([`crate::client_setup::release`]).
+    async fn disconnect_client(&self, id: &str) -> Response {
+        let Some(kind) = self.client_kind(id) else { return refusal("not-found", format!("no client {id:?}")) };
+        if !torro_ipc::api::is_mcp_kind(&kind) {
+            let message = trf("A client of the kind {kind} is removed with clients.remove_client.", &[("kind", &kind)]);
+            return refusal("unsupported", message);
+        }
+        let env = self.client_setup.env(&[]);
+        let hooks: Vec<String> = match &env {
+            Some(env) => {
+                let (env, owner) = (env.clone(), id.to_string());
+                tokio::task::spawn_blocking(move || crate::client_setup::hook_notes(&env))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|note| note.owner.as_deref() == Some(owner.as_str()))
+                    .map(|note| note.client)
+                    .collect()
+            }
+            None => Vec::new(),
+        };
+        let removed = self.remove_client(id).await;
+        if removed != Response::Ok {
+            return removed;
+        }
+        for hook in &hooks {
+            let _ = self.remove_client(hook).await;
+        }
+        let Some(env) = env else { return crate::client_setup::SetupError::NoHome.response() };
+        let (runner, client) = (self.client_setup.runner(), id.to_string());
+        let released = tokio::task::spawn_blocking(move || {
+            crate::client_setup::release(&env, &client, runner.as_ref()).map_err(|err| err.response())
+        })
+        .await
+        .unwrap_or_else(|_| Err(refusal("error", tr("Something went wrong. Try again.").to_string())));
+        match released {
+            Ok(released) => {
+                // Hook clients of an older note than `hook_notes` read, if any.
+                for hook in released.hook_clients.iter().filter(|hook| !hooks.contains(hook)) {
+                    let _ = self.remove_client(hook).await;
+                }
+                Response::Ok
+            }
+            Err(refused) => refused,
+        }
+    }
+
     /// `accounts.remove_account` (tasks M1.4, G.1, M7.1, M2.7, E5.12): a GitHub account with its
     /// filter lists, an AI or ntfy account, a mail account ([`Core::remove_mail_account`]), else a Nextcloud or CalDAV account
     /// (`PimService::remove_account`).
@@ -16655,6 +16853,13 @@ fn github_error(err: &GithubError) -> Response {
     Response::Error { code: err.code().into(), message: err.to_string() }
 }
 
+/// The directories of an app's `PATH` as `clients.detect_clients` and `clients.connect_client`
+/// carry them; empty and relative entries are dropped.
+fn paths_of(path: &[String]) -> Vec<PathBuf> {
+    // Only absolute ones: a relative entry would resolve against the service's working directory.
+    path.iter().map(PathBuf::from).filter(|dir| dir.is_absolute()).collect()
+}
+
 fn clients_error(err: &ClientsError) -> Response {
     Response::Error { code: err.code().into(), message: err.to_string() }
 }
@@ -17984,6 +18189,213 @@ mod tests {
         let update = Request::UpdateClient { id, rights: RightsTemplate::ReadAndWrite.rights() };
         assert_eq!(ask(&core, Some(&app_key), update).await, Response::Ok);
         assert_eq!(code(&ask(&core, Some(&key), rename()).await), "not-found", "runs now: no template dev");
+    }
+
+    /// A client setup in `root` (issue #538): the home `root/home`, the record in `root/config`,
+    /// the `PATH` only what the app gives, and no client command ever runs.
+    fn setup_in(root: &std::path::Path) -> crate::client_setup::Service {
+        struct NoCommands;
+        impl crate::client_setup::Runner for NoCommands {
+            fn run(&self, _: &std::path::Path, _: &[String]) -> Result<(), crate::client_setup::RunError> {
+                Err(crate::client_setup::RunError::NotStarted)
+            }
+        }
+        let root = root.to_path_buf();
+        crate::client_setup::Service::new(
+            move |path| {
+                Some(crate::client_setup::Env {
+                    open: Default::default(),
+                    home: root.join("home"),
+                    app_config: root.join("home/.config"),
+                    path: path.to_vec(),
+                    program: PathBuf::from("/opt/torro/torroworkplace"),
+                    config_dir: root.join("config"),
+                })
+            },
+            Arc::new(NoCommands),
+        )
+    }
+
+    fn detected<'a>(response: &'a Response, target: &str) -> Option<&'a torro_ipc::DetectedClient> {
+        let Response::DetectedClients { clients } = response else { panic!("detected clients: {response:?}") };
+        clients.iter().find(|client| client.target == target)
+    }
+
+    /// Issue #538: an app connects Claude Code through the core. The key goes into
+    /// `~/.claude.json` and never into an answer, the hooks come along with a hook client of their
+    /// own, the record is the control centre's `client_setup.json`, and disconnecting takes all of
+    /// it out again.
+    #[tokio::test]
+    async fn the_core_connects_and_disconnects_a_client_by_itself() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let setup = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(setup.path().join("home/.claude")).expect("claude folder");
+        let core = core(dir.path()).with_client_setup(setup_in(setup.path()));
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        let found = ask(&core, Some(&app_key), Request::DetectClients { path: Vec::new() }).await;
+        let claude = detected(&found, "claude-code").expect("Claude Code by its folder");
+        assert_eq!(
+            (claude.name.as_str(), claude.place.as_str(), claude.guided),
+            ("Claude Code", "~/.claude.json", false)
+        );
+        assert!(detected(&found, "cursor").is_none(), "no ~/.cursor");
+
+        let connect = Request::ConnectClient { target: "claude-code".into(), read_only: true, path: Vec::new() };
+        let answer = ask(&core, Some(&app_key), connect).await;
+        let Response::ClientConnected { client, place, hooks, hooks_error } = &answer else {
+            panic!("connected: {answer:?}")
+        };
+        assert_eq!((client.kind.as_str(), client.name.as_str()), ("claude-code", "Claude Code"));
+        assert_eq!(client.rights, RightsTemplate::ReadOnly.rights());
+        assert_eq!(place, "~/.claude.json");
+        assert_eq!((hooks.as_deref(), hooks_error.as_deref()), (Some("~/.claude/settings.json"), None));
+        let json = serde_json::to_string(&answer).expect("serializes");
+        assert!(!json.contains("torro_"), "never a key: {json}");
+
+        let config = std::fs::read_to_string(setup.path().join("home/.claude.json")).expect("entry written");
+        assert!(config.contains(&format!("torro_{}_", client.id)), "the client's own key is in its entry");
+        assert!(setup.path().join("config").join(crate::client_setup::RECORD_FILE).is_file());
+        let Response::Clients { clients } = ask(&core, Some(&app_key), Request::ListClients).await else {
+            panic!("clients")
+        };
+        let hook = clients.iter().find(|other| other.kind == torro_ipc::api::HOOK_CLIENT).expect("a hook client");
+        assert_eq!(clients.len(), 2, "{clients:?}");
+        assert!(setup.path().join("config/hooks").join(format!("{}.key", hook.id)).is_file());
+
+        // Once more: the connected client would be left with a valid key nothing uses.
+        let again = Request::ConnectClient { target: "claude-code".into(), read_only: false, path: Vec::new() };
+        assert_eq!(code(&ask(&core, Some(&app_key), again).await), "conflict");
+
+        let disconnect = Request::DisconnectClient { id: client.id.clone() };
+        assert_eq!(ask(&core, Some(&app_key), disconnect.clone()).await, Response::Ok);
+        assert_eq!(ask(&core, Some(&app_key), Request::ListClients).await, Response::Clients { clients: vec![] });
+        let config = std::fs::read_to_string(setup.path().join("home/.claude.json")).expect("still there");
+        assert!(!config.contains("torro_"), "the entry is out: {config}");
+        assert!(!setup.path().join("config/hooks").join(format!("{}.key", hook.id)).exists());
+        assert_eq!(code(&ask(&core, Some(&app_key), disconnect).await), "not-found");
+    }
+
+    /// Issue #538: what the core refuses when it connects a client by itself, and that a failed
+    /// entry leaves no valid key behind.
+    #[tokio::test]
+    async fn connecting_a_client_by_itself_refuses_what_it_cannot_do() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let setup = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(setup.path().join("home")).expect("home");
+        let core = core(dir.path()).with_client_setup(setup_in(setup.path()));
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let connect =
+            |target: &str| Request::ConnectClient { target: target.into(), read_only: false, path: Vec::new() };
+
+        assert_eq!(code(&ask(&core, Some(&app_key), connect("vim")).await), "error");
+        assert_eq!(code(&ask(&core, Some(&app_key), connect("cursor")).await), "not-found");
+
+        // An entry that cannot be written: the client goes again.
+        std::fs::create_dir_all(setup.path().join("home/.cursor")).expect("cursor folder");
+        std::fs::write(setup.path().join("home/.cursor/mcp.json"), "not json").expect("broken file");
+        assert_eq!(code(&ask(&core, Some(&app_key), connect("cursor")).await), "error");
+        assert_eq!(ask(&core, Some(&app_key), Request::ListClients).await, Response::Clients { clients: vec![] });
+        assert_eq!(std::fs::read_to_string(setup.path().join("home/.cursor/mcp.json")).expect("kept"), "not json");
+
+        // A script's key is removed with clients.remove_client.
+        let (script, key) =
+            core.clients.add("nightly", "script", RightsTemplate::FullAccess.rights()).await.expect("added");
+        let disconnect = Request::DisconnectClient { id: script.id.clone() };
+        assert_eq!(code(&ask(&core, Some(&app_key), disconnect.clone()).await), "unsupported");
+
+        // Never for a client's key, whatever its rights.
+        for request in [Request::DetectClients { path: Vec::new() }, connect("claude-code"), disconnect] {
+            assert_eq!(code(&ask(&core, Some(&key), request).await), "forbidden");
+        }
+    }
+
+    /// Issue #538: without `read_only` the safer template; with `false` Read and write.
+    #[tokio::test]
+    async fn connecting_by_itself_is_read_only_unless_asked_otherwise() {
+        let missing: Request =
+            serde_json::from_str(r#"{"method":"clients.connect_client","target":"cursor"}"#).expect("parses");
+        assert!(matches!(missing, Request::ConnectClient { read_only: true, .. }), "{missing:?}");
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let setup = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(setup.path().join("home/.cursor")).expect("cursor folder");
+        let core = core(dir.path()).with_client_setup(setup_in(setup.path()));
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let connect = Request::ConnectClient { target: "cursor".into(), read_only: false, path: Vec::new() };
+        let Response::ClientConnected { client, hooks, hooks_error, .. } = ask(&core, Some(&app_key), connect).await
+        else {
+            panic!("connected")
+        };
+        assert_eq!(client.rights, RightsTemplate::ReadAndWrite.rights());
+        assert_eq!((hooks, hooks_error), (None, None), "Cursor has no hooks");
+    }
+
+    /// Issue #538: hooks that cannot be written leave the connection and say why, and their hook
+    /// client goes again; a disconnect whose cleanup fails still removes the client and its hook
+    /// clients.
+    #[tokio::test]
+    async fn failed_hooks_and_a_failed_cleanup_leave_no_valid_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let setup = tempfile::tempdir().expect("temp dir");
+        std::fs::create_dir_all(setup.path().join("home/.claude")).expect("claude folder");
+        std::fs::write(setup.path().join("home/.claude/settings.json"), "not json").expect("broken hooks file");
+        let core = core(dir.path()).with_client_setup(setup_in(setup.path()));
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        let connect = Request::ConnectClient { target: "claude-code".into(), read_only: true, path: Vec::new() };
+        let Response::ClientConnected { client, hooks, hooks_error, .. } = ask(&core, Some(&app_key), connect).await
+        else {
+            panic!("connected without hooks")
+        };
+        assert!(hooks.is_none() && hooks_error.is_some(), "{hooks_error:?}");
+        let Response::Clients { clients } = ask(&core, Some(&app_key), Request::ListClients).await else {
+            panic!("clients")
+        };
+        assert_eq!(clients.iter().map(|other| other.id.as_str()).collect::<Vec<_>>(), vec![client.id.as_str()]);
+
+        // The entry can no longer be read: disconnecting says why, and the client is gone anyway.
+        std::fs::write(setup.path().join("home/.claude.json"), "not json").expect("broken entry");
+        let disconnect = Request::DisconnectClient { id: client.id.clone() };
+        assert_eq!(code(&ask(&core, Some(&app_key), disconnect).await), "error");
+        assert_eq!(ask(&core, Some(&app_key), Request::ListClients).await, Response::Clients { clients: vec![] });
+    }
+
+    /// Issue #538: the app's `PATH` is searched, so a command the service's own `PATH` misses is
+    /// found.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn detecting_clients_searches_the_apps_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let setup = tempfile::tempdir().expect("temp dir");
+        let bin = setup.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::write(bin.join("codex"), "#!/bin/sh\n").expect("codex");
+        std::fs::set_permissions(bin.join("codex"), std::fs::Permissions::from_mode(0o755)).expect("executable");
+        let core = core(dir.path()).with_client_setup(setup_in(setup.path()));
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        let without = ask(&core, Some(&app_key), Request::DetectClients { path: Vec::new() }).await;
+        assert!(detected(&without, "codex").is_none());
+        let path = vec![bin.display().to_string(), "relative/bin".into()];
+        let with = ask(&core, Some(&app_key), Request::DetectClients { path: path.clone() }).await;
+        assert_eq!(detected(&with, "codex").map(|codex| codex.place.as_str()), Some("codex"));
+
+        // Open WebUI is only ever set up by hand.
+        std::fs::write(bin.join("open-webui"), "#!/bin/sh\n").expect("open-webui");
+        std::fs::set_permissions(bin.join("open-webui"), std::fs::Permissions::from_mode(0o755)).expect("executable");
+        let found = ask(&core, Some(&app_key), Request::DetectClients { path: path.clone() }).await;
+        assert!(detected(&found, "open-webui").is_some_and(|client| client.guided));
+        let connect = Request::ConnectClient { target: "open-webui".into(), read_only: true, path };
+        assert_eq!(code(&ask(&core, Some(&app_key), connect).await), "unsupported");
+        assert_eq!(ask(&core, Some(&app_key), Request::ListClients).await, Response::Clients { clients: vec![] });
+    }
+
+    #[test]
+    fn only_absolute_directories_of_an_apps_path_count() {
+        let path = vec!["/usr/bin".to_string(), String::new(), ".".into(), "bin".into()];
+        assert_eq!(paths_of(&path), vec![PathBuf::from("/usr/bin")]);
     }
 
     #[tokio::test]

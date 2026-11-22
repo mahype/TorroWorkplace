@@ -1811,8 +1811,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Talk", "Talk"),
     ("Unread conversations and mentions", "Ungelesene Unterhaltungen und Erwähnungen"),
     (
-        "Notifications need a classic token with notifications or repo, or the GitHub CLI sign-in.",
-        "Benachrichtigungen brauchen ein klassisches Token mit notifications oder repo oder die Anmeldung der GitHub CLI.",
+        "Notifications need a classic token with repo (notifications alone may leave out private repositories), or the GitHub CLI sign-in.",
+        "Benachrichtigungen brauchen ein klassisches Token mit repo (mit notifications allein fehlen eventuell private Repos) oder die Anmeldung der GitHub CLI.",
     ),
     ("This sign-in may not read notifications.", "Diese Anmeldung darf keine Benachrichtigungen lesen."),
     ("This Nextcloud has no Talk.", "Diese Nextcloud hat kein Talk."),
@@ -2526,6 +2526,21 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Hooks", "Hooks"),
     ("Script", "Skript"),
     ("{agent} hooks", "Hooks von {agent}"),
+    // Connecting a client through the service, without the main application (#538)
+    ("There is no client {target}; one of {known}.", "Es gibt keinen Client {target}, möglich sind {known}."),
+    (
+        "{client} is already connected. Disconnect it first.",
+        "{client} ist schon verbunden. Trenne die Verbindung zuerst.",
+    ),
+    ("{client} was not found on this computer.", "{client} wurde auf diesem Computer nicht gefunden."),
+    (
+        "{client} is set up by hand. Create a key to copy instead.",
+        "{client} wird von Hand eingerichtet. Erstelle stattdessen einen Schlüssel zum Kopieren.",
+    ),
+    (
+        "A client of the kind {kind} is removed with clients.remove_client.",
+        "Ein Client der Art {kind} wird mit clients.remove_client entfernt.",
+    ),
     ("Access", "Zugriff"),
     ("Access to", "Zugriff auf"),
     ("None", "Keiner"),
@@ -9374,6 +9389,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("all address books", "alle Adressbücher"),
     ("1 address book", "1 Adressbuch"),
     ("{n} address books", "{n} Adressbücher"),
+    ("1 hidden", "1 ausgeblendetes"),
+    ("{n} hidden", "{n} ausgeblendete"),
     ("1 contact", "1 Kontakt"),
     ("{n} contacts", "{n} Kontakte"),
     ("Hidden address books", "Ausgeblendete Adressbücher"),

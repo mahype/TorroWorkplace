@@ -19,7 +19,9 @@
 //!    message shows after the first "Create key", `torro-design` 5) and by the core. For Claude
 //!    Code, Codex and Gemini CLI a check box "Report to the Notification Hub when waiting or
 //!    done", ticked at first (task E2.3). "Create key" starts here and has no "Back".
-//! 3. **Connecting:** `clients.create_client`, then for an agent the shell writes its MCP entry with
+//! 3. **Connecting:** `clients.create_client` with the template and, for an agent or an "Other MCP
+//!    client", every visible address book ticked (hidden ones are ticked one by one on the client's
+//!    page; a script's key gets the template alone), then for an agent the shell writes its MCP entry with
 //!    the key ([`client_setup::Job::Connect`]). With the check box ticked a second client follows,
 //!    of the kind `hook` for this agent ("Claude Code hooks", `clients.create_client` with the
 //!    template "Full access", which the core narrows to `Rights::hook`: report to the inbox, see
@@ -56,7 +58,7 @@ use torro_gui::{dialog, layout, style, typo, widgets};
 use torro_inbox::AgentKind;
 #[cfg(doc)]
 use torro_ipc::api::Outbound;
-use torro_ipc::api::{HOOK_CLIENT, MCP_CLIENT, RightsTemplate, SCRIPT_CLIENT};
+use torro_ipc::api::{HOOK_CLIENT, MCP_CLIENT, Rights, RightsTemplate, SCRIPT_CLIENT, Selection};
 use torro_ipc::{IssuedKey, Request, Response};
 
 use super::{Action, Data, chevron, one_line, pressable, row_frame};
@@ -550,9 +552,30 @@ fn connect(state: &mut State, data: &Data) -> Action {
             kind: choice.kind().to_string(),
             template: state.template,
             agent: None,
-            rights: None,
+            // A script's key ("Create key") gets the template alone: the books are ticked for the
+            // agents a person connects here (decision on PR #938, issue #689).
+            rights: match choice {
+                Choice::Script => None,
+                Choice::Agent(_) | Choice::Other => with_visible_books(state.template, data),
+            },
         },
     )
+}
+
+/// The rights of `template` with every visible address book ticked (decision 5 in
+/// `docs/kontakte.md`, issue #689): no template opens a book, so a client connected here would see
+/// no contact until a person ticks books on its page. Hidden books (the system address book,
+/// "Recently contacted") stay out; they are ticked one by one. `None` – the template alone – when
+/// there is no visible book, so the core keeps choosing as before.
+fn with_visible_books(template: RightsTemplate, data: &Data) -> Option<Rights> {
+    let visible: Vec<String> =
+        data.address_books.iter().filter(|book| !book.hidden_by_default).map(|book| book.id.clone()).collect();
+    if visible.is_empty() {
+        return None;
+    }
+    let mut rights = template.rights();
+    rights.address_books = Selection::Only(visible);
+    Some(rights)
 }
 
 /// What is wrong with `name` for a new client of `kind` (`script` or `mcp`): empty, the name of
@@ -1551,6 +1574,63 @@ mod tests {
         assert!(state.key.is_some(), "the key stays available until the wizard closes");
         assert!(closable(&state) && dismissable(&state));
         drop(view(&state, &data));
+    }
+
+    /// Two visible address books and a hidden one, as the core lists them.
+    fn data_with_books() -> Data {
+        let book = |id: &str, hidden: bool| torro_contacts::AddressBook {
+            id: id.into(),
+            account: "nextcloud:anna@cloud.example.org".into(),
+            name: id.rsplit('/').next().unwrap_or(id).into(),
+            display_name: id.into(),
+            count: 3,
+            writable: !hidden,
+            hidden_by_default: hidden,
+            untrusted: true,
+        };
+        Data {
+            address_books: vec![
+                book("nextcloud:anna@cloud.example.org/contacts", false),
+                book("nextcloud:anna@cloud.example.org/z-server-generated--system", true),
+                book("nextcloud:anna@cloud.example.org/family", false),
+            ],
+            ..Data::default()
+        }
+    }
+
+    /// Issue #689: connecting an agent or an "Other MCP client" with a template ticks every visible
+    /// address book and no hidden one; the rest of the rights stay the template's.
+    #[test]
+    fn connecting_ticks_the_visible_address_books() {
+        let data = data_with_books();
+        let visible = ["nextcloud:anna@cloud.example.org/contacts", "nextcloud:anna@cloud.example.org/family"];
+        for choice in [Choice::Agent(Target::ClaudeCode), Choice::Other] {
+            let mut state = detected();
+            let _ = update(&mut state, Message::Choose(choice), &data);
+            let _ = update(&mut state, Message::Name("Helix".into()), &data);
+            let _ = update(&mut state, Message::Template(RightsTemplate::ReadOnly), &data);
+            let Action::AskWizard(_, Request::CreateClient { template, rights: Some(rights), .. }) =
+                update(&mut state, Message::Connect, &data)
+            else {
+                panic!("expected {choice:?} to be created with its books");
+            };
+            assert_eq!(template, RightsTemplate::ReadOnly, "{choice:?}");
+            assert_eq!(rights.address_books, Selection::Only(visible.map(String::from).to_vec()), "{choice:?}");
+            assert!(rights.hidden_address_books.is_empty(), "no hidden book is ticked for {choice:?}");
+            assert_eq!(rights.template(), Some(RightsTemplate::ReadOnly), "otherwise the template's rights");
+        }
+    }
+
+    /// Decision on PR #938: a script's key ("Create key") ticks no address book, whatever exists.
+    #[test]
+    fn a_script_key_ticks_no_address_book() {
+        let data = data_with_books();
+        let mut state = State::key();
+        let _ = update(&mut state, Message::Name("nightly".into()), &data);
+        assert!(matches!(
+            update(&mut state, Message::Connect, &data),
+            Action::AskWizard(_, Request::CreateClient { ref kind, rights: None, .. }) if kind == "script"
+        ));
     }
 
     /// Claude Code chosen with the defaults, its client created and its MCP entry written.

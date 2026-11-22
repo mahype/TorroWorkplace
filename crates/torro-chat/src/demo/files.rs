@@ -231,6 +231,7 @@ fn four_links(at: DateTime<chrono::Utc>) -> Message {
                 size: 2_202_009,
                 content_type: "application/pdf".into(),
                 folder: "Projects/Icons".into(),
+                id: None,
             })),
             ..LinkCard::default()
         },

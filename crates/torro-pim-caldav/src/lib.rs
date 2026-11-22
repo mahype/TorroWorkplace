@@ -50,8 +50,25 @@ pub struct CalDavAccount {
 /// Provider name as `torro_pim::Provider::name` reports it.
 pub const PROVIDER_NAME: &str = "caldav";
 
+/// How long a connection to the server may take to open, for every request.
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long any request may take in all, answer included. Generous on purpose: a sync of a large
+/// calendar or address book (`calendar-query`, `sync-collection`, a PROPFIND over every card) is one
+/// long answer even from a healthy server.
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How long one request of a save may take in all (issue #876): the GET of the stored object, the
+/// PUT or DELETE, the ETag asked afterwards, a new list's MKCALENDAR. Each touches one small object,
+/// so a healthy server answers well within it, Nextcloud included when it mails the invitations of
+/// an event during the PUT. A server that holds the connection but never answers costs at most this
+/// long per step instead of [`REQUEST_TIMEOUT`]; the timeout counts as offline and the change waits
+/// for the next sync.
+pub const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// The HTTP client for all CalDAV and sign-in requests. Nextcloud shows the user agent
-/// as the device name under Settings → Security.
+/// as the device name under Settings → Security. Requests of a save narrow its
+/// [`REQUEST_TIMEOUT`] to [`WRITE_TIMEOUT`] themselves.
 pub fn http_client() -> Result<reqwest::Client, ProviderError> {
     let device = std::env::var("HOSTNAME").ok().filter(|h| !h.is_empty());
     let agent = match device {
@@ -60,12 +77,44 @@ pub fn http_client() -> Result<reqwest::Client, ProviderError> {
     };
     reqwest::Client::builder()
         .user_agent(agent)
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(60))
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(REQUEST_TIMEOUT)
         .build()
         .map_err(|err| ProviderError::Other(err.to_string()))
 }
 
 fn http_error(err: reqwest::Error) -> ProviderError {
     if err.is_connect() || err.is_timeout() { ProviderError::Offline } else { ProviderError::Other(err.to_string()) }
+}
+
+#[cfg(test)]
+pub(crate) mod testing {
+    //! A server that hangs, for the tests of the limits (issue #876).
+
+    /// The base URL of a server that accepts every connection and never answers, like one stopped
+    /// with `docker pause`: the connection stands, the answer never comes. Connections stay open
+    /// while the test runs.
+    pub(crate) async fn silent_server() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a free port");
+        let address = listener.local_addr().expect("its address");
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        format!("http://{address}/remote.php/dav/")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_save_gives_up_long_before_a_sync() {
+        assert!(WRITE_TIMEOUT <= Duration::from_secs(10), "a few seconds for a save");
+        assert!(WRITE_TIMEOUT < REQUEST_TIMEOUT);
+        assert!(CONNECT_TIMEOUT <= WRITE_TIMEOUT);
+    }
 }
