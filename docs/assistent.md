@@ -1284,6 +1284,9 @@ Sprache (C.9) kommt zuletzt, wenn der Chat steht. Persönlichkeit und Gedächtni
 Ein Terminal-Werkzeug für den Assistenten ist als Konzept in [terminal.md](terminal.md) beschrieben, noch nicht entschieden
 (Issue #706).
 
+Computer-Use, also Fenster fremder Programme sehen und bedienen über den Treiber `cua-driver`, ist als Konzept in
+[bildschirm.md](bildschirm.md) beschrieben, noch nicht entschieden (Issue #755).
+
 Fremde MCP-Server im Chat sind mit #302 gebaut (Entscheidung 9): Ihre Werkzeuge bekommt der Assistent nur über
 den Kern, mit der Stufe je Server, nur nach Zustimmung der Person zu jedem Werkzeug und mit Freigabe, wo der
 Zugriff sie verlangt ([erweiterungen.md](erweiterungen.md#mcp-server-302)). Weitere Erweiterungspunkte (Quellen,
