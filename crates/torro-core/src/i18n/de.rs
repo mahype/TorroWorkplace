@@ -5623,6 +5623,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Never caught as fraud or spam", "Nie als Betrug oder Spam abgefangen"),
     ("Trusted senders · never caught", "Vertraute Absender · werden nie abgefangen"),
     ("No trusted senders yet.", "Noch keine vertrauten Absender."),
+    ("Always for this sender", "Immer für diesen Absender"),
+    ("No senders kept here yet.", "Noch keine Absender hierfür gemerkt."),
     ("Bring {messages} back into the inbox as no fraud", "{messages} als kein Betrug in den Eingang holen"),
     (
         "Bring {messages} back into the inbox and never catch mail from {senders} again, in every mail account",
