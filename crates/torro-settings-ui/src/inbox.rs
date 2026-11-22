@@ -718,7 +718,9 @@ pub mod sources {
     }
 }
 
-/// "Rules": every lasting rule the person made in the inbox, with "Remove".
+/// "Rules": every lasting rule the person made in the inbox, with "Remove" – but the rules that
+/// work on mail's categories alone (trusted senders, "Always for this sender"), which stand in the
+/// mail window under Categorization (issues #546, #577).
 ///
 /// Ported from the control centre's inbox page (tasks E3.10, E3.11, E8.6b, E8.8a, E8.12): the
 /// title says what a rule is about ([`subject`]), the quiet line under it what it does, where it
@@ -816,10 +818,17 @@ pub mod rules {
     }
 
     /// The rules this page lists, in the order [`ordered`] gives them: all but the trusted senders
-    /// (issue #546). They work on mail alone and stand where they work, in the mail window under
-    /// Categorization › Spam and Phishing ("Trusted senders").
+    /// (issue #546) and the rules "Always for this sender" (issue #577). Both work on mail's
+    /// categories alone and stand where they work, in the mail window under Categorization: the
+    /// trusted senders on Spam and Phishing, the others on the page of their category.
     fn listed(rules: &[Rule]) -> Vec<&Rule> {
-        ordered(rules).into_iter().filter(|rule| rule.effect != RuleEffect::Trusted).collect()
+        ordered(rules).into_iter().filter(|rule| !is_mails(rule)).collect()
+    }
+
+    /// A rule that belongs to mail's categories, not to the Notification Hub: a trusted sender or
+    /// a sender or domain kept for a category (issues #546, #577).
+    fn is_mails(rule: &Rule) -> bool {
+        rule.facet.is_none() && matches!(rule.effect, RuleEffect::Trusted | RuleEffect::Category { .. })
     }
 
     /// The rules in the order of the page: remembered lanes first, then muted sources, then muted traits, each
@@ -1125,6 +1134,26 @@ pub mod rules {
             assert_eq!(ids, ["m"]);
             let only = vec![trusted];
             assert!(listed(&only).is_empty(), "only trusted senders: the empty state");
+            let _: Element<'_, Message> = view(&State::default(), &Data { rules: only, ..Data::default() }, now());
+        }
+
+        /// Issue #577: the rules "Always for this sender" are mail's (Categorization, the page of
+        /// their category); the page leaves them out, and with only them it says where rules come from.
+        #[test]
+        fn kept_senders_are_not_listed_here() {
+            let kept = Rule {
+                sender: Some("billing@shop.example".into()),
+                ..rule(
+                    "k",
+                    SourceRef::mail("anna@example.org"),
+                    RuleEffect::Category { category: torro_mail::Category::Invoice },
+                )
+            };
+            let rules = vec![kept.clone(), rule("m", SourceRef::script("backup"), RuleEffect::Muted)];
+            let ids: Vec<&str> = listed(&rules).iter().map(|rule| rule.id.as_str()).collect();
+            assert_eq!(ids, ["m"]);
+            let only = vec![kept];
+            assert!(listed(&only).is_empty(), "only kept senders: the empty state");
             let _: Element<'_, Message> = view(&State::default(), &Data { rules: only, ..Data::default() }, now());
         }
 
