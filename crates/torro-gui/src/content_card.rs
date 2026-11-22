@@ -1005,6 +1005,7 @@ mod tests {
                 size: 2_200_000,
                 content_type: "application/pdf".into(),
                 folder: "Projects/Customer".into(),
+                id: None,
             })),
             ..page()
         };
