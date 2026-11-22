@@ -312,6 +312,14 @@ async fn of_two_resumes_at_once_one_goes_on() {
     let script = Script::new(vec![Step::Hang(Vec::new())]);
     let (assistant, _host) = set_up_with(dir.path(), Some(reader()), Place::Local, Arc::clone(&script), answers);
     let started = start(&assistant, "Sort my inbox").await;
+    // The first answer took its step (it hangs there) before the pause, so the resumes get the new ones.
+    for _ in 0..400 {
+        if !script.asked().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(script.asked().len(), 1, "the first answer asked the model");
     assistant.pause_job(&started.id, JobReason::PausedByRequest).await;
     script.steps.lock().expect("lock").extend([says("Sorted."), says("Sorted again.")]);
     let (a, b) = tokio::join!(
