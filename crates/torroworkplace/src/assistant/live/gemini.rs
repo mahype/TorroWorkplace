@@ -42,10 +42,18 @@ const VOICE: &str = "Kore";
 
 /// How long after the first thing the answer says what the person said is told, when it is not told sooner: their
 /// transcript may still come.
-pub const GRACE: Duration = Duration::from_millis(400);
+pub const GRACE: Duration = Duration::from_millis(600);
 
-/// How long the person is quiet (no piece of the transcript, no end of speech) before what they said is told.
+/// How long the person is quiet (no piece of the transcript, no end of speech) before what they said is told; also
+/// how long an answer that begins without any transcript waits for it.
 pub const QUIET: Duration = Duration::from_millis(1500);
+
+/// How long after [`Outgoing::Configure`] `setup` is sent when nothing else was sent: the connection should not wait for
+/// the first piece of sound.
+const SETUP_AFTER: Duration = Duration::from_millis(300);
+
+/// How many pieces of sound are kept before `setupComplete` (the first words of a sentence, after a new connection).
+const EARLY_AUDIO: usize = 150;
 
 /// After a turn is complete, pieces of a transcript that come late are dropped, and none of them starts a sentence of
 /// its own, for this long.
@@ -64,8 +72,9 @@ pub struct State {
     setup_sent: bool,
     /// `setupComplete` came: more than `setup` may be sent.
     ready: bool,
-    /// What was sent before `setupComplete` and goes after it.
+    /// What was sent before `setupComplete` and goes after it, then the last pieces of sound sent before it.
     queued: Vec<Value>,
+    early_audio: VecDeque<Value>,
     /// The names of the tools the model called, by the id of the call: the result needs its tool's name.
     names: BTreeMap<String, String>,
     // Reading: one exchange is a sentence of the person and the answer to it.
@@ -91,6 +100,9 @@ pub struct State {
     answer_at: Option<Instant>,
     /// Until when a piece of a transcript that comes late is dropped.
     mute_until: Option<Instant>,
+    /// The answer that runs was stopped from outside ([`Outgoing::Cancel`]): what the server still sends of it is
+    /// dropped until its turn is complete.
+    dropping: bool,
 }
 
 impl State {
@@ -98,17 +110,32 @@ impl State {
     /// sound is dropped (it is only the first moments) and the rest waits.
     pub fn events(&mut self, out: &Outgoing) -> Vec<Value> {
         let new = match out {
-            Outgoing::Configure { .. } | Outgoing::Cancel { .. } => Vec::new(),
+            Outgoing::Configure { .. } => Vec::new(),
+            // The server cut an answer the person spoke into by itself (`interrupted`); one stopped from outside it
+            // goes on generating, and what comes of it is dropped.
+            Outgoing::Cancel { .. } => {
+                if self.answering {
+                    (self.dropping, self.answering) = (true, false);
+                    self.text.clear();
+                }
+                Vec::new()
+            }
             Outgoing::History(items) => history(items).into_iter().collect(),
             Outgoing::Audio(samples) => {
-                if !self.ready {
-                    return Vec::new();
-                }
                 let bytes: Vec<u8> = samples.iter().flat_map(|sample| sample.to_le_bytes()).collect();
-                vec![json!({"realtimeInput": {"audio": {
+                let event = json!({"realtimeInput": {"audio": {
                     "data": base64::engine::general_purpose::STANDARD.encode(bytes),
                     "mimeType": format!("audio/pcm;rate={MIC_RATE}"),
-                }}})]
+                }}});
+                if !self.ready {
+                    // The first words of a sentence wait for the setup; only the latest seconds are kept.
+                    if self.early_audio.len() >= EARLY_AUDIO {
+                        self.early_audio.pop_front();
+                    }
+                    self.early_audio.push_back(event);
+                    return Vec::new();
+                }
+                vec![event]
             }
             Outgoing::ToolResults(results) => {
                 let responses: Vec<Value> = results
@@ -125,7 +152,9 @@ impl State {
             self.queued.extend(new);
             return Vec::new();
         }
+        // What waited goes first: the history before the sound, the sound before what is new.
         let mut events = std::mem::take(&mut self.queued);
+        events.extend(std::mem::take(&mut self.early_audio));
         events.extend(new);
         events
     }
@@ -174,11 +203,12 @@ impl State {
         out.push(Incoming::SpeechStarted);
     }
 
-    /// What the person said, told: the end of their speech when it was not, then the words. Nothing when they said
-    /// nothing or it was told already.
+    /// What the person said, told: the end of their speech when it was not, then the words. When an answer is under way
+    /// and nothing was heard, an empty sentence (the session's turn needs one to start). Nothing when it was told already
+    /// or there is neither speech nor answer.
     pub fn flush(&mut self) -> Vec<Incoming> {
         (self.heard_at, self.answer_at) = (None, None);
-        if self.told || (!self.speaking && self.heard.trim().is_empty()) {
+        if self.told || (!self.speaking && !self.answering && self.heard.trim().is_empty()) {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -190,14 +220,19 @@ impl State {
         out
     }
 
-    /// When [`State::flush`] is due, if it is.
+    /// When [`State::flush`] is due, if it is: when the person has been quiet (with words to tell), or the answer has
+    /// been going for a while (longer when nothing was heard, its transcript may still come).
     pub fn deadline(&self) -> Option<Instant> {
         if self.told {
             return None;
         }
-        let quiet =
-            if self.speaking && (self.stopped || !self.activity) { self.heard_at.map(|at| at + QUIET) } else { None };
-        let answer = self.answer_at.map(|at| at + GRACE);
+        let words = !self.heard.trim().is_empty();
+        let quiet = if words && self.speaking && (self.stopped || !self.activity) {
+            self.heard_at.map(|at| at + QUIET)
+        } else {
+            None
+        };
+        let answer = self.answer_at.map(|at| at + if words { GRACE } else { QUIET });
         match (quiet, answer) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
@@ -218,8 +253,9 @@ impl State {
 
     /// The model calls tools: it has what it needs of the person's words, and waits for the results.
     fn on_calls(&mut self, calls: &[Value], out: &mut Vec<Incoming>, now: Instant) {
-        out.extend(self.flush());
-        self.begin_answer(out, now);
+        if self.dropping {
+            return;
+        }
         let calls: Vec<ToolCall> = calls
             .iter()
             .filter_map(|call| {
@@ -230,6 +266,12 @@ impl State {
                 Some(ToolCall { id, name, arguments })
             })
             .collect();
+        // Calls without an id or a name cannot be answered: nothing is told, the answer is not over.
+        if calls.is_empty() {
+            return;
+        }
+        self.begin_answer(out, now);
+        out.extend(self.flush());
         // The answer goes on after the results as an answer of its own.
         self.answering = false;
         self.owed = true;
@@ -240,44 +282,65 @@ impl State {
     fn on_content(&mut self, content: &Value, out: &mut Vec<Incoming>, now: Instant) {
         if content.get("interrupted").and_then(Value::as_bool) == Some(true) {
             // The server dropped the rest of the answer; this sentence is the person's.
-            (self.answering, self.owed, self.speaking) = (false, false, false);
+            (self.answering, self.owed, self.speaking, self.dropping) = (false, false, false, false);
             self.text.clear();
             self.begin_speech(out, now);
         }
         if let Some(piece) = content.pointer("/inputTranscription/text").and_then(Value::as_str) {
             self.on_heard_piece(piece, out, now);
         }
-        let parts = content.pointer("/modelTurn/parts").and_then(Value::as_array);
-        for part in parts.into_iter().flatten() {
-            let Some(data) = part.pointer("/inlineData/data").and_then(Value::as_str) else { continue };
-            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else { continue };
-            let samples = bytes.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect();
-            self.begin_answer(out, now);
-            out.push(Incoming::AnswerAudio(samples));
-        }
-        if let Some(piece) = content.pointer("/outputTranscription/text").and_then(Value::as_str)
-            && !piece.is_empty()
-        {
-            self.begin_answer(out, now);
-            self.text.push_str(piece);
-            out.push(Incoming::AnswerText(piece.to_string()));
+        // Output of an answer that was stopped, or that comes after its turn was complete (and no sentence of the
+        // person is under way) belongs to nobody.
+        let late = self.mute_until.is_some_and(|until| now < until) && !self.speaking && self.heard.is_empty();
+        if !self.dropping && !late {
+            let parts = content.pointer("/modelTurn/parts").and_then(Value::as_array);
+            for part in parts.into_iter().flatten() {
+                let Some(data) = part.pointer("/inlineData/data").and_then(Value::as_str) else { continue };
+                let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else { continue };
+                let samples = bytes.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect();
+                self.begin_answer(out, now);
+                out.push(Incoming::AnswerAudio(samples));
+            }
+            if let Some(piece) = content.pointer("/outputTranscription/text").and_then(Value::as_str)
+                && !piece.is_empty()
+            {
+                self.begin_answer(out, now);
+                self.text.push_str(piece);
+                out.push(Incoming::AnswerText(piece.to_string()));
+            }
         }
         if content.get("turnComplete").and_then(Value::as_bool) == Some(true) {
-            out.extend(self.flush());
-            if self.owed || self.answering {
-                out.push(Incoming::AnswerDone { text: std::mem::take(&mut self.text), calls: Vec::new() });
-            }
-            (self.answering, self.owed, self.told, self.speaking, self.stopped) = (false, false, false, false, false);
-            (self.heard_at, self.answer_at, self.mute_until) = (None, None, Some(now + LATE));
-            self.heard.clear();
-            self.text.clear();
+            self.on_turn_complete(out, now);
         }
+    }
+
+    /// The turn is complete. When it was this exchange's (an answer ran or was owed, or the person's words were told),
+    /// it ends: their words if not yet told, and the answer. Otherwise a sentence of the person is under way (the
+    /// turn that ended is the one they cut off) and goes on.
+    fn on_turn_complete(&mut self, out: &mut Vec<Incoming>, now: Instant) {
+        if self.dropping {
+            // What was stopped ends silently: the session dropped its turn already.
+            (self.dropping, self.answering, self.owed) = (false, false, false);
+            self.text.clear();
+            return;
+        }
+        if !(self.told || self.answering || self.owed) {
+            return;
+        }
+        out.extend(self.flush());
+        if self.owed || self.answering {
+            out.push(Incoming::AnswerDone { text: std::mem::take(&mut self.text), calls: Vec::new() });
+        }
+        (self.answering, self.owed, self.told, self.speaking, self.stopped) = (false, false, false, false, false);
+        (self.heard_at, self.answer_at, self.mute_until) = (None, None, Some(now + LATE));
+        self.heard.clear();
+        self.text.clear();
     }
 
     /// A piece of what the person said.
     fn on_heard_piece(&mut self, piece: &str, out: &mut Vec<Incoming>, now: Instant) {
         // Late pieces of a sentence already told, or of one whose turn is complete, are none of the next sentence.
-        if self.told || self.mute_until.is_some_and(|until| now < until) {
+        if self.told || (!self.speaking && self.mute_until.is_some_and(|until| now < until)) {
             return;
         }
         if !self.speaking && !self.answering && self.heard.is_empty() {
@@ -459,6 +522,8 @@ pub struct GeminiWire {
     /// What was read and not yet given out: one message may mean several things.
     incoming: VecDeque<Incoming>,
     closed: bool,
+    /// When [`Outgoing::Configure`] came, while `setup` is not sent.
+    configured_at: Option<Instant>,
 }
 
 impl GeminiWire {
@@ -470,11 +535,20 @@ impl GeminiWire {
             state: State::default(),
             incoming: VecDeque::new(),
             closed: false,
+            configured_at: None,
         }
     }
 
     async fn write(&mut self, message: Value) -> Result<(), AiError> {
         self.socket.send(Message::text(message.to_string())).await.map_err(|_| AiError::Offline)
+    }
+
+    /// Sends `setup` with what [`Outgoing::Configure`] gave; `history` when the conversation so far follows.
+    async fn start(&mut self, history: bool) -> Result<(), AiError> {
+        let (instructions, tools) = self.state.config.clone().unwrap_or_default();
+        let message = setup(&self.model, &instructions, &tools, history);
+        self.state.setup_sent = true;
+        self.write(message).await
     }
 }
 
@@ -486,14 +560,12 @@ impl LiveWire for GeminiWire {
                     eprintln!("torroworkplace: conversation engine: the setup of this connection stays as it was");
                 } else {
                     self.state.config = Some((instructions.clone(), tools.clone()));
+                    self.configured_at = Some(Instant::now());
                 }
                 return Ok(());
             }
             if !self.state.setup_sent {
-                let (instructions, tools) = self.state.config.clone().unwrap_or_default();
-                let message = setup(&self.model, &instructions, &tools, matches!(out, Outgoing::History(_)));
-                self.state.setup_sent = true;
-                self.write(message).await?;
+                self.start(matches!(out, Outgoing::History(_))).await?;
             }
             for event in self.state.events(&out) {
                 self.write(event).await?;
@@ -511,11 +583,21 @@ impl LiveWire for GeminiWire {
                 if self.closed {
                     return Incoming::Closed;
                 }
-                let frame = match self.state.deadline() {
+                // The setup does not wait for the first piece of sound for long.
+                let setup_due =
+                    if self.state.setup_sent { None } else { self.configured_at.map(|at| at + SETUP_AFTER) };
+                let due = [self.state.deadline(), setup_due].into_iter().flatten().min();
+                let frame = match due {
                     Some(at) => match tokio::time::timeout_at(at, self.socket.next()).await {
                         Ok(frame) => frame,
                         Err(_) => {
-                            self.incoming.extend(self.state.flush());
+                            let now = Instant::now();
+                            if setup_due.is_some_and(|due| due <= now) && self.start(false).await.is_err() {
+                                self.closed = true;
+                            }
+                            if self.state.deadline().is_some_and(|due| due <= now) {
+                                self.incoming.extend(self.state.flush());
+                            }
                             continue;
                         }
                     },
@@ -654,14 +736,64 @@ mod tests {
         assert_eq!(state.read(&sound, at(900)), vec![Incoming::AnswerStarted, Incoming::AnswerAudio(vec![1])]);
     }
 
-    /// A turn whose person said nothing the model heard still ends: the session's turn is told.
+    /// An answer without any transcript still gets a sentence of the person (empty) and an end: the session's turn
+    /// starts and ends, and the next answer does not wait behind it. Its transcript has a longer wait first.
     #[test]
     fn a_turn_without_words_still_ends() {
         let mut state = State::default();
         let sound = json!({"serverContent": {"modelTurn": {"parts": [{"inlineData": {"data": "AQA="}}]}}});
         state.read(&sound, at(0));
+        assert_eq!(state.deadline(), Some(at(0) + QUIET), "no words: the transcript may still come");
         let read = state.read(&json!({"serverContent": {"turnComplete": true}}), at(100));
-        assert_eq!(read, vec![Incoming::AnswerDone { text: String::new(), calls: Vec::new() }]);
+        assert_eq!(
+            read,
+            vec![Incoming::Heard(String::new()), Incoming::AnswerDone { text: String::new(), calls: Vec::new() }]
+        );
+    }
+
+    /// A sentence of the person under way when the turn they cut off completes goes on, and output that comes after a
+    /// turn belongs to nobody.
+    #[test]
+    fn a_turn_complete_after_an_interruption_leaves_the_new_sentence_alone() {
+        let mut state = State::default();
+        let sound = json!({"serverContent": {"modelTurn": {"parts": [{"inlineData": {"data": "AQA="}}]}}});
+        let piece = |text: &str| json!({"serverContent": {"inputTranscription": {"text": text}}});
+        state.read(&sound, at(0));
+        state.read(&json!({"serverContent": {"interrupted": true}}), at(100));
+        state.read(&piece("Stop "), at(200));
+        // The cut turn completes: nothing of the new sentence is told or lost.
+        assert!(state.read(&json!({"serverContent": {"turnComplete": true}}), at(250)).is_empty());
+        state.read(&piece("please"), at(300));
+        assert_eq!(state.deadline(), Some(at(300) + QUIET));
+        assert_eq!(
+            state.flush(),
+            vec![Incoming::SpeechStopped { audio_end_ms: None }, Incoming::Heard("Stop please".into())]
+        );
+        // Its answer, and its end; sound and words after that end are dropped.
+        state.read(&sound, at(900));
+        let done = state.read(&json!({"serverContent": {"turnComplete": true}}), at(1000));
+        assert_eq!(done, vec![Incoming::AnswerDone { text: String::new(), calls: Vec::new() }]);
+        let late = json!({"serverContent": {"outputTranscription": {"text": "ghost"}}});
+        assert!(state.read(&late, at(1100)).is_empty());
+        assert!(state.read(&sound, at(1200)).is_empty());
+    }
+
+    /// An answer stopped from outside goes on generating: what comes of it is dropped until its turn is complete, and
+    /// the next answer is heard again.
+    #[test]
+    fn a_stopped_answer_is_dropped_until_its_turn_is_complete() {
+        let mut state = State { ready: true, ..State::default() };
+        let sound = json!({"serverContent": {"modelTurn": {"parts": [{"inlineData": {"data": "AQA="}}]}}});
+        state.read(&sound, at(0));
+        assert!(state.events(&Outgoing::Cancel { played_ms: 0 }).is_empty());
+        assert!(state.read(&sound, at(100)).is_empty(), "the rest of the stopped answer");
+        assert!(state.read(&json!({"serverContent": {"turnComplete": true}}), at(200)).is_empty());
+        let next = state.read(&sound, at(3000));
+        assert_eq!(next, vec![Incoming::AnswerStarted, Incoming::AnswerAudio(vec![1])]);
+        // A cancel when the server cut the answer itself (nothing runs) changes nothing.
+        state.read(&json!({"serverContent": {"interrupted": true}}), at(3100));
+        state.events(&Outgoing::Cancel { played_ms: 0 });
+        assert_eq!(state.read(&sound, at(3200)), vec![Incoming::AnswerStarted, Incoming::AnswerAudio(vec![1])]);
     }
 
     /// `setup` comes first, with the history flag only when a history follows; sound before `setupComplete` is
@@ -682,13 +814,22 @@ mod tests {
         assert!(setup("m", "x", &[], false)["setup"].get("tools").is_none());
 
         let mut state = State::default();
-        assert!(state.events(&Outgoing::Audio(vec![0; 160])).is_empty(), "sound before the setup is dropped");
+        assert!(state.events(&Outgoing::Audio(vec![0; 160])).is_empty(), "sound before the setup waits");
         assert!(state.events(&Outgoing::History(vec![(Role::User, "Hi.".into())])).is_empty(), "history waits");
         state.read(&json!({"setupComplete": {}}), at(0));
-        let events = state.events(&Outgoing::Audio(vec![0; 160]));
-        assert_eq!(events.len(), 2, "the history first, then the sound");
+        let events = state.events(&Outgoing::Audio(vec![0; 320]));
+        assert_eq!(events.len(), 3, "the history first, then the sound that waited, then the new");
         assert_eq!(events[0]["clientContent"]["turnComplete"], json!(true));
-        assert_eq!(events[1]["realtimeInput"]["audio"]["mimeType"], json!("audio/pcm;rate=16000"));
+        assert_eq!(events[2]["realtimeInput"]["audio"]["mimeType"], json!("audio/pcm;rate=16000"));
+        assert!(events[1]["realtimeInput"]["audio"]["data"].as_str().is_some_and(
+            |data| data.len() < events[2]["realtimeInput"]["audio"]["data"].as_str().unwrap_or_default().len()
+        ));
+        // Only the latest seconds of early sound are kept.
+        let mut early = State::default();
+        for _ in 0..EARLY_AUDIO + 20 {
+            early.events(&Outgoing::Audio(vec![0; 16]));
+        }
+        assert_eq!(early.early_audio.len(), EARLY_AUDIO);
 
         let call = json!({"toolCall": {"functionCalls": [{"id": "fc9", "name": "tasks_list", "args": {"list": "a"}}]}});
         state.read(&call, at(10));

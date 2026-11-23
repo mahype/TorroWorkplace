@@ -1221,7 +1221,7 @@ Module, über ein Konto „Google Gemini“ mit Schlüssel.
 - **Satzende und Mitschrift:** Gemini meldet Anfang und Ende der Rede nur über `voiceActivity` (in der Referenz, ohne
   Anleitung) und liefert die Mitschrift der Person in Stücken neben der Antwort. Der Adapter nutzt `voiceActivity`,
   wenn es kommt, und erkennt sonst den Anfang an der Mitschrift. Was die Person sagte, gilt als gehört, wenn die
-  Antwort 0,4 Sekunden läuft, die Person 1,5 Sekunden still ist, das Modell ein Werkzeug ruft oder der Zug endet.
+  Antwort 0,6 Sekunden läuft, die Person 1,5 Sekunden still ist, das Modell ein Werkzeug ruft oder der Zug endet.
   Darum wartet die Sitzung bei Gemini bis zu 5 Sekunden auf die Mitschrift statt 1,5.
 - **Unterbrechen:** Spricht die Person in die Antwort, meldet Gemini `interrupted` und sendet nichts mehr davon. Es
   gibt keine Angabe, wie viel gespielt wurde; die Unterhaltung behält das, was der Vorlese-Helfer gespielt hat.

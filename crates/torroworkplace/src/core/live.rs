@@ -420,6 +420,8 @@ impl<'a> Session<'a> {
             Incoming::SpeechStarted => {
                 self.last_speech = Instant::now();
                 self.person_speaks = true;
+                // They went on after a pause: their sentence is not over, nothing waits for its words yet.
+                self.stopped = None;
                 // Only into an answer that sounds now (#835): a word while a tool runs or an approval waits stops
                 // nothing.
                 if self.reader.as_ref().is_some_and(|reader| reader.speaking.is_some()) {
