@@ -816,6 +816,13 @@ impl Inbox {
         listed.into_values().collect()
     }
 
+    /// Why the remote source `source` brings nothing now, as noted by [`Inbox::set_source_health`];
+    /// `None` while it works. The GitHub source reads it to leave its notice out for a token GitHub
+    /// refused (issue #947).
+    pub fn source_health(&self, source: &SourceRef) -> Option<SourceHealth> {
+        self.health.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(source).copied()
+    }
+
     /// Notes what the working remote source `source` leaves out (issue #947): `Some` while it is
     /// so, `None` once it is not. Shown in `inbox.list_sources` ([`SourceInfo::notice`]); kept in
     /// memory only, and it changes nothing the tray or the popups show.
