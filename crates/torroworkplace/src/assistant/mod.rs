@@ -771,6 +771,10 @@ impl Assistant {
             spoken: true,
             voice: None,
         };
+        // As for any message (see `send_think`): a conversation about a mail needs the right to read it.
+        if let Err(refused) = self.about_for(&message, None, EngineKind::Ai).await {
+            return refused;
+        }
         self.send_with(message, None, EngineKind::Ai, Utc::now(), Some(turn)).await
     }
 
@@ -805,6 +809,11 @@ impl Assistant {
             spoken: true,
             voice: None,
         };
+        // As for any message: a conversation about a mail needs the assistant's right to read it (kept from a message sent
+        // before; a voice conversation has none, but the same rule holds for every way in).
+        if let Err(refused) = self.about_for(&message, None, kind).await {
+            return refused;
+        }
         self.send_with(message, None, kind, Utc::now(), None).await
     }
 
