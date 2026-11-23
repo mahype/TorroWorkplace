@@ -14,7 +14,7 @@ Stand: 2026-10-05, Tiling-Manager ergänzt am 2026-10-11. Zahlen zum Speicherbed
 - **Technik:** Rust-Kern + ratatui-TUI (sehr leicht) als Grundlage für alle Systeme. Die GUI kommt danach; Favorit ist **Iced**, entschieden wird nach einem Vergleich (Phase 3).
 - **Tiling-Manager:** Hyprland (Linux), AeroSpace (macOS), GlazeWM (Windows); siehe Abschnitt 6.
 - **Tray-Icon:** Omarchy 4 hat eine Tray-Leiste (Quickshell, StatusNotifierItem). Linux: `ksni` (ohne GTK), macOS/Windows: `tray-icon`.
-- **Schreibfenster:** Ein Fenster mit System-Webview und Squire (Weg A) löst die Lücken des Iced-Editors (Rückgängig, Auswahl über Bilder, Datei-Drops unter Wayland); Preis: ein zweiter Fenstertyp mit WebKitGTK und ein Absturz auf NVIDIA, solange `WEBKIT_DISABLE_DMABUF_RENDERER=1` fehlt. Abschnitt 9.
+- **Schreibfenster:** Ein Fenster mit System-Webview und Squire (Weg A) löst die Lücken des Iced-Editors (Rückgängig, Auswahl über Bilder, Datei-Drops unter Wayland); Preis: ein zweiter Fenstertyp mit WebKitGTK und ein Absturz auf NVIDIA, solange `WEBKIT_DISABLE_DMABUF_RENDERER=1` fehlt. Abschnitt 9; umgesetzt in #969 (Entscheidung 10 in [mail.md](mail.md)).
 
 ## 1. Suiten und „Desktop als Dashboard“
 
@@ -371,3 +371,27 @@ Auflagen: (1) das Fenster mit `WEBKIT_DISABLE_DMABUF_RENDERER=1` als Kindprozess
 ausliefern (Lizenzen beachten), (3) WebKitGTK in Paketen und CI wieder einplanen, (4) auf macOS und Windows vor dem
 Bau kurz prüfen. Entschieden wird mit dem Menschen; gebaut wird in einem Folge-Issue.
 
+### Umsetzung (#969)
+
+Stand 2026-11-23. Entschieden ist Weg A, gebaut im Schreibfenster der Mail-App (`crates/torroinbox/src/compose/`,
+Seite in `crates/torroinbox/assets/compose/`); der Iced-Editor ist gelöscht. Aus dem Versuch ist übernommen: tao/wry mit
+eigenem Protokoll, Squire 2.4.11 und DOMPurify 3.4.18 aus dem eigenen Ordner (ohne Netz), das Umschreiben `cid:` ↔
+Bildadresse und die Bereinigung mit `torro_mail::html`, der native Datei-Drop mit Position, und der Neustart mit
+`WEBKIT_DISABLE_DMABUF_RENDERER=1` auf Linux mit NVIDIA (`web::relaunch`, als eigener Prozess, weil `set_var`
+`unsafe` wäre). Anders als im Versuch:
+
+- **Die Brücke ist getypt und begrenzt** (`session::FromPage`, nur der eigene Ursprung, höchstens 40 MiB, Unbekanntes
+  fällt weg) und die Seite hat eine Content-Security-Policy (nur eigener Ursprung, keine Verbindungen). Der Versuch
+  schrieb jedes Ereignis nach stdout.
+- **Einfügen läuft über den Dienst** (`html::prepare_paste`, dann `markup::to_html`) statt über Squires eigene Reinigung
+  allein; so gilt dieselbe Bereinigung wie im alten Editor (ihre Tests liegen in `torro-mail`).
+- **Der Datei-Drop wird nativ entschieden:** Die Seite sieht Datei-Drops nicht (nur eine Adresse); das Fenster meldet
+  Pfad und Position, die Seite prüft, ob der Punkt im Text liegt (`document.caretPositionFromPoint`) und bettet dann ein,
+  sonst hängt sie an. Offen aus der Regel von #917: „Bild auf das übrige Fenster: Rückfrage anhängen oder einbetten“ ist
+  vorerst „anhängen“ ohne Rückfrage.
+- **macOS** braucht eine Menüleiste (`muda`, wie der Player von torrochat), sonst erreichen ⌘C, ⌘V, ⌘X, ⌘A und ⌘Z die
+  Webansicht nicht. **Linux** schaltet für `torroinbox` die GTK-Webansicht ein (`wry/os-webview`), der Rest des Workspaces
+  bleibt ohne GTK.
+- **Nicht geprüft** (ehrlich offen, siehe die Pull-Request-Beschreibung): Linux-Bau und -Lauf (Hyprland, andere Treiber),
+  Windows/WebView2, Eingabemethoden (fcitx5), Einfügen aus LibreOffice, Bildlauf unter der Umgehung, Speicher und
+  Startzeit im Produkt (der Versuch maß 227 MB und 231 ms, unter macOS nicht gemessen).
