@@ -1038,6 +1038,14 @@ fn engine_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         (Some(_), Some(option)) if option.missing.is_some() => {
             tr("Add a key to this engine's account in Settings › AI; until then this computer answers.").to_string()
         }
+        // The assistant answers behind the voice (issue #919): its chat model gets what is said as text.
+        (Some(_), Some(option)) if option.assistant => trf(
+            "While you talk, everything the microphone hears goes to {provider}, which only listens and speaks. What you \
+             say also goes to the assistant's chat model as text, with the conversation so far and what its tools read, \
+             and its answers come back in {provider}'s voice. {provider} bills each minute, the chat model on top. “Hey \
+             Torro” itself stays on this computer; speech recognition, the voice and the pauses below are not used.",
+            &[("provider", &option.provider.name())],
+        ),
         (Some(_), Some(option)) => trf(
             "While you talk, everything the microphone hears goes to {provider}, with the conversation so far and what the \
              assistant's tools read, and {provider} bills each minute. “Hey Torro” itself stays on this computer; speech \

@@ -110,7 +110,7 @@ impl State {
     /// sound is dropped (it is only the first moments) and the rest waits.
     pub fn events(&mut self, out: &Outgoing) -> Vec<Value> {
         let new = match out {
-            Outgoing::Configure { .. } => Vec::new(),
+            Outgoing::Configure { .. } | Outgoing::Say(_) => Vec::new(),
             // The server cut an answer the person spoke into by itself (`interrupted`); one stopped from outside it
             // goes on generating, and what comes of it is dropped.
             Outgoing::Cancel { .. } => {
