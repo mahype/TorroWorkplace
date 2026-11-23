@@ -102,14 +102,12 @@ Commit ohne Issue-Nummer, z.B. `docs: fix typo in roadmap`, PR-Body kurz und ohn
 
 ## Automatisch beauftragte PRs
 
-Für PRs, die ein Agent ohne Zutun eines Menschen beauftragt hat (Dispatcher, Projekt-Bot). Ob ein Issue dafür reif ist,
-regelt „Umsetzungsreife (KI)“ in [issue-workflow.md](issue-workflow.md).
+Für PRs, die ein Agent ohne Zutun eines Menschen beauftragt hat (Dispatcher, Projekt-Bot). Welche Issues dafür
+infrage kommen, ist noch nicht festgelegt, siehe [workflow-architektur.md](workflow-architektur.md).
 
 - Der PR ist ein **Draft** und trägt im Titel den Präfix `[auto] `, z. B. `[auto] fix(torrotasks): … #436`. Der Präfix
   kennzeichnet nur die Herkunft, er ist keine Qualitätsfreigabe. Vorhandene Titel ändert kein Agent.
-- Der Body nennt den Protokollkommentar „Umsetzungsreife (KI)“ des Issues und führt die Entscheidungen des Bots unter
-  „Entschieden durch Projekt-Bot (delegiert von Sven)“ mit Regelnummer.
-- Vor „Ready for review“ prüft ein Reviewer eines **anderen** Anbieters als der Implementierer (soweit verfügbar) den PR,
-  bei Oberflächenänderungen zusätzlich `torro-design-review` mit Vorher-nachher-Bildern.
+- Entscheidungen des Bots stehen im PR unter „Entschieden durch Projekt-Bot (delegiert von Sven)“ mit Regelnummer
+  ([entscheidungsregeln.md](entscheidungsregeln.md)).
 - **Nie Auto-Merge**, auch nicht für kleine oder grüne PRs. Merge, Approve und das Schließen von Issues bleiben bei
   Menschen (Regel 10).

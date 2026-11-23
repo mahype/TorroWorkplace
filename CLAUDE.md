@@ -39,8 +39,7 @@ Enon-Projekt): `issue-create` → `issue-plan` → `issue-plan-accept` (nur Mens
 **Regeln des Repos** für diese Skills (Prüfen, Ergänzungen je Skill, Grenzen für `issue-small` und
 `quick-fix`): [`docs/issue-workflow.md`](docs/issue-workflow.md). Namen von Issues, Branches, Commits
 und PRs: [`docs/git-workflow.md`](docs/git-workflow.md). KI-Agenten setzen nie `plan-accepted`, approven
-und mergen nie. Ob ein Agent ein Issue von sich aus starten darf, regelt der Abschnitt „Umsetzungsreife (KI)“ in
-`docs/issue-workflow.md`.
+und mergen nie.
 
 ## Jede Funktion dreimal: Oberfläche, API, MCP
 
