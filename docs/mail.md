@@ -193,8 +193,8 @@ unverändert.
   Wayland startet das Fenster sich selbst mit `WEBKIT_DISABLE_DMABUF_RENDERER=1`, siehe [research.md](research.md)
   Abschnitt 9) und Windows (WebView2, bei Windows 10/11 meist vorhanden; fehlt es, meldet das Fenster das beim
   Start). Pakete brauchen auf Linux `webkit2gtk-4.1` und GTK 3 (Bau: `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`).
-  Geprüft sind die Teile in der Pull-Request-Beschreibung von #969 (macOS mit echtem Fenster); Linux und Windows
-  sind dort ausdrücklich als offen gekennzeichnet.
+  Geprüft sind die Teile in der Pull-Request-Beschreibung von #969 (macOS mit echtem Fenster); Linux (#973), Windows
+  (#974), Pakete (#975) und die Bilder des echten Fensters (#976) sind dort ausdrücklich als offen gekennzeichnet.
 - **Einladungen** (iMIP) zeigen oben in der Nachricht „Accept / Maybe / Decline“; die Antwort
   geht per Mail zurück (iTIP `REPLY` über das Konto, Schalter „Nach außen“ wie beim Senden), der
   Termin landet in dem Kalender, der die frühere Kopie hält, sonst im ersten beschreibbaren (E8.3b,

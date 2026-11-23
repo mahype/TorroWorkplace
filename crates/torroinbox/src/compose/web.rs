@@ -302,6 +302,7 @@ pub fn run<S: ComposeSource + 'static>(source: Arc<S>, suite: Source, start: Sta
     // Files dropped on the window: the page learns where, the page decides.
     let dragging = Arc::new(AtomicBool::new(false));
     let drag_proxy = proxy.clone();
+    let drag_store = store.clone();
     let drag = move |event: DragDropEvent| -> bool {
         let local = |paths: &[PathBuf]| !paths.is_empty() && paths.iter().all(|path| super::images::local_file(path));
         match event {
@@ -318,6 +319,8 @@ pub fn run<S: ComposeSource + 'static>(source: Arc<S>, suite: Source, start: Sta
             }
             DragDropEvent::Drop { paths, position } if dragging.swap(false, Ordering::Relaxed) && local(&paths) => {
                 let paths: Vec<String> = paths.iter().map(|path| path.to_string_lossy().into_owned()).collect();
+                // The page may name these files, once, and no others.
+                drag_store.allow_drop(&paths);
                 let _ = drag_proxy.send_event(UserEvent::Drag(
                     json!({ "e": "drop", "paths": paths, "x": position.0, "y": position.1 }),
                 ));

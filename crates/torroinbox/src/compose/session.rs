@@ -46,6 +46,9 @@ const LEASE_RENEWAL: std::time::Duration = std::time::Duration::from_secs(20 * 6
 pub struct Store {
     images: Mutex<HashMap<String, Vec<u8>>>,
     photos: Mutex<HashMap<String, Vec<u8>>>,
+    /// The paths of files the window itself saw fall on it. The page may name them once (`FromPage::Files`); a path it
+    /// made up is refused, so a script in the page can never choose which file of the computer goes along.
+    dropped: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Store {
@@ -57,6 +60,16 @@ impl Store {
     /// The PNG of the contact portrait with this key.
     pub fn photo(&self, key: &str) -> Option<Vec<u8>> {
         self.photos.lock().unwrap_or_else(PoisonError::into_inner).get(key).cloned()
+    }
+
+    /// A file fell on the window: the page may attach (or embed) it once.
+    pub(super) fn allow_drop(&self, paths: &[String]) {
+        self.dropped.lock().unwrap_or_else(PoisonError::into_inner).extend(paths.iter().cloned());
+    }
+
+    /// Whether `path` fell on the window and was not taken yet; it is taken now.
+    fn claim_drop(&self, path: &str) -> bool {
+        self.dropped.lock().unwrap_or_else(PoisonError::into_inner).remove(path)
     }
 
     pub(super) fn put_image(&self, cid: &str, png: Vec<u8>) {
@@ -1140,6 +1153,10 @@ impl<S: ComposeSource + 'static> Session<S> {
         }
         let (mut pictures, mut others) = (Vec::new(), Vec::new());
         for path in paths.into_iter().take(MAX_ATTACHMENTS) {
+            // Only what fell on the window: the page does not get to name files of the computer.
+            if !self.store.claim_drop(&path) {
+                continue;
+            }
             let path = PathBuf::from(path);
             if embed && is_picture(&path) {
                 pictures.push(path);
@@ -2115,6 +2132,7 @@ mod tests {
         std::fs::write(&file, b"offer").expect("written");
         let (mut session, log) = open(&[]);
         let path = file.to_string_lossy().into_owned();
+        session.store.allow_drop(std::slice::from_ref(&path));
         block_on(session.handle(FromPage::Files { paths: vec![path.clone(), path.clone()], embed: false, token: 0 }));
         assert_eq!(session.attachments.len(), 1, "once");
         assert_eq!(last(&log, "attachments")["items"][0]["name"], "Offer.txt");
@@ -2123,8 +2141,28 @@ mod tests {
         block_on(session.handle(FromPage::RemoveAttachment { index: 0 }));
         assert!(session.draft().attachments.is_empty());
         let gone = dir.path().join("Gone.txt").to_string_lossy().into_owned();
+        session.store.allow_drop(std::slice::from_ref(&gone));
         block_on(session.handle(FromPage::Files { paths: vec![gone], embed: false, token: 0 }));
         assert_eq!(last(&log, "notice")["what"], tr("Couldn't attach the file."));
+    }
+
+    #[test]
+    fn the_page_cannot_name_a_file_that_never_fell_on_the_window_and_a_drop_counts_once() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        let file = dir.path().join("secret.txt");
+        std::fs::write(&file, b"secret").expect("written");
+        let path = file.to_string_lossy().into_owned();
+        let (mut session, log) = open(&[]);
+        let before = events(&log, "attachments").len();
+        block_on(session.handle(FromPage::Files { paths: vec![path.clone()], embed: false, token: 0 }));
+        assert!(session.attachments.is_empty(), "a path the window did not see is not attached");
+        assert_eq!(events(&log, "attachments").len(), before, "and the page is told nothing new");
+        session.store.allow_drop(std::slice::from_ref(&path));
+        block_on(session.handle(FromPage::Files { paths: vec![path.clone()], embed: false, token: 0 }));
+        assert_eq!(session.attachments.len(), 1);
+        block_on(session.handle(FromPage::RemoveAttachment { index: 0 }));
+        block_on(session.handle(FromPage::Files { paths: vec![path], embed: false, token: 0 }));
+        assert!(session.attachments.is_empty(), "the same drop is not good twice");
     }
 
     #[test]
@@ -2143,6 +2181,7 @@ mod tests {
                 file.to_string_lossy().into_owned()
             })
             .collect();
+        session.store.allow_drop(&paths);
         block_on(session.handle(FromPage::Files { paths, embed: false, token: 0 }));
         assert_eq!(session.attachments.len(), MAX_ATTACHMENTS);
     }
@@ -2213,11 +2252,9 @@ mod tests {
     fn a_picture_is_prepared_by_the_core_shown_from_the_store_and_sent_as_cid() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut session, log) = open(&[]);
-        block_on(session.handle(FromPage::Files {
-            paths: vec![png_file(dir.path(), "plan.png")],
-            embed: true,
-            token: 7,
-        }));
+        let plan = png_file(dir.path(), "plan.png");
+        session.store.allow_drop(std::slice::from_ref(&plan));
+        block_on(session.handle(FromPage::Files { paths: vec![plan], embed: true, token: 7 }));
         let event = last(&log, "image");
         assert_eq!(event["token"], 7);
         let cid = event["image"]["cid"].as_str().expect("a cid").to_owned();
@@ -2272,11 +2309,9 @@ mod tests {
     fn a_picture_taken_out_of_the_text_can_become_an_attachment() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (mut session, log) = open(&[]);
-        block_on(session.handle(FromPage::Files {
-            paths: vec![png_file(dir.path(), "plan.png")],
-            embed: true,
-            token: 1,
-        }));
+        let plan = png_file(dir.path(), "plan.png");
+        session.store.allow_drop(std::slice::from_ref(&plan));
+        block_on(session.handle(FromPage::Files { paths: vec![plan], embed: true, token: 1 }));
         let cid = last(&log, "image")["image"]["cid"].as_str().expect("a cid").to_owned();
         block_on(session.handle(FromPage::ImageAttach { cid: cid.clone() }));
         let items = last(&log, "attachments")["items"].clone();

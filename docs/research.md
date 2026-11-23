@@ -392,6 +392,6 @@ Bildadresse und die Bereinigung mit `torro_mail::html`, der native Datei-Drop mi
 - **macOS** braucht eine Menüleiste (`muda`, wie der Player von torrochat), sonst erreichen ⌘C, ⌘V, ⌘X, ⌘A und ⌘Z die
   Webansicht nicht. **Linux** schaltet für `torroinbox` die GTK-Webansicht ein (`wry/os-webview`), der Rest des Workspaces
   bleibt ohne GTK.
-- **Nicht geprüft** (ehrlich offen, siehe die Pull-Request-Beschreibung): Linux-Bau und -Lauf (Hyprland, andere Treiber),
+- **Nicht geprüft** (ehrlich offen: Linux #973, Windows #974, Pakete #975, Bilder und Drop-Rückfrage #976): Linux-Bau und -Lauf (Hyprland, andere Treiber),
   Windows/WebView2, Eingabemethoden (fcitx5), Einfügen aus LibreOffice, Bildlauf unter der Umgehung, Speicher und
   Startzeit im Produkt (der Versuch maß 227 MB und 231 ms, unter macOS nicht gemessen).
