@@ -4130,9 +4130,10 @@ mod tests {
             .collect();
         assert_eq!(
             catalogue.len(),
-            33,
+            40,
             "nine of task C.1, five of C.10, one of issue #134, one of #225, one of #605, four of #703, one of #704, \
-             two of #697, two of #745, three of #747, one of #786, one of #784, one of #852, one of #835: {catalogue:?}"
+             two of #697, two of #745, three of #747, one of #786, one of #784, one of #852, one of #835, seven of \
+             #961: {catalogue:?}"
         );
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
         // But the person's yes to asking a bot (task B.2), which no agent may give, dictating (issue
@@ -4843,6 +4844,14 @@ mod tests {
                     json!({"engine": "test", "about": {"account": "mail:anna@example.org", "id": "m:4"}}),
                 ),
                 ("assistant_cancel", json!({"conversation": CONVERSATION})),
+                // Issue #961: the assistant never starts, steers or decides a job of its own.
+                ("assistant_start_job", json!({"goal": "Sort the invoices", "engine": "test"})),
+                ("assistant_list_jobs", json!({})),
+                ("assistant_get_job", json!({"id": CONVERSATION})),
+                ("assistant_pause_job", json!({"id": CONVERSATION})),
+                ("assistant_resume_job", json!({"id": CONVERSATION})),
+                ("assistant_cancel_job", json!({"id": CONVERSATION})),
+                ("assistant_resolve_job_step", json!({"id": CONVERSATION, "step": 1, "done": true})),
                 ("assistant_rename_conversation", json!({"id": CONVERSATION, "title": "Renamed"})),
                 ("assistant_choose_model", json!({"id": CONVERSATION, "engine": "test"})),
                 ("assistant_delete_conversation", json!({"id": CONVERSATION})),

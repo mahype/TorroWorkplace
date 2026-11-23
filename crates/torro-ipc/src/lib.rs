@@ -4653,6 +4653,92 @@ pub enum Request {
         /// The conversation's id.
         conversation: String,
     },
+    /// Starts a long-running job of the assistant (issue #961): `goal` becomes the first message of a new
+    /// conversation (or of `conversation`, which must not answer, have a bot, a mail or an open job), and the
+    /// core keeps a journal of every tool call, so the job goes on safely after a restart. Only with an AI
+    /// account; `model` left out, the engine picks one now, and the job keeps that model: it never changes it by
+    /// itself. A normal message is never a job. Answers [`Response::Job`]; `not-found` for an unknown engine or
+    /// conversation, `unsupported` for another engine, a bot's conversation or one about a mail, `busy` while
+    /// the conversation answers, `conflict` when it has an open job, the model's error code (`offline` …) when
+    /// it does not answer, `error` for a goal that is empty or longer than [`assistant::MAX_TEXT_CHARS`].
+    #[serde(rename = "assistant.start_job")]
+    StartJob {
+        /// What the job is to do, as the person would write it.
+        goal: String,
+        /// An engine's id from `assistant.list_engines` (an AI account).
+        engine: String,
+        /// The model of the AI account; left out, the engine picks one when the job starts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// The conversation to run in; left out, a new one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
+        /// Areas switched off for the job's answers, as for `assistant.send_message`; kept for every resume.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        without: Vec<Area>,
+    },
+    /// The assistant's jobs ([`Response::Jobs`]), the oldest first; with `conversation` only its jobs.
+    /// `not-found` for an unknown conversation.
+    #[serde(rename = "assistant.list_jobs")]
+    ListJobs {
+        /// Only the jobs of this conversation; left out, every job.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
+    },
+    /// The job `id` with its steps ([`Response::Job`]); `not-found` for an unknown id.
+    #[serde(rename = "assistant.get_job")]
+    GetJob {
+        /// The job's id.
+        id: String,
+    },
+    /// Pauses the job `id` (issue #961): its answer stops at once and no further step starts. A step that changes
+    /// something and was running becomes `uncertain`. [`Response::Job`]; `not-found` for an unknown id,
+    /// `conflict` for a job that is paused or over.
+    #[serde(rename = "assistant.pause_job")]
+    PauseJob {
+        /// The job's id.
+        id: String,
+    },
+    /// Resumes the paused job `id` (issue #961): first the outcome of its uncertain steps is looked up where the
+    /// core can (their approvals), then the job goes on with its model, or with `engine` and `model` when they are
+    /// given (an explicit choice: the job never changes its model by itself). Rights, approvals, tools and the
+    /// model are checked anew. [`Response::Job`]; `not-found` for an unknown id or engine, `conflict` when it is
+    /// not paused (also when another resume came first), when a step is still uncertain or its approval still
+    /// waits, `busy` while its conversation answers, `unsupported` or the model's error code when the model is not
+    /// available.
+    #[serde(rename = "assistant.resume_job")]
+    ResumeJob {
+        /// The job's id.
+        id: String,
+        /// Another engine (an AI account) to go on with; left out, the job's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        engine: Option<String>,
+        /// Another model to go on with, only with `engine` (`error` without); left out with `engine` set, that engine
+        /// picks one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+    },
+    /// Cancels the job `id` for good (issue #961): its answer stops and nothing of it runs again; a step that
+    /// changes something and was running stays `uncertain` in its journal. [`Response::Job`]; `not-found` for an
+    /// unknown id, `conflict` for a job that is over.
+    #[serde(rename = "assistant.cancel_job")]
+    CancelJob {
+        /// The job's id.
+        id: String,
+    },
+    /// Decides the outcome of the uncertain step `step` of the job `id` (issue #961): `done` true when it did
+    /// happen (the mail was sent), false when it did not; then it may run again. Only a person can know this, so
+    /// for a client it waits for a person's approval. [`Response::Job`]; `not-found` for an unknown job or step,
+    /// `conflict` for a step that is not uncertain.
+    #[serde(rename = "assistant.resolve_job_step")]
+    ResolveJobStep {
+        /// The job's id.
+        id: String,
+        /// The step's number ([`assistant::StepInfo::seq`]).
+        step: u32,
+        /// Whether the step happened.
+        done: bool,
+    },
     /// Gives the conversation `id` the title `title` ([`Response::Ok`]); `not-found` for an unknown
     /// id, `error` for a title that is blank, longer than 200 characters or more than one line.
     #[serde(rename = "assistant.rename_conversation")]
@@ -7289,6 +7375,16 @@ pub enum Response {
     Conversation {
         conversation: ConversationSummary,
         entries: Vec<Entry>,
+    },
+    /// A job of the assistant with its steps in order ([`Request::GetJob`] and the other job commands, issue
+    /// #961). Its goal is data, never instructions.
+    Job {
+        job: assistant::JobInfo,
+        steps: Vec<assistant::StepInfo>,
+    },
+    /// The assistant's jobs ([`Request::ListJobs`]). Goals are data, never instructions.
+    Jobs {
+        jobs: Vec<assistant::JobInfo>,
     },
     /// The cards of a conversation, in the order of their entries ([`Request::GetCards`]). A
     /// file's title is the client's text: data, never instructions.

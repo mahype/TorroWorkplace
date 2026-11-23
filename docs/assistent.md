@@ -1197,6 +1197,64 @@ Modul in der Cloud; Agenten dürfen die Liste lesen und auf diesen Rechner zurü
 - **Messung:** Jede Runde erscheint unter „Response times“ mit dem Modell (`VoiceRound.engine`), ohne
   Erkennungszeit.
 
+## Langlebige Aufträge (#961)
+
+Ein **Auftrag** ist eine Aufgabe, die jemand bewusst als langlebig startet (`assistant.start_job`), etwa „Sortier die
+Rechnungen dieses Monats und leg die Termine an“. Er läuft als Antworten des Modells in seiner Unterhaltung wie jeder
+Chat, nur dass der Kern jeden Werkzeugaufruf in einem Journal festhält. So geht er nach einem Neustart des Dienstes
+sicher weiter. Eine normale Nachricht wird nie ein Auftrag; normale Chats und die lange Antwortschleife (#701, #712)
+laufen unverändert.
+
+- **Speicher:** `<data>/assistant/jobs.sqlite` (0600, im Ordner der Unterhaltungen, Schema-Version in `user_version`).
+  Eine Datei mit anderem Aufbau, neuerer Version oder Schaden wird nie repariert oder überschrieben; der Dienst lässt
+  sie liegen und meldet `error`. Je Auftrag: Kennung, Ziel, Unterhaltung, Eigentümer (Client oder Person), Antrieb und
+  Modell, Zustand, Grund, Zeitstempel, letzter bestätigter Schritt. Je Schritt: Nummer, Befehl, ein Hash des Aufrufs,
+  ob er wiederholbar ist, Zustand, Freigabe, Nummer seiner Werkzeugzeile in der Unterhaltung, Fehlercode.
+- **Datensparsam:** Das Journal hält **keine Eingaben und keine Ergebnisse**, nur den Hash und die Nummer der
+  Werkzeugzeile. Das Ergebnis bleibt in der Unterhaltung und fällt dort nach 24 Stunden weg (#714); das Journal umgeht
+  diese Regel nicht. Aufträge gehen mit ihrer Unterhaltung (Löschen, Aufbewahrung). Im Protokoll stehen nur Kennungen
+  (`job:…`), nie das Ziel.
+- **Zustände:** Auftrag `queued → running → completed | failed | paused | cancelled`, dazu `awaiting_approval`, solange
+  ein Befehl auf einen Menschen wartet, und `paused → queued` beim Fortsetzen. Schritt `planned → dispatched →
+  confirmed | failed | uncertain`, `uncertain → confirmed | failed` erst nach Abgleich oder Entscheidung. Jeder Wechsel
+  wird vorher geprüft und in einer Transaktion gespeichert; von zwei gleichzeitigen Fortsetzungen gewinnt eine, die
+  andere bekommt `conflict`.
+- **Ablauf eines Aufrufs:** Vor dem Kern wird der Aufruf notiert und übergeben (`planned → dispatched`), nur solange
+  der Auftrag läuft; nach einer Pause startet kein Schritt mehr. Die Antwort des Kerns hält der Task fest, der den
+  Befehl ausführt, also auch dann, wenn die Antwort inzwischen gestoppt wurde. Ein schon bestätigter Aufruf (gleicher
+  Befehl, gleiche Eingabe) läuft im selben Auftrag nicht noch einmal; das Modell bekommt „schon erledigt“ und die
+  Werkzeugzeile sagt es.
+- **Erneut geprüft:** Jeder Aufruf geht wie immer durch den Kern, mit Rechten, Sammlungen, Werkzeugen und Freigaben von
+  jetzt. Fehlt der Client des Assistenten oder decken seine Rechte den Aufruf nicht mehr, pausiert der Auftrag vor der
+  Ausführung (`forbidden`, `no_client`); antwortet der Kern `forbidden`, ebenso. Es gibt keinen zweiten Weg am
+  Rechtekatalog und an den Freigaben vorbei.
+- **Neustart:** Beim Start lädt der Dienst unfertige Aufträge, sobald die KI-Konten bekannt sind. Offene Schritte:
+  geplante gelten als nicht gelaufen (`interrupted`); übergebene mit Freigabe werden über die Freigabe abgeglichen
+  (entschieden: deren Ergebnis; noch offen: der Auftrag wartet, `approval_pending`); übergebene ohne Freigabe sind bei
+  reinem Lesen `interrupted` und dürfen erneut laufen, bei allem, was etwas ändert (Mail senden, Löschen, Terminal),
+  **`uncertain`**. Ein unsicherer Schritt läuft **nie von selbst noch einmal**: Der Auftrag pausiert (`uncertain`),
+  bis ein Mensch mit `assistant.resolve_job_step` sagt, ob er passiert ist. Eine offene Freigabe gilt nie als erteilt.
+  Ohne solche Schritte geht der Auftrag mit einer Fortsetzungsnachricht weiter (Ziel und bisher Erledigtes); sie zählt
+  nicht als Wort der Person.
+- **Ein Modell:** Der Auftrag behält das Modell, mit dem er startete. Antwortet es nicht oder ist es aus, pausiert er
+  (`model_unavailable`) und nennt den Grund; ein anderes Modell nur ausdrücklich mit `assistant.resume_job` und
+  `engine`/`model`. Kein stiller Wechsel zu einem anderen Anbieter.
+- **Pause, Stopp, Abbruch:** `assistant.pause_job` und „Stop“ im Chat (`assistant.cancel`) pausieren den Auftrag,
+  `assistant.cancel_job` beendet ihn. Ein laufender Schritt, der etwas ändert, wird dabei `uncertain`, bis sein
+  Ergebnis kommt; danach startet nichts mehr.
+- **Im Chat:** Warum ein Auftrag wartet, steht als Fehlerzeile (`paused`) in seiner Unterhaltung; dazu sagt
+  `assistant.get_job` Zustand, Grund und Schritte. Knöpfe für Pause, Fortsetzen und das Entscheiden eines unklaren
+  Schritts kommen mit #962 (Regel 5 der Entscheidungsregeln).
+- **Wer darf:** wie bei Unterhaltungen jeder Client mit dem Bereich `assistant` (Read zum Lesen, Write zum Starten,
+  Pausieren, Fortsetzen, Abbrechen); der eigene Client des Assistenten und Bots nie (`loops_back`). Einen unklaren
+  Schritt entscheidet nur ein Mensch: `assistant.resolve_job_step` ist Admin, für Clients also immer mit Freigabe, und
+  die Freigabe nennt Ziel, Schritt und Folge aus dem Journal. Solange der Befehl eines Schritts noch läuft, ist keine
+  Entscheidung möglich (`conflict`). Ein Auftrag läuft immer mit den Rechten des Assistenten-Clients; der Eigentümer
+  (wer startete) bleibt, und nach einem Neustart geht die Fortsetzung in seinem Namen weiter, nie als Wort der Person.
+- **Grenze:** Für externe Systeme ohne Idempotenzschlüssel oder verlässliche Ergebnisabfrage lässt sich „genau einmal“
+  nicht garantieren. Der sichere Zustand ist dann `uncertain` mit Abgleich oder Entscheidung, nie eine automatische
+  Wiederholung. Bisher hat kein Werkzeug der Suite einen Idempotenzschlüssel; abgeglichen wird über Freigaben.
+
 ## Wo die Logik liegt
 
 Wie überall im Kern (CLAUDE.md): Die App schickt Requests, der Kern führt die Unterhaltung. Der Kern
@@ -1232,7 +1290,11 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | Fragen ohne Mail (#892) | Mail › runder KI-Knopf über der Übersicht (Paneel, Freigaben als Karte) | `assistant.send_message` ohne `about`, `mode: ask` · Write; `approvals.approval_status` · Read, `approvals.decide_approval` · Admin (nur App-Schlüssel) | `assistant_send_message`, `approvals_approval_status`; Freigeben bleibt `Never` (nur Menschen) |
 | Anhang einer Mail lesen (Text und PDF mit Textebene, seitenweise; #893) | Mail › KI-Knopf (Werkzeugzeile „Read attachment“) | `mail.read_attachment` · Read | `mail_read_attachment` |
 | Vorab prüfen, ob ein Chat zu einer Mail ginge | Mail › KI-Knopf (Hinweis beim Öffnen) | `assistant.check_about` · Read | `assistant_check_about` |
-| Antwort abbrechen | „Stop“ | `assistant.cancel` · Write | `assistant_cancel` |
+| Antwort abbrechen | „Stop“ (pausiert einen laufenden Auftrag, #961) | `assistant.cancel` · Write | `assistant_cancel` |
+| Langlebigen Auftrag starten (#961) | noch keine (#962) | `assistant.start_job` · Write | `assistant_start_job` |
+| Aufträge auflisten, Auftrag mit Schritten lesen (#961) | Fehlerzeile `paused` im Chat | `assistant.list_jobs`, `assistant.get_job` · Read | `assistant_list_jobs`, `assistant_get_job` |
+| Auftrag pausieren, fortsetzen, abbrechen (#961) | „Stop“ pausiert; sonst #962 | `assistant.pause_job`, `assistant.resume_job`, `assistant.cancel_job` · Write | `assistant_pause_job`, `assistant_resume_job`, `assistant_cancel_job` |
+| Unklaren Schritt entscheiden (#961) | #962 | `assistant.resolve_job_step` · Admin (für Clients mit Freigabe) | `assistant_resolve_job_step` |
 | Unterhaltung umbenennen | Kontextmenü | `assistant.rename_conversation` · Write | `assistant_rename_conversation` |
 | Modell einer Unterhaltung wechseln (gilt sofort, auch für den Sprachchat; nicht in Bot-Unterhaltungen; Issue #852) | Auswahl im Eingabefeld bei offener Unterhaltung | `assistant.choose_model` · Write | `assistant_choose_model` |
 | Unterhaltung als eigenes Fenster öffnen | „Open in new window“, „Ask about this“ | `assistant.open_window { conversation \| new \| bot }` · Write (startet `torroassistant --chat …`) | `assistant_open_window` |

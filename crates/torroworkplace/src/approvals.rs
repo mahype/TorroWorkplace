@@ -306,6 +306,10 @@ pub struct Facts {
     /// `tasks.set_focus` the task released, for `tasks.postpone_focus_plan` every task it moves
     /// (only from the lists the client sees). Empty for everything else.
     pub tasks: Vec<String>,
+    /// For the job commands of the assistant (issue #961): the command of the step that
+    /// `assistant.resolve_job_step` decides, as the job's journal keeps it, looked up by the job and the step.
+    /// `None` when the journal does not have it. The job's goal, shortened, is [`Facts::name`].
+    pub job_step: Option<String>,
     /// For the `bots.*` commands and `assistant.send_message` with a bot (task B.1): the bot's name
     /// as it is stored, looked up by its id. `None` when the core does not have it: the summary
     /// then says "an unknown bot". A new bot (`bots.save_bot` without `id`) has none yet; its name
@@ -2219,6 +2223,11 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::ArchiveConversations { .. }
         | Request::DeleteConversations { .. }
         | Request::OpenChatWindow { .. }) => assistant_summary(request, facts),
+        request @ (Request::StartJob { .. }
+        | Request::PauseJob { .. }
+        | Request::ResumeJob { .. }
+        | Request::CancelJob { .. }
+        | Request::ResolveJobStep { .. }) => job_summary(request, facts),
         request @ (Request::UpdateProfile { .. }
         | Request::Remember { .. }
         | Request::Forget { .. }
@@ -5244,6 +5253,45 @@ fn quote(text: &str) -> String {
     quote_up_to(text, QUOTE_MAX)
 }
 
+/// What a job command of the assistant does (issue #961), in words: the job by its goal as the journal keeps it
+/// ([`Facts::name`]), the step by its command ([`Facts::job_step`]), the engine by its name ([`Facts::engine`]);
+/// never the client's text. Deciding a step says plainly what follows: done never runs again, not done may.
+fn job_summary(request: &Request, facts: &Facts) -> String {
+    let job =
+        facts.name.as_deref().map_or_else(|| tr("an unknown job").to_string(), |goal| format!("\"{}\"", quote(goal)));
+    match request {
+        Request::StartJob { engine, .. } => {
+            let engine = quote(facts.engine.as_deref().unwrap_or(engine));
+            trf("Start a long-running job of the assistant, answered by \"{engine}\"", &[("engine", &engine)])
+        }
+        Request::PauseJob { .. } => trf("Pause the assistant's job: {job}", &[("job", &job)]),
+        Request::CancelJob { .. } => trf("Cancel the assistant's job for good: {job}", &[("job", &job)]),
+        Request::ResumeJob { engine: Some(engine), .. } => {
+            let engine = quote(facts.engine.as_deref().unwrap_or(engine));
+            trf(
+                "Resume the assistant's job with another model, answered by \"{engine}\": {job}",
+                &[("job", &job), ("engine", &engine)],
+            )
+        }
+        Request::ResumeJob { .. } => trf("Resume the assistant's job: {job}", &[("job", &job)]),
+        Request::ResolveJobStep { step, done, .. } => {
+            let tool = facts.job_step.as_deref().map_or_else(|| tr("an unknown command").to_string(), quote);
+            let step = step.to_string();
+            let values: [(&str, &dyn std::fmt::Display); 3] = [("step", &step), ("tool", &tool), ("job", &job)];
+            if *done {
+                trf("Mark step {step} ({tool}) as done, so it does not run again; the assistant's job: {job}", &values)
+            } else {
+                trf(
+                    "Mark step {step} ({tool}) as not done, so it may run again when the job resumes; the assistant's \
+                     job: {job}",
+                    &values,
+                )
+            }
+        }
+        other => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
 /// [`quote`] cut at `max` characters instead of [`QUOTE_MAX`].
 fn quote_up_to(text: &str, max: usize) -> String {
     let cleaned: String = text
@@ -6312,6 +6360,29 @@ pub(crate) mod tests {
         let cancel = Request::CancelAnswer { conversation: id.clone() };
         assert_eq!(summary(&cancel, &held), trf("Stop the assistant's answer in \"{title}\"", &[title]));
         assert_eq!(summary(&cancel, &unknown), tr("Stop the assistant's answer in an unknown conversation"));
+        // Issue #961: deciding a step names the job and the step from the journal, and what follows.
+        let decide = Request::ResolveJobStep { id: "0123456789abcdef".into(), step: 2, done: false };
+        let job = Facts {
+            name: Some("Send the invoice to Anna".into()),
+            job_step: Some("mail.send_draft".into()),
+            ..Facts::default()
+        };
+        let said = summary(&decide, &job);
+        assert!(said.contains("Send the invoice to Anna") && said.contains("mail.send_draft"), "{said}");
+        assert_eq!(
+            said,
+            trf(
+                "Mark step {step} ({tool}) as not done, so it may run again when the job resumes; the assistant's \
+                 job: {job}",
+                &[
+                    ("step", &"2".to_string()),
+                    ("tool", &"mail.send_draft".to_string()),
+                    ("job", &"\"Send the invoice to Anna\"".to_string())
+                ],
+            )
+        );
+        let unknown_job = summary(&Request::PauseJob { id: "0123456789abcdef".into() }, &Facts::default());
+        assert_eq!(unknown_job, trf("Pause the assistant's job: {job}", &[("job", &tr("an unknown job").to_string())]));
         let interrupt = Request::InterruptAnswer { conversation: id.clone() };
         assert_eq!(summary(&interrupt, &held), trf("Interrupt the assistant's answer in \"{title}\"", &[title]));
         assert_eq!(summary(&interrupt, &unknown), tr("Interrupt the assistant's answer in an unknown conversation"));
