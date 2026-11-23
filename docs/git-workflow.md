@@ -29,7 +29,7 @@ Skills des Plugins enon-tools; Board und Typen stehen in `.enon-tools/konvention
 8. Nach dem Merge Worktree und Branch aufräumen: `/worktree-cleanup` in der Sitzung im Worktree.
 
 Die Schritte 1 bis 8 liegen als Skills des Plugins enon-tools vor: `issue-create` legt das Issue an, `issue-plan` legt den Worktree an und
-postet einen Implementierungsplan, `issue-approve` gibt ihn frei (nur durch Menschen), `issue-implement` setzt um,
+postet einen Implementierungsplan, `issue-plan-accept` gibt ihn frei (nur durch Menschen), `issue-implement` setzt um,
 lässt vor dem Push ein Review mit frischem Kontext laufen und erstellt den PR (Rückfrage nur bei Auffälligkeiten), `pr-review` reviewt
 den offenen PR (ohne Approve, ohne Merge), `pr-triage` macht aus Review-Funden außerhalb des PR-Scopes eigene
 Issues. Für Kleinigkeiten legt `issue-small` Issue und Worktree an und setzt ohne Plan und Freigabe um. Für winzige
@@ -60,7 +60,7 @@ Commit ohne Issue-Nummer, z.B. `docs: fix typo in roadmap`, PR-Body kurz und ohn
 
 **Projektzuordnung und Status:**
 - Jedes neue Issue kommt auf das Board `TorroWorkplace`, Status beim Anlegen `Todo`.
-- Der Status folgt der Phase (`Todo`, `Awaiting Approval`, `In Progress`, `In Review`, `Done`); die Skills setzen
+- Der Status folgt der Phase (`Todo`, `Planning`, `In Progress`, `In Review`, `Done`); die Skills setzen
   ihn.
 
 **Branch-Namen:**
@@ -99,3 +99,17 @@ Commit ohne Issue-Nummer, z.B. `docs: fix typo in roadmap`, PR-Body kurz und ohn
 - Pushen und PR erstellen: in der Skill-Kette wie im Plugin (ohne Rückfrage, wenn alles sauber ist), sonst nur nach
   Rückfrage beim Nutzer. Kein Force-Push ohne ausdrückliche Anweisung, keine Hooks überspringen (`--no-verify`).
 - KI-Agenten genehmigen und mergen nicht, auch nicht per Auto-Merge.
+
+## Automatisch beauftragte PRs
+
+Für PRs, die ein Agent ohne Zutun eines Menschen beauftragt hat (Dispatcher, Projekt-Bot). Ob ein Issue dafür reif ist,
+regelt „Umsetzungsreife (KI)“ in [issue-workflow.md](issue-workflow.md).
+
+- Der PR ist ein **Draft** und trägt im Titel den Präfix `[auto] `, z. B. `[auto] fix(torrotasks): … #436`. Der Präfix
+  kennzeichnet nur die Herkunft, er ist keine Qualitätsfreigabe. Vorhandene Titel ändert kein Agent.
+- Der Body nennt den Protokollkommentar „Umsetzungsreife (KI)“ des Issues und führt die Entscheidungen des Bots unter
+  „Entschieden durch Projekt-Bot (delegiert von Sven)“ mit Regelnummer.
+- Vor „Ready for review“ prüft ein Reviewer eines **anderen** Anbieters als der Implementierer (soweit verfügbar) den PR,
+  bei Oberflächenänderungen zusätzlich `torro-design-review` mit Vorher-nachher-Bildern.
+- **Nie Auto-Merge**, auch nicht für kleine oder grüne PRs. Merge, Approve und das Schließen von Issues bleiben bei
+  Menschen (Regel 10).

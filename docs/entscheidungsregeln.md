@@ -37,8 +37,12 @@ Sven möglichst selten gefragt wird.
     Issue schließen. Die Merge-Reihenfolge freigegebener PRs legt der Bot selbst fest.
 11. **Offensichtliche Kleinigkeiten werden selbstständig erledigt.** Einmal pro Stunde sucht der Projekt-Bot
     unter den offenen Issues nach Bugs und kleinen Aufgaben, die nach Regel 1 offensichtlich nötig, jetzt
-    umsetzbar und sinnvoll sind. Er setzt sie ohne Rückfrage in einem eigenen T3-Thread mit eigenem Branch und
-    PR um. Ausgeschlossen sind Issues mit offenen Grundsatzfragen (Regel 9), reine UI-Themen (Regel 5) und
-    Issues, zu denen es schon einen PR oder Thread gibt. Pro Lauf startet er höchstens ein Issue; liegen schon
-    drei solcher PRs ungeprüft offen, startet er keines. Mergen, Issues schließen und Pushen auf `main` bleiben
-    nach Regel 10 bei Sven.
+    umsetzbar und sinnvoll sind. „Umsetzbar“ heißt umsetzungsreif nach „Umsetzungsreife (KI)“ in
+    [issue-workflow.md](issue-workflow.md): `aufwand:klein`, vollständige und objektiv prüfbare Kriterien, keine
+    offene Entscheidung, Protokollkommentar am Issue. Er setzt sie ohne Rückfrage in einem eigenen T3-Thread mit
+    eigenem Branch und einem Draft-PR mit Präfix `[auto]` um. Ausgeschlossen sind Issues mit offenen Grundsatzfragen
+    (Regel 9), reine UI-Themen (Regel 5) und Issues, zu denen es schon einen PR oder Thread gibt. Pro Lauf startet er
+    höchstens ein Issue; liegen schon drei PRs mit `[auto]` ohne Review offen, startet er keines. Dazu gilt das
+    Limit von höchstens drei gleichzeitig arbeitenden Coding-Agenten über alle T3-Threads und Dispatcher; es zählt
+    das strengere von beiden. Mergen, Issues schließen und Pushen auf `main` bleiben nach Regel 10 bei Sven, nie per
+    Auto-Merge.
