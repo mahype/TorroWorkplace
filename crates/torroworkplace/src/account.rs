@@ -628,6 +628,18 @@ pub mod github {
         header.map(|header| header.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect())
     }
 
+    /// The scope that lets a classic token reach private repositories; notifications of them need it
+    /// (`docs/github-mitteilungen.md`).
+    const REPO_SCOPE: &str = "repo";
+
+    /// Whether a classic token with `scopes` reaches public repositories only (issue #947): GitHub
+    /// reported its scopes, and `repo` is not among them. `None` is no answer: a fine-grained token
+    /// reports no scopes and has its own health (`missing_scope`), and a check GitHub has not
+    /// answered yet says nothing.
+    pub fn public_only(scopes: Option<&[String]>) -> bool {
+        scopes.is_some_and(|scopes| !scopes.iter().any(|scope| scope == REPO_SCOPE))
+    }
+
     /// The folders to try when a program is not on the service's PATH: a service started by
     /// launchd or systemd gets a short one without Homebrew or the user's own `bin`. In the order
     /// they are tried.
@@ -932,6 +944,17 @@ pub mod github {
                 return None;
             }
             Some(self.slots.read().await.iter().map(Slot::check).collect())
+        }
+
+        /// The ids of the accounts whose classic token reaches public repositories only
+        /// ([`public_only`], issue #947), as the last check of each found.
+        pub async fn public_only_accounts(&self) -> Vec<String> {
+            let slots = self.slots.read().await;
+            slots
+                .iter()
+                .filter(|slot| public_only(slot.scopes.as_deref()))
+                .map(|slot| slot.account.id.clone())
+                .collect()
         }
 
         /// `id` is one of these accounts.
@@ -1264,6 +1287,19 @@ pub mod github {
             assert_eq!(scopes_of(&classic, Some("")), Some(vec![]), "a token without scopes");
             assert_eq!(scopes_of(&classic, None), None, "GitHub did not tell");
             assert_eq!(scopes_of(&Secret::new("github_pat_11AB"), Some("repo")), None);
+        }
+
+        #[test]
+        fn only_a_classic_token_without_repo_reaches_public_repositories_only() {
+            let scopes = |header: &str| scopes_of(&Secret::new(CLASSIC), Some(header));
+            assert!(public_only(scopes("notifications, read:org").as_deref()));
+            assert!(public_only(scopes("public_repo").as_deref()), "public_repo is not repo");
+            assert!(public_only(scopes("").as_deref()), "no scope at all");
+            assert!(!public_only(scopes("repo").as_deref()));
+            assert!(!public_only(scopes("notifications, repo, read:org").as_deref()));
+            assert!(!public_only(None), "GitHub did not tell");
+            let fine_grained = scopes_of(&Secret::new("github_pat_11AB"), Some("notifications"));
+            assert!(!public_only(fine_grained.as_deref()), "a fine-grained token is missing_scope, not public only");
         }
 
         #[test]

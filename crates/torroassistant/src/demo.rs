@@ -1203,7 +1203,7 @@ fn task_lists() -> Vec<Collection> {
 
 /// The demo's inbox sources with entries.
 fn sources() -> Vec<SourceInfo> {
-    vec![SourceInfo { source: SourceRef::script("backup"), open: 1, muted: false, health: None }]
+    vec![SourceInfo { source: SourceRef::script("backup"), open: 1, muted: false, health: None, notice: None }]
 }
 
 /// The demo's accounts: the Nextcloud account and two mail accounts.

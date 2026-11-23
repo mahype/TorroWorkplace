@@ -177,7 +177,7 @@ pub mod notifications {
 /// notifications, its Talk, a GitHub account, an ntfy **server**. A mail account has its own field
 /// instead (`accounts.update_mail_account`, `notify`), with three steps.
 pub mod sources {
-    use torro_inbox::item::SourceHealth;
+    use torro_inbox::item::{SourceHealth, SourceNotice};
     use torro_inbox::{SourceKind, SourceRef};
     use torro_mail::Notify;
 
@@ -263,6 +263,21 @@ pub mod sources {
     /// Why `source` brings nothing at the moment, as the core keeps it.
     fn health_of(data: &Data, source: &SourceRef) -> Option<SourceHealth> {
         data.sources.iter().find(|info| info.source == *source).and_then(|info| info.health)
+    }
+
+    /// What `source` leaves out although it works, as the core keeps it (issue #947).
+    fn notice_of(data: &Data, source: &SourceRef) -> Option<SourceNotice> {
+        data.sources.iter().find(|info| info.source == *source).and_then(|info| info.notice)
+    }
+
+    /// What a working source leaves out, in calm words that say where to look: the account's page
+    /// has the group "Permissions" with the token's scopes (issue #947).
+    pub fn notice_text(notice: SourceNotice) -> &'static str {
+        match notice {
+            SourceNotice::PublicOnly => tr(
+                "Only public repositories: the token has no repo scope. See Permissions on the account's page under Accounts.",
+            ),
+        }
     }
 
     /// Why a source of `kind` is quiet, in calm words that say what helps (ported from the control
@@ -429,7 +444,18 @@ pub mod sources {
         }
     }
 
-    /// One source with its switch: its name, under it why it is quiet, else what it brings.
+    /// The sentence under a source's name: why it is quiet, else what it leaves out
+    /// ([`notice_text`]), else `brings`.
+    fn detail_of(data: &Data, source: &SourceRef, brings: Option<&'static str>) -> Option<String> {
+        health_of(data, source)
+            .map(|health| health_text(source.kind, health))
+            .or_else(|| notice_of(data, source).map(notice_text))
+            .or(brings)
+            .map(str::to_string)
+    }
+
+    /// One source with its switch: its name, under it why it is quiet, else what it leaves out
+    /// ([`notice_text`]), else what it brings.
     fn switch_row<'a>(
         label: &'static str,
         brings: Option<&'static str>,
@@ -437,8 +463,7 @@ pub mod sources {
         data: &Data,
     ) -> Element<'a, Message> {
         let shown = is_shown(data, &source);
-        let kind = source.kind;
-        let detail = health_of(data, &source).map(|health| health_text(kind, health)).or(brings).map(str::to_string);
+        let detail = detail_of(data, &source, brings);
         let control = switch(shown, move |shown| Message::Shown { source: source.clone(), shown });
         setting_row(None, label, detail, control)
     }
@@ -504,7 +529,7 @@ pub mod sources {
         }
 
         fn muted(source: SourceRef) -> SourceInfo {
-            SourceInfo { source, open: 0, muted: true, health: None }
+            SourceInfo { source, open: 0, muted: true, health: None, notice: None }
         }
 
         /// A switch sends `inbox.mute_source` for its own source and nothing else.
@@ -707,6 +732,34 @@ pub mod sources {
                     assert!(!health_text(kind, health).is_empty(), "{kind:?} {health:?}");
                 }
             }
+        }
+
+        /// Issue #947: a GitHub source that works but reaches public repositories only says so under
+        /// its name, in place of what it brings; a source that is quiet says why first.
+        #[tokio::test]
+        async fn a_source_with_a_notice_says_what_it_leaves_out() {
+            let mut data = data().await;
+            let github = SourceRef::github("anna-dev");
+            let brings = Some("What it brings");
+            // The demo's GitHub token has no `repo`, so the row says it (the pictures of the design check).
+            assert_eq!(detail_of(&data, &github, brings).as_deref(), Some(notice_text(SourceNotice::PublicOnly)));
+            let info = data.sources.iter_mut().find(|info| info.source == github).expect("demo source");
+            info.notice = None;
+            assert_eq!(detail_of(&data, &github, brings).as_deref(), brings, "no note, no sentence of its own");
+            let info = data.sources.iter_mut().find(|info| info.source == github).expect("demo source");
+            info.notice = Some(SourceNotice::PublicOnly);
+            assert_eq!(detail_of(&data, &github, brings).as_deref(), Some(notice_text(SourceNotice::PublicOnly)));
+            let info = data.sources.iter_mut().find(|info| info.source == github).expect("demo source");
+            info.health = Some(SourceHealth::Offline);
+            assert_eq!(
+                detail_of(&data, &github, brings).as_deref(),
+                Some(health_text(SourceKind::Github, SourceHealth::Offline)),
+                "being quiet is the more urgent thing to say"
+            );
+            let account = data.accounts.iter().find(|account| account.id == github.key()).expect("demo account");
+            assert!(!rows_of(account, &github, &data).is_empty());
+            // The scope is named in both languages (the product's own word); the rest is translated.
+            assert!(notice_text(SourceNotice::PublicOnly).contains("repo"));
         }
 
         /// The three steps read as the control centre's page had them.

@@ -1209,7 +1209,7 @@ Asks the person's AI what event an inbox entry names: answers a title, `start` a
 
 Zugriff `read` · MCP-Tool `inbox_list_sources`
 
-Lists the inbox sources this key may see (`agent:<name>`, `script:<name>`, `mail:<address>`, `github:<login>`, `nextcloud:<login>@<host>`, `talk:<login>@<host>`, `ntfy:<host>`; never the person's own `suite`) with their number of open entries (of a GitHub source only those of repositories this key may see) and whether the person muted them. `health` says why a remote source brings nothing now: `missing_app` (the server lacks the app), `missing_scope` (the sign-in may not read notifications), `signed_out`, `offline`; left out while it works.
+Lists the inbox sources this key may see (`agent:<name>`, `script:<name>`, `mail:<address>`, `github:<login>`, `nextcloud:<login>@<host>`, `talk:<login>@<host>`, `ntfy:<host>`; never the person's own `suite`) with their number of open entries (of a GitHub source only those of repositories this key may see) and whether the person muted them. `health` says why a remote source brings nothing now: `missing_app` (the server lacks the app), `missing_scope` (the sign-in may not read notifications), `signed_out`, `offline`; left out while it works. `notice` says what a source that works still leaves out: `public_only` (a classic GitHub token without the `repo` scope, so notifications of private repositories never come); left out when there is nothing to say.
 
 Keine Felder.
 

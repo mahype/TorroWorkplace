@@ -2133,7 +2133,13 @@ mod tests {
                 book("z-server-generated--system", "System address book", 1204, true),
                 book("z-app-generated--contactsinteraction--recent", "Recently contacted", 57, true),
             ],
-            sources: vec![SourceInfo { source: SourceRef::script("nightly"), open: 1, muted: false, health: None }],
+            sources: vec![SourceInfo {
+                source: SourceRef::script("nightly"),
+                open: 1,
+                muted: false,
+                health: None,
+                notice: None,
+            }],
             accounts: vec![
                 account("nextcloud:anna@cloud.example.org", "nextcloud", "anna@cloud.example.org"),
                 account("mail:anna@mailbox.org", "mail", "anna@mailbox.org"),
@@ -2767,7 +2773,13 @@ mod tests {
     #[test]
     fn sources_include_every_client_and_the_selection_but_never_the_suite() {
         let mut fixture = fixture();
-        fixture.sources.push(SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None });
+        fixture.sources.push(SourceInfo {
+            source: SourceRef::suite(),
+            open: 2,
+            muted: false,
+            health: None,
+            notice: None,
+        });
         let selection = Selection::Only(vec!["script:gone".into()]);
         let keys: Vec<String> =
             candidates(Pick::InboxSources, &fixture.known(), &selection).into_iter().map(|c| c.id).collect();
@@ -2819,7 +2831,13 @@ mod tests {
             "a CalDAV account brings no source"
         );
         // A source with entries is offered once, not again for its account.
-        fixture.sources.push(SourceInfo { source: SourceRef::github("anna-dev"), open: 3, muted: false, health: None });
+        fixture.sources.push(SourceInfo {
+            source: SourceRef::github("anna-dev"),
+            open: 3,
+            muted: false,
+            health: None,
+            notice: None,
+        });
         let again = candidates(Pick::InboxSources, &fixture.known(), &Selection::All);
         assert_eq!(again.iter().filter(|c| c.id == "github:anna-dev").count(), 1);
     }

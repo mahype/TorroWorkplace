@@ -1951,6 +1951,7 @@ impl InboxSource for DemoSource {
                 .unwrap_or(u32::MAX),
                 muted: data.muted.contains(source),
                 health: None,
+                notice: None,
             })
             .collect())
     }
