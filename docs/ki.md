@@ -72,7 +72,8 @@ benutzt nie den Schlüssel eines Agenten.
 
 **xAI** (Issue #838, `xai`, `https://api.x.ai/v1`, Schlüssel unter `https://console.x.ai`, Sitz USA) bringt die
 Grok-Modelle für den Chat über die OpenAI-kompatible Schnittstelle und **Grok Voice** als Gesprächsmodul in der Cloud
-([assistent.md](assistent.md), „Gesprächsmodul in der Cloud“). OpenAI-Konten bieten dafür OpenAI Realtime.
+([assistent.md](assistent.md), „Gesprächsmodul in der Cloud“). OpenAI-Konten bieten dafür OpenAI Realtime,
+Google-Gemini-Konten **Gemini Live** (Issue #918, `gemini-3.8-live`).
 
 **Strata** (MIT, Standardadresse `http://127.0.0.1:8080/v1`) ist ein lokaler Server für sehr große offene
 Modelle auf einem PC mit RTX- oder Radeon-Karte. Es ist ein Katalogeintrag, kein neues Protokoll. Auf Port 8080

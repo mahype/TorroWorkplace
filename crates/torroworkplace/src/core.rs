@@ -41536,6 +41536,44 @@ done"#,
         assert_eq!(core.settings.current().voice.live_engine, None, "back to this computer");
     }
 
+    /// Issue #918: a Google Gemini account with a key offers Gemini Live, and a person can choose it; without a key it
+    /// is listed as missing it, and the choice is refused for an engine the account does not offer.
+    #[tokio::test]
+    async fn gemini_live_is_an_engine_of_a_gemini_account() {
+        use torro_ipc::{LiveEngine, LiveMissing};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let with =
+            torro_core::Account::ai(AiProvider::Gemini, "https://generativelanguage.googleapis.com/v1beta/openai");
+        let mut without =
+            torro_core::Account::ai(AiProvider::Gemini, "https://generativelanguage.googleapis.com/v1beta/openai");
+        without.id.push_str("-two");
+        let file = crate::account::github::tests::accounts_file(dir.path());
+        std::fs::create_dir_all(file.parent().expect("a folder")).expect("folder");
+        torro_core::account::save_to(&file, &[with.clone(), without.clone()]).expect("accounts");
+        keys.put(&with.id, AI_KEY);
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        core.ai.load().await.expect("loaded");
+        let Response::LiveEngines { engines, .. } = core.handle(Request::ListLiveEngines).await else {
+            panic!("the engines")
+        };
+        let listed: Vec<_> =
+            engines.iter().map(|option| (option.model.as_str(), option.name.as_str(), option.missing)).collect();
+        assert_eq!(
+            listed,
+            [("gemini-3.8-live", "Gemini Live", None), ("gemini-3.8-live", "Gemini Live", Some(LiveMissing::Key))]
+        );
+        assert!(!serde_json::to_string(&engines).expect("json").contains(AI_KEY), "never the key");
+        // Its connections are short: the session renews them every few minutes.
+        let engine = LiveEngine { account: with.id.clone(), model: "gemini-3.8-live".into() };
+        assert_eq!(core.ai.live_minutes(&engine).await, 10);
+        let set = |value: serde_json::Value| Request::SetSetting { key: SettingKey::LiveEngine, value };
+        assert_eq!(core.handle(set(serde_json::to_value(&engine).expect("json"))).await, Response::Ok);
+        assert_eq!(core.settings.current().voice.live_engine, Some(engine));
+        let other = set(serde_json::json!({"account": with.id, "model": "gpt-realtime-2.1"}));
+        assert_eq!(code(&core.handle(other).await), "not-found");
+    }
+
     /// A core whose conversation by voice talks to a fake engine (issue #838): OpenAI Realtime chosen, a listener that
     /// converses, the assistant attached. Answers the core, what the engine was sent and the engine's voices, one per
     /// connection.
@@ -41721,6 +41759,24 @@ done"#,
         live_until("ended", || core.lock_talk().is_none()).await;
         let Response::Conversation { entries: after, .. } = core.assistant.get(&id, None).await else { panic!("kept") };
         assert_eq!(after.len(), before, "the closing word is no message");
+    }
+
+    /// Issue #918: when the provider announces the end of the connection (`goAway`), a new one takes over in the next
+    /// pause, with the instructions and the conversation again, and the talk goes on.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_goaway_opens_a_new_connection_in_the_next_pause() {
+        use crate::assistant::live::Incoming;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, script, mut voices) = live_core(dir.path()).await;
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        let say = voices.recv().await.expect("connected");
+        say.send(Incoming::GoAway).expect("listens");
+        let _again = voices.recv().await.expect("connected again");
+        live_until("configured again", || live_sent(&script).iter().filter(|kind| *kind == "Configure").count() == 2)
+            .await;
+        assert_eq!(script.connections.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(core.lock_talk().is_some(), "the talk goes on");
     }
 
     /// Issue #838: a transcript that comes too late was stood in for by "(not understood)", which the answer went to:

@@ -5386,7 +5386,7 @@ pub enum Request {
     VoiceTimings,
     /// The conversation engines in the cloud the voice chat can talk through (issue #838,
     /// [`Response::LiveEngines`]): one per AI account and model that hears and speaks itself (OpenAI
-    /// Realtime, Grok Voice), with what keeps it from working, and the one chosen. Choosing one is
+    /// Realtime, Grok Voice, Gemini Live), with what keeps it from working, and the one chosen. Choosing one is
     /// `settings.set_setting live_engine`, for a person only; never a key.
     #[serde(rename = "settings.list_live_engines")]
     ListLiveEngines,

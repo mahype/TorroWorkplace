@@ -2107,49 +2107,29 @@ impl AiAccounts {
     }
 
     /// Opens the live connection of the conversation engine `model` of the account `account` (issue #838): a
-    /// WebSocket to `wss://<host>/v1/realtime?model=<model>` (the account's address with `ws` for `http`), the key
-    /// in its `Authorization` header. Only where a key may travel ([`ai::key_may_travel`]); errors never repeat it
+    /// WebSocket to the address of the provider's engine ([`live_address`]), the key in a header where the provider
+    /// takes it there ([`live_auths`]). Only where a key may travel ([`ai::key_may_travel`]); errors never repeat it
     /// ([`openai::scrub`]). The key stays here: the caller gets the connection, never the key.
     pub async fn live_socket(&self, account: &str, model: &str) -> Result<LiveSocket, AiError> {
-        use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
-        let (base, key) = {
+        let (provider, base, key) = {
             let slots = self.slots.read().await;
             let slot = slots.iter().find(|slot| slot.account.id == account).ok_or_else(|| no_account(account))?;
             if ai::live_models(slot.provider()).iter().all(|live| live.id != model) {
                 return Err(AiError::NotFound(format!("no conversation engine {model:?}")));
             }
-            (slot.account.server.trim_end_matches('/').to_string(), slot.key.clone().ok_or(AiError::NoKey)?)
+            (
+                slot.provider(),
+                slot.account.server.trim_end_matches('/').to_string(),
+                slot.key.clone().ok_or(AiError::NoKey)?,
+            )
         };
         if !ai::key_may_travel(&base) {
             return Err(AiError::Invalid(
                 tr("An API key is only sent over https or to this computer. Use an https address.").into(),
             ));
         }
-        let address = match base.split_once("://") {
-            Some(("https", rest)) => format!("wss://{rest}/realtime?model={model}"),
-            Some((_, rest)) => format!("ws://{rest}/realtime?model={model}"),
-            None => {
-                return Err(AiError::Invalid(
-                    tr("Enter the address of the server, like http://localhost:11434.").into(),
-                ));
-            }
-        };
-        let scrub = |error: AiError| openai::scrub(error, Some(key.expose()));
-        let mut request = address.into_client_request().map_err(|err| scrub(AiError::Format(err.to_string())))?;
-        let bearer = format!("Bearer {}", key.expose())
-            .parse()
-            .map_err(|_| AiError::Invalid(tr("The API key holds characters that cannot be sent.").into()))?;
-        request.headers_mut().insert("Authorization", bearer);
-        let connector = match torro_mail_imap::tls::client_config(&torro_mail_imap::tls::Trust::System) {
-            Ok((config, _)) => tokio_tungstenite::Connector::Rustls(Arc::new(config)),
-            Err(err) => return Err(AiError::Format(err.to_string())),
-        };
-        let connecting = tokio_tungstenite::connect_async_tls_with_config(request, None, true, Some(connector));
-        match tokio::time::timeout(LIVE_CONNECT, connecting).await {
-            Ok(Ok((socket, _))) => Ok(socket),
-            Ok(Err(err)) => Err(scrub(live_error(&err))),
-            Err(_) => Err(AiError::Offline),
-        }
+        let address = live_address(provider, &base, model)?;
+        open_live_for(provider, &address, key.expose()).await
     }
 
     /// The HTTP client of the AI accounts, also for downloads of models ([`super::pull`]).
@@ -2176,7 +2156,110 @@ fn live_error(error: &tokio_tungstenite::tungstenite::Error) -> AiError {
             status => AiError::Server { status, message: String::new() },
         },
         Error::Io(_) | Error::Tls(_) | Error::ConnectionClosed | Error::AlreadyClosed => AiError::Offline,
+        // An error of the address would repeat it, and the address may hold the key (Gemini's fallback).
+        Error::Url(_) | Error::HttpFormat(_) => AiError::Format(tr("The address is not valid.").into()),
         other => AiError::Format(other.to_string()),
+    }
+}
+
+/// How the key goes to a live connection (issue #918).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LiveAuth {
+    /// `Authorization: Bearer <key>`, OpenAI and xAI.
+    Bearer,
+    /// The key in the header `name`.
+    Header(&'static str),
+    /// The key in the address as `?<name>=<key>`: it can show in the address of an error, which [`openai::scrub`]
+    /// and [`live_error`] keep from the caller.
+    Query(&'static str),
+}
+
+/// The ways to give `provider`'s live engine the key, in the order to try them (issue #918). Google's documentation
+/// names only `?key=` in the address; a header keeps the key out of every address, so it is tried first (Google's other
+/// APIs take `x-goog-api-key`) and the documented way after it if the header is refused.
+pub(crate) fn live_auths(provider: AiProvider) -> &'static [LiveAuth] {
+    match provider {
+        AiProvider::Gemini => &[LiveAuth::Header("x-goog-api-key"), LiveAuth::Query("key")],
+        _ => &[LiveAuth::Bearer],
+    }
+}
+
+/// The path of Gemini Live on the host of its API (version v1beta, checked on 2026-11-23).
+const GEMINI_LIVE_PATH: &str = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
+
+/// The WebSocket address of `provider`'s engine `model` at the account's address `base` (`http` becomes `ws`, `https`
+/// `wss`), without the key.
+pub(crate) fn live_address(provider: AiProvider, base: &str, model: &str) -> Result<String, AiError> {
+    let Some((scheme, rest)) = base.split_once("://") else {
+        return Err(AiError::Invalid(tr("Enter the address of the server, like http://localhost:11434.").into()));
+    };
+    let scheme = if scheme == "https" { "wss" } else { "ws" };
+    Ok(match provider {
+        // Its own protocol on the host of the API: the model goes into the first message, not the address.
+        AiProvider::Gemini => {
+            let host = rest.split('/').next().unwrap_or(rest);
+            format!("{scheme}://{host}{GEMINI_LIVE_PATH}")
+        }
+        _ => format!("{scheme}://{rest}/realtime?model={model}"),
+    })
+}
+
+/// Percent-encodes `text` for a query value.
+fn query_value(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => char::from(byte).to_string(),
+            other => format!("%{other:02X}"),
+        })
+        .collect()
+}
+
+/// Opens the live connection `address` of `provider` ([`live_auths`]): the ways to give the key one after the other.
+/// Only a refusal of how the key was given is tried again the other way (Google documents the key in the address
+/// only); anything else, a refused key included, would fail the same. Errors never repeat the key ([`openai::scrub`]).
+pub(crate) async fn open_live_for(provider: AiProvider, address: &str, key: &str) -> Result<LiveSocket, AiError> {
+    let mut result = Err(AiError::Offline);
+    for auth in live_auths(provider) {
+        result = open_live(address, key, *auth).await.map_err(|error| openai::scrub(error, Some(key)));
+        if !matches!(&result, Err(AiError::Auth | AiError::Server { status: 400, .. })) {
+            break;
+        }
+    }
+    result
+}
+
+/// Opens the WebSocket `address` with `key` given as `auth` says ([`AiAccounts::live_socket`]).
+pub(crate) async fn open_live(address: &str, key: &str, auth: LiveAuth) -> Result<LiveSocket, AiError> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    let address = match auth {
+        LiveAuth::Query(name) => {
+            let joiner = if address.contains('?') { '&' } else { '?' };
+            format!("{address}{joiner}{name}={}", query_value(key))
+        }
+        _ => address.to_string(),
+    };
+    // An error of the address never shows it: it may hold the key.
+    let mut request =
+        address.into_client_request().map_err(|_| AiError::Format(tr("The address is not valid.").into()))?;
+    let unsendable = || AiError::Invalid(tr("The API key holds characters that cannot be sent.").into());
+    match auth {
+        LiveAuth::Bearer => {
+            request.headers_mut().insert("Authorization", format!("Bearer {key}").parse().map_err(|_| unsendable())?);
+        }
+        LiveAuth::Header(name) => {
+            request.headers_mut().insert(name, key.parse().map_err(|_| unsendable())?);
+        }
+        LiveAuth::Query(_) => {}
+    }
+    let connector = match torro_mail_imap::tls::client_config(&torro_mail_imap::tls::Trust::System) {
+        Ok((config, _)) => tokio_tungstenite::Connector::Rustls(Arc::new(config)),
+        Err(err) => return Err(AiError::Format(err.to_string())),
+    };
+    let connecting = tokio_tungstenite::connect_async_tls_with_config(request, None, true, Some(connector));
+    match tokio::time::timeout(LIVE_CONNECT, connecting).await {
+        Ok(Ok((socket, _))) => Ok(socket),
+        Ok(Err(err)) => Err(live_error(&err)),
+        Err(_) => Err(AiError::Offline),
     }
 }
 
@@ -2189,6 +2272,114 @@ pub(crate) fn no_account(id: &str) -> AiError {
 /// only decides is on for the mail sorting and counts for nothing else.
 fn chats(model: &AiModel) -> bool {
     model.enabled && model.tools != Some(false)
+}
+
+#[cfg(test)]
+mod live_tests {
+    //! The key of a live connection (issue #918): where it goes and that no error repeats it.
+
+    use std::sync::{Arc, Mutex};
+
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+    use tokio_tungstenite::tungstenite::http;
+
+    use super::*;
+
+    const KEY: &str = "AIzaSyD-0123456789SECRETabcdef";
+
+    /// A local WebSocket server that accepts a connection only when `accepts` says so about its address and its
+    /// `x-goog-api-key` header, and keeps the addresses it saw. Its address is `ws://127.0.0.1:<port>/ws`.
+    async fn server(accepts: fn(&str, Option<&str>) -> bool) -> (String, Arc<Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = format!("ws://{}/ws", listener.local_addr().expect("address"));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&seen);
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let log = Arc::clone(&log);
+                tokio::spawn(async move {
+                    let check = move |request: &Request, response: Response| -> Result<Response, ErrorResponse> {
+                        let uri = request.uri().to_string();
+                        let header = request.headers().get("x-goog-api-key").and_then(|value| value.to_str().ok());
+                        log.lock().expect("lock").push(uri.clone());
+                        if accepts(&uri, header) {
+                            Ok(response)
+                        } else {
+                            Err(http::Response::builder().status(403).body(Some("no".to_string())).expect("response"))
+                        }
+                    };
+                    if let Ok(mut socket) = tokio_tungstenite::accept_hdr_async(stream, check).await {
+                        // Keeps the connection open until the client drops it.
+                        while futures_util::StreamExt::next(&mut socket).await.is_some() {}
+                    }
+                });
+            }
+        });
+        (address, seen)
+    }
+
+    /// Gemini's key goes in a header, so no address holds it.
+    #[tokio::test]
+    async fn the_gemini_key_goes_in_a_header_first() {
+        let (address, seen) = server(|_, header| header == Some(KEY)).await;
+        open_live_for(AiProvider::Gemini, &address, KEY).await.expect("connected");
+        let seen = seen.lock().expect("lock");
+        assert_eq!(seen.len(), 1, "one try");
+        assert!(!seen[0].contains("SECRET"), "the key is not in the address: {}", seen[0]);
+    }
+
+    /// A header the server refuses is tried again the documented way, in the address.
+    #[tokio::test]
+    async fn the_gemini_key_goes_in_the_address_when_the_header_is_refused() {
+        let (address, seen) = server(|uri, _| uri.contains(&format!("key={KEY}"))).await;
+        open_live_for(AiProvider::Gemini, &address, KEY).await.expect("connected");
+        assert_eq!(seen.lock().expect("lock").len(), 2, "the header, then the address");
+    }
+
+    /// A key that is refused both ways fails with the refusal, and the error does not show the key.
+    #[tokio::test]
+    async fn a_refused_key_is_not_shown_in_the_error() {
+        let (address, seen) = server(|_, _| false).await;
+        let error = open_live_for(AiProvider::Gemini, &address, KEY).await.expect_err("refused");
+        assert!(matches!(error, AiError::Auth), "{error:?}");
+        assert!(!format!("{error:?} {error}").contains("SECRET"));
+        assert_eq!(seen.lock().expect("lock").len(), 2);
+    }
+
+    /// OpenAI and xAI take the key as before: one try, in a bearer header.
+    #[tokio::test]
+    async fn other_providers_try_the_key_once() {
+        let (address, seen) = server(|_, _| false).await;
+        assert!(open_live_for(AiProvider::OpenAi, &address, KEY).await.is_err());
+        assert_eq!(seen.lock().expect("lock").len(), 1);
+    }
+
+    /// The addresses: Gemini's on the host of the account's API (the model goes into the first message), the
+    /// others' with the model; `http` becomes `ws`.
+    #[test]
+    fn the_address_follows_the_provider() {
+        let gemini = live_address(
+            AiProvider::Gemini,
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "gemini-3.8-live",
+        )
+        .expect("address");
+        assert_eq!(
+            gemini,
+            "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+        );
+        assert_eq!(
+            live_address(AiProvider::OpenAi, "https://api.openai.com/v1", "gpt-realtime-2.1").expect("address"),
+            "wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1"
+        );
+        assert_eq!(
+            live_address(AiProvider::Gemini, "http://127.0.0.1:9000/x", "m").expect("address"),
+            format!("ws://127.0.0.1:9000{GEMINI_LIVE_PATH}")
+        );
+        assert!(live_address(AiProvider::OpenAi, "api.openai.com", "m").is_err());
+        assert_eq!(query_value("a b/c+d"), "a%20b%2Fc%2Bd");
+    }
 }
 
 #[cfg(test)]

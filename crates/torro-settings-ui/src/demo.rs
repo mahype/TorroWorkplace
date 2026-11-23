@@ -1710,7 +1710,8 @@ pub fn demo_voice_models(models: &mut [torro_ipc::VoiceModel], request: &Request
     }
 }
 
-/// The conversation engines of the demo (issue #838): OpenAI Realtime and its mini, Grok Voice without a key.
+/// The conversation engines of the demo (issue #838): OpenAI Realtime and its mini, Grok Voice without a key, and
+/// Gemini Live (issue #918).
 fn live_engines() -> Vec<torro_ipc::LiveEngineOption> {
     use torro_core::ai::AiProvider;
     let engine = |account: &str, provider, model: &str, name: &str, missing| torro_ipc::LiveEngineOption {
@@ -1730,6 +1731,13 @@ fn live_engines() -> Vec<torro_ipc::LiveEngineOption> {
             "grok-voice-latest",
             "Grok Voice",
             Some(torro_ipc::LiveMissing::Key),
+        ),
+        engine(
+            "ai:gemini@generativelanguage.googleapis.com",
+            AiProvider::Gemini,
+            "gemini-3.8-live",
+            "Gemini Live",
+            None,
         ),
     ]
 }

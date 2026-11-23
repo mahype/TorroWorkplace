@@ -1046,7 +1046,8 @@ fn engine_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         ),
         (Some(_), None) => tr("The account of this engine is gone. Talking falls back to this computer.").to_string(),
         (None, _) if data.live_engines.is_empty() => {
-            tr("Connect an OpenAI or xAI account in Settings › AI to talk through a cloud engine.").to_string()
+            tr("Connect an OpenAI, xAI or Google Gemini account in Settings › AI to talk through a cloud engine.")
+                .to_string()
         }
         (None, _) => tr("Everything you say stays on this computer.").to_string(),
     };

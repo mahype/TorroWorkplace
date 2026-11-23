@@ -4457,7 +4457,7 @@ static LIST_LIVE_ENGINES: Command = Command {
     mcp: Mcp::Tool,
     description: "Lists the conversation engines in the cloud the voice chat can talk through instead of the local \
                   chain on this computer: one per AI account and model that hears and speaks itself (OpenAI \
-                  Realtime, Grok Voice), with `missing: key` when the account has no API key, and `current`, the \
+                  Realtime, Grok Voice, Gemini Live), with `missing: key` when the account has no API key, and `current`, the \
                   one chosen (absent: this computer). Only a person chooses a cloud engine; \
                   settings_set_setting with live_engine null switches back to this computer.",
 };

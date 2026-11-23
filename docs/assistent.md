@@ -1168,7 +1168,8 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
 
 Statt der lokalen Kette kann ein Modell in der Cloud zuhören und sprechen (Weg B in
 [sprachchat.md](sprachchat.md)): **OpenAI Realtime** (`gpt-realtime-2.1`, auch „mini“) und **Grok Voice** von xAI
-(`grok-voice-latest`), je über ein KI-Konto des Anbieters. Gewählt wird es unter Voice › Conversation › „Who
+(`grok-voice-latest`) und seit Issue #918 **Gemini Live** von Google (`gemini-3.8-live`), je über ein KI-Konto des
+Anbieters. Gewählt wird es unter Voice › Conversation › „Who
 answers“ (`voice.liveEngine`: Konto und Modell, `null` für diesen Rechner, der Standard). Nur ein Mensch wählt ein
 Modul in der Cloud; Agenten dürfen die Liste lesen und auf diesen Rechner zurückstellen.
 
@@ -1186,8 +1187,8 @@ Modul in der Cloud; Agenten dürfen die Liste lesen und auf diesen Rechner zurü
   Rest. Ein Fenster mit „Read aloud“ liest diese Antworten nicht noch einmal vor. Kein Ton auf der Platte.
 - **Ende und Abbrüche:** Schlusswort, „End talk“, 300 Sekunden Stille, ein anderes Modul, „this computer“ oder das
   entfernte Konto beenden das Gespräch sofort. Eine abgebrochene Verbindung und die Zeitgrenze des Anbieters
-  (OpenAI 60, Grok 120 Minuten; fünf Minuten vorher, in einer Pause) überbrückt ein Neuaufbau mit den letzten 40
-  Nachrichten als Text; scheitert er dreimal, steht das in der Unterhaltung.
+  (OpenAI 60, Grok 120, Gemini 10 Minuten; fünf Minuten vorher, in einer Pause, bei Gemini auch sobald der Anbieter
+  das Ende ankündigt) überbrückt ein Neuaufbau mit den letzten 40 Nachrichten als Text; scheitert er dreimal, steht das in der Unterhaltung.
   Fehlt dem Konto der Schlüssel oder antwortet das Modul beim Start nicht, beantwortet die lokale Kette das Gespräch
   (`Talk.live` sagt dem Hörer, welcher Weg gilt). Ein Fehler, der bei jeder neuen Verbindung wiederkommt, beendet das
   Gespräch nach drei Versuchen. Unterbrochen wird nur, solange die Antwort klingt; „Stop“ im Fenster bringt auch das
@@ -1196,6 +1197,42 @@ Modul in der Cloud; Agenten dürfen die Liste lesen und auf diesen Rechner zurü
   darauf wird gestoppt, die Freigabe gibt es nur im Fenster.
 - **Messung:** Jede Runde erscheint unter „Response times“ mit dem Modell (`VoiceRound.engine`), ohne
   Erkennungszeit.
+
+##### Gemini Live (Issue #918)
+
+Gemini Live spricht ein eigenes Protokoll (`live/gemini.rs`, Stand der Doku vom 23.11.2026): ein WebSocket zu
+`wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`,
+erste Nachricht `setup` (Modell `models/gemini-3.8-live`, Antwort als Ton, Stimme „Kore“, Anweisungen, Werkzeuge,
+Mitschrift beider Seiten, Verdichtung des Kontexts), Ton hinein 16 kHz, heraus 24 kHz. Es wird gewählt wie die anderen
+Module, über ein Konto „Google Gemini“ mit Schlüssel.
+
+- **Schlüssel:** Der Dienst schickt ihn als Kopfzeile `x-goog-api-key`, damit er in keiner Adresse steht. Die Doku nennt
+  nur `?key=` in der Adresse; lehnt der Server die Kopfzeile ab (400, 401 oder 403), versucht der Dienst es einmal
+  mit dem dokumentierten Weg. Fehler nennen den Schlüssel nie, auch nicht, wenn er in der Adresse stand
+  (`openai::scrub`, Adresse nie im Fehlertext). Beim Rückfall steht der Schlüssel in der Adresse der Verbindung (über
+  `wss`, aber sichtbar in Protokollen eines Proxys auf dem Weg). **Offen:** Ob die Kopfzeile beim WebSocket angenommen wird, ist ohne
+  Zugang nicht geprüft (siehe unten).
+- **Zeitgrenze:** Eine Verbindung hält etwa 10 Minuten. Der Dienst öffnet nach fünf Minuten in einer Sprechpause
+  eine neue (wie bei den anderen Modulen, mit den letzten 40 Nachrichten als Text), und sobald der Anbieter das Ende
+  ankündigt (`goAway`), in der nächsten Pause. Die Person merkt die Lücke von etwa einer Sekunde in einer Pause nicht;
+  bricht die Verbindung mitten in einer Antwort ab, steht das wie bei den anderen Modulen in der Unterhaltung. Die
+  Wiederaufnahme-Kennung des Anbieters nutzt der Dienst nicht, der Verlauf als Text genügt und gilt für jeden Anbieter
+  gleich.
+- **Satzende und Mitschrift:** Gemini meldet Anfang und Ende der Rede nur über `voiceActivity` (in der Referenz, ohne
+  Anleitung) und liefert die Mitschrift der Person in Stücken neben der Antwort. Der Adapter nutzt `voiceActivity`,
+  wenn es kommt, und erkennt sonst den Anfang an der Mitschrift. Was die Person sagte, gilt als gehört, wenn die
+  Antwort 0,4 Sekunden läuft, die Person 1,5 Sekunden still ist, das Modell ein Werkzeug ruft oder der Zug endet.
+  Darum wartet die Sitzung bei Gemini bis zu 5 Sekunden auf die Mitschrift statt 1,5.
+- **Unterbrechen:** Spricht die Person in die Antwort, meldet Gemini `interrupted` und sendet nichts mehr davon. Es
+  gibt keine Angabe, wie viel gespielt wurde; die Unterhaltung behält das, was der Vorlese-Helfer gespielt hat.
+- **Werkzeuge:** Als Funktionsdeklarationen mit `behavior: BLOCKING` (das Modell schweigt, bis das Ergebnis da ist);
+  das Schema aus dem Katalog wird auf die Teilmenge von OpenAPI gebracht, die Gemini kennt. Das `setup` einer Verbindung ist
+  endgültig: ändern sich Anweisungen oder Werkzeuge mitten in einer Verbindung, gelten sie erst mit der nächsten.
+- **Grenzen, nicht geprüft:** Alles hier folgt der Doku und Tests mit Nachrichten in deren Form
+  (`tests/fixtures/live/gemini_round.jsonl`), nicht aufgenommen vom Dienst: Es stand kein Gemini-Zugang zur
+  Verfügung, ein Gespräch mit dem echten Dienst wurde nicht geführt. Zu prüfen von Hand: Kopfzeile oder `?key=`,
+  Ort von `responseModalities` (unter `generationConfig`, wie die Referenz sagt), `historyConfig`,
+  `voiceActivity`, Wirkung von `BLOCKING`, Deutsch.
 
 ## Wo die Logik liegt
 

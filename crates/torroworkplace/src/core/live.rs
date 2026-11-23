@@ -11,7 +11,8 @@
 //! - The engine's sound goes to the speech helper as a job of sound only; it counts as reading aloud, so the
 //!   listener, the tray and the windows see it like Weg A. Speaking into it stops it: the answer keeps what was
 //!   heard ([`Assistant::interrupt`]), and the engine forgets what was not played.
-//! - A connection that closes, fails or comes near its provider's limit (OpenAI 60 minutes, Grok 120) is opened
+//! - A connection that closes, fails, comes near its provider's limit (OpenAI 60 minutes, Grok 120, Gemini 10) or
+//!   that the provider announces to end ([`Incoming::GoAway`]) is opened
 //!   again in a pause, with the conversation so far as text. When that fails three times, the conversation says so
 //!   and ends.
 //! - Each round is timed like Weg A's (`settings.voice_timings`), with the engine's model.
@@ -24,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use tokio::sync::mpsc;
-use torro_core::ai::{AiError, BoxFuture};
+use torro_core::ai::{AiError, AiProvider, BoxFuture};
 use torro_core::i18n::tr;
 use torro_ipc::LiveEngine;
 
@@ -57,9 +58,6 @@ static SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 /// How long a frame the echo cancellation did not clean stays dropped after something was read aloud: the echo of
 /// the room fades.
 const QUIET_AFTER: Duration = Duration::from_millis(300);
-
-/// How long the session waits for what the person said once they stopped: then it counts as not understood.
-const HEARD_WAIT: Duration = Duration::from_millis(1500);
 
 /// How long the conversation waits in silence before it ends, as Weg A (`TALK_WAIT_SECONDS` of the listener).
 const SILENCE: Duration = Duration::from_secs(300);
@@ -161,7 +159,11 @@ impl Core {
         }
         let (provider, _) = self.ai.server(&engine.account).await.ok_or(AiError::NoKey)?;
         let socket = self.ai.live_socket(&engine.account, &engine.model).await?;
-        Ok(Box::new(live::openai::OpenAiWire::new(socket, provider)))
+        // The protocol belongs to the provider: Gemini Live speaks its own, OpenAI Realtime and Grok Voice one.
+        Ok(match provider {
+            AiProvider::Gemini => Box::new(live::gemini::GeminiWire::new(socket, &engine.model)),
+            _ => Box::new(live::openai::OpenAiWire::new(socket, provider)),
+        })
     }
 
     /// The session (see the module) until the conversation by voice ends.
@@ -204,6 +206,7 @@ impl Core {
             late_heard: None,
             awaiting_results: false,
             item_sounds: None,
+            renew: false,
         };
         session.run(frames, stops).await;
     }
@@ -328,6 +331,8 @@ struct Session<'a> {
     awaiting_results: bool,
     /// When the sound of the answer's current item began, for where the engine cuts it ([`Outgoing::Cancel`]).
     item_sounds: Option<Instant>,
+    /// The provider announced the end of this connection ([`Incoming::GoAway`]): a new one opens in the next pause.
+    renew: bool,
 }
 
 /// How long a transcript that came too late is still taken for the sentence "(not understood)" stood in for.
@@ -486,6 +491,9 @@ impl<'a> Session<'a> {
                     (self.turn, self.awaiting_results) = (None, false);
                 }
             }
+            // The provider ends the connection soon (issue #918): in the next pause a new one takes over, with the
+            // conversation so far as text, before the provider closes this one in the middle of a sentence.
+            Incoming::GoAway => self.renew = true,
             Incoming::Closed => return self.reconnect(false).await,
         }
         true
@@ -769,7 +777,7 @@ impl<'a> Session<'a> {
     /// The session's clocks: what the person said comes late, a long silence, the provider's limit. `false` once the
     /// session is over.
     async fn on_tick(&mut self) -> bool {
-        if self.stopped.is_some_and(|at| at.elapsed() >= HEARD_WAIT) {
+        if self.stopped.is_some_and(|at| at.elapsed() >= self.wire.heard_wait()) {
             self.late_heard = Some(Instant::now());
             return self.on_heard("").await;
         }
@@ -782,7 +790,7 @@ impl<'a> Session<'a> {
             self.core.close_live(self.id, None, None).await;
             return false;
         }
-        if !busy && self.connected.elapsed() >= self.limit {
+        if !busy && (self.renew || self.connected.elapsed() >= self.limit) {
             return self.reconnect(true).await;
         }
         true
@@ -819,7 +827,7 @@ impl<'a> Session<'a> {
             match self.core.connect_live(&self.engine).await {
                 Ok(wire) => {
                     self.wire = wire;
-                    self.connected = Instant::now();
+                    (self.connected, self.renew) = (Instant::now(), false);
                     (self.sent_ms, self.sent) = (0, VecDeque::new());
                     self.configure().await;
                     return true;

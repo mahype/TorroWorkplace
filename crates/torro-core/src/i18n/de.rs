@@ -10120,9 +10120,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The account of this engine is gone. Talking falls back to this computer.",
         "Das Konto dieses Moduls gibt es nicht mehr. Gesprochen wird wieder über diesen Rechner.",
     ),
+    ("The address is not valid.", "Die Adresse ist ungültig."),
     (
-        "Connect an OpenAI or xAI account in Settings › AI to talk through a cloud engine.",
-        "Verbinde ein OpenAI- oder xAI-Konto unter Einstellungen › KI, um über ein Modul in der Cloud zu sprechen.",
+        "Connect an OpenAI, xAI or Google Gemini account in Settings › AI to talk through a cloud engine.",
+        "Verbinde ein OpenAI-, xAI- oder Google-Gemini-Konto unter Einstellungen › KI, um über ein Modul in der Cloud zu sprechen.",
     ),
     ("Everything you say stays on this computer.", "Alles, was du sagst, bleibt auf diesem Rechner."),
     ("No API key on this computer", "Kein API-Schlüssel auf diesem Rechner"),

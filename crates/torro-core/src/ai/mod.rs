@@ -457,17 +457,21 @@ pub struct LiveModel {
 }
 
 /// The conversation engines of `provider` (issue #838): OpenAI Realtime (also mini) and xAI's Grok Voice,
-/// both over the same protocol (`wss://<host>/v1/realtime`). Empty for every other provider. Checked
-/// against the providers' documentation on 2026-11-20.
+/// both over the same protocol (`wss://<host>/v1/realtime`), and Google's Gemini Live (issue #918) over its own.
+/// Empty for every other provider. Checked against the providers' documentation on 2026-11-20 (OpenAI, xAI) and
+/// 2026-11-23 (Gemini).
 pub fn live_models(provider: AiProvider) -> &'static [LiveModel] {
     const OPENAI: &[LiveModel] = &[
         LiveModel { id: "gpt-realtime-2.1", name: "OpenAI Realtime", minutes: 60 },
         LiveModel { id: "gpt-realtime-2.1-mini", name: "OpenAI Realtime mini", minutes: 60 },
     ];
     const XAI: &[LiveModel] = &[LiveModel { id: "grok-voice-latest", name: "Grok Voice", minutes: 120 }];
+    // One connection of Gemini Live lasts about 10 minutes (its provider announces the end with `goAway`).
+    const GEMINI: &[LiveModel] = &[LiveModel { id: "gemini-3.8-live", name: "Gemini Live", minutes: 10 }];
     match provider {
         AiProvider::OpenAi => OPENAI,
         AiProvider::Xai => XAI,
+        AiProvider::Gemini => GEMINI,
         _ => &[],
     }
 }
