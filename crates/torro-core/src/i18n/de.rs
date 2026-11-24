@@ -2,6 +2,8 @@
 //! within a group; the test in `mod.rs` checks for duplicates and matching placeholders.
 
 pub(super) static TABLE: &[(&str, &str)] = &[
+    // A second core for tests marks its notifications (#877).
+    ("[Test] {title}", "[Test] {title}"),
     // Sign in with ChatGPT, signing in to AI accounts with a browser (#324).
     ("Cancel sign-in", "Anmeldung abbrechen"),
     (

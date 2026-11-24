@@ -119,6 +119,32 @@ im Dienst auf. Die Logik gibt es nur einmal.
 Die Steuerzentrale läuft getrennt, damit der Dienst leicht bleibt und auf dem Mac Tray-Icon und
 GUI nicht um den Haupt-Thread streiten.
 
+### Zweiter Kern für Prüfungen (#877)
+
+Für Entwicklung und Prüfungen läuft ein zweiter Kern neben dem eigenen, ohne dessen Dateien, Geheimnisse und
+Mitteilungen zu berühren. Er bekommt eigene Ordner über `TORRO_CONFIG_HOME`, `TORRO_DATA_HOME` und
+`TORRO_STATE_HOME` und läuft ohne Tray-Icon:
+
+```bash
+work=$(mktemp -d)
+export TORRO_CONFIG_HOME=$work/config TORRO_DATA_HOME=$work/data TORRO_STATE_HOME=$work/state
+cargo run -p torroworkplace -- daemon --headless
+# in einer zweiten Shell mit denselben drei Variablen:
+cargo run -p torroworkplace -- ctl …
+```
+
+- **Schlüsselbund:** Ist eine der drei Variablen gesetzt, legt der Kern seine Geheimnisse unter einem eigenen
+  Dienst ab, `torroworkplace-` mit einem Hash der drei Ordner (bei jedem Start mit denselben Ordnern derselbe).
+  Auf dem Mac liegt dort sein eigener Tresor (`torro-vault`); den echten Tresor unter `torroworkplace` liest und
+  schreibt er nicht. `TORRO_KEYCHAIN_SERVICE` nennt den Dienst ausdrücklich, auch `torroworkplace` für eine
+  portable Installation, die die echten Geheimnisse nutzen soll. Nach der Prüfung bleibt der Eintrag stehen;
+  in der Schlüsselbundverwaltung lässt er sich unter seinem Dienstnamen löschen.
+- **Mitteilungen:** Ein zweiter Kern stellt jedem Titel „[Test]“ voran, z. B. „[Test] Account removed“.
+  `TORRO_NOTIFICATIONS=off` schaltet seine Mitteilungen ganz ab (Freigaben warten dann nur in der
+  Steuerzentrale), `on` zeigt sie unverändert, `test` markiert sie auch im eigenen Kern.
+- **Requests:** an den `core.sock` im State-Ordner des zweiten Kerns, mit seinem `app.key` von dort
+  (Umschlag in `api.md`, „Jede Anfrage trägt den Schlüssel“).
+
 ## Crates
 
 | Crate | Inhalt | |

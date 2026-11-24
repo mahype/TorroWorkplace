@@ -1881,28 +1881,33 @@ done"#;
     async fn a_dictation_ends_when_it_is_stopped() {
         let dir = tempfile::tempdir().expect("temp dir");
         let answer = serde_json::to_string(&Response::Transcript { text: "Buy milk".into() }).expect("json");
-        // Like `--dictate`: waits for the end of its input (at most 20 s), then answers.
-        let listener =
-            Arc::new(Listener::at(fake_program(dir.path(), &format!("timeout 20 cat > /dev/null; echo '{answer}'"))));
+        // Like `--dictate`: waits for the end of its input, then answers. No `timeout 20` around
+        // `cat`: macOS has no GNU `timeout`, the program then answered at once and the wait for
+        // "busy" below could miss it and spin forever (#877). The test bounds every wait itself.
+        let bound = Duration::from_secs(20);
+        let listener = Arc::new(Listener::at(fake_program(dir.path(), &format!("cat > /dev/null; echo '{answer}'"))));
         let running = {
             let listener = Arc::clone(&listener);
             tokio::spawn(async move { listener.dictate(&[], Duration::from_secs(30)).await })
         };
-        while matches!(*listener.dictation.lock().expect("lock"), Dictation::Free) {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        let busy = async {
+            while matches!(*listener.dictation.lock().expect("lock"), Dictation::Free) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        };
+        tokio::time::timeout(bound, busy).await.expect("the dictation starts");
         assert_eq!(listener.dictate(&[], Duration::from_secs(1)).await, Err(DictateError::Busy));
         let started = std::time::Instant::now();
         listener.stop_dictation();
-        let heard = running.await.expect("joined");
+        let heard = tokio::time::timeout(bound, running).await.expect("stopping ends it").expect("joined");
         assert_eq!(heard, Ok(Response::Transcript { text: "Buy milk".into() }));
         assert!(started.elapsed() < Duration::from_secs(10), "stopping ends it now");
         assert!(matches!(*listener.dictation.lock().expect("lock"), Dictation::Free), "the next one may start");
         // A stop that overtakes its dictation (two connections) still ends it at once.
         listener.stop_dictation();
         let started = std::time::Instant::now();
-        let heard = listener.dictate(&[], Duration::from_secs(30)).await;
-        assert_eq!(heard, Ok(Response::Transcript { text: "Buy milk".into() }));
+        let heard = tokio::time::timeout(bound, listener.dictate(&[], Duration::from_secs(30))).await;
+        assert_eq!(heard.expect("the early stop counts"), Ok(Response::Transcript { text: "Buy milk".into() }));
         assert!(started.elapsed() < Duration::from_secs(10), "the early stop counts");
     }
 
