@@ -699,6 +699,17 @@ impl Demo {
                 sender: Some("max@example.org".into()),
                 ..rule("r5", SourceRef::mail(MAIL_ADDRESS), RuleEffect::Trusted, 14)
             },
+            // "Always for this sender" (issue #577), the sorting rule `k1` as the core lists it: on
+            // the page of Invoice in the mail window, not in the Notification Hub.
+            Rule {
+                sender: Some("billing@shop.example".into()),
+                ..rule(
+                    "k1",
+                    SourceRef::mail(MAIL_ADDRESS),
+                    RuleEffect::Category { category: torro_mail::Category::Invoice },
+                    15,
+                )
+            },
         ];
         let hits = vec![
             RuleHits { rule: "r1".into(), hits: 9, since: made(10) },
@@ -1041,7 +1052,7 @@ impl Demo {
             torro_mail::CustomCategory::new(1).map_or(torro_mail::Category::Document, torro_mail::Category::Custom);
         vec![
             rule(
-                "r1",
+                "k1",
                 torro_mail::Category::Invoice,
                 vec![on(SortField::Sender, "billing@shop.example")],
                 vec![],
