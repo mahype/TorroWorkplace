@@ -771,7 +771,50 @@ impl Assistant {
             spoken: true,
             voice: None,
         };
+        // As for any message (see `send_think`): a conversation about a mail needs the right to read it.
+        if let Err(refused) = self.about_for(&message, None, EngineKind::Ai).await {
+            return refused;
+        }
         self.send_with(message, None, EngineKind::Ai, Utc::now(), Some(turn)).await
+    }
+
+    /// What a person said to a conversation engine that only speaks (GPT-Live, issue #919), as their message in
+    /// `conversation` (a new one with `None`), sent with the app key and answered like a typed one, by the chat model
+    /// `named` (engine and model) with the assistant's skills and tools; the answer is spoken ([`Message::spoken`]).
+    /// `busy` while an answer runs there: what was said is dropped.
+    pub async fn send_think(
+        self: &Arc<Self>,
+        ai: &AiAccounts,
+        conversation: Option<String>,
+        text: String,
+        named: (String, Option<String>),
+    ) -> Response {
+        let (engine, model) = named;
+        // The chat slot may name an engine that is gone: `not-found`, and the caller tries another.
+        let kind = match self.engine(ai, &engine, &Actor::Assistant).await {
+            Ok(kind) => kind,
+            Err(refused) => return refused,
+        };
+        let message = Message {
+            conversation,
+            engine,
+            model,
+            effort: None,
+            text,
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: None,
+            on_behalf: None,
+            from: None,
+            spoken: true,
+            voice: None,
+        };
+        // As for any message: a conversation about a mail needs the assistant's right to read it (kept from a message sent
+        // before; a voice conversation has none, but the same rule holds for every way in).
+        if let Err(refused) = self.about_for(&message, None, kind).await {
+            return refused;
+        }
+        self.send_with(message, None, kind, Utc::now(), None).await
     }
 
     /// The instructions and tools a conversation engine of `engine` starts with in `conversation` (issue #838), as

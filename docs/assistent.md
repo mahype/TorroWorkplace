@@ -1168,8 +1168,8 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
 
 Statt der lokalen Kette kann ein Modell in der Cloud zuhören und sprechen (Weg B in
 [sprachchat.md](sprachchat.md)): **OpenAI Realtime** (`gpt-realtime-2.1`, auch „mini“) und **Grok Voice** von xAI
-(`grok-voice-latest`) und seit Issue #918 **Gemini Live** von Google (`gemini-3.8-live`), je über ein KI-Konto des
-Anbieters. Gewählt wird es unter Voice › Conversation › „Who
+(`grok-voice-latest`), seit Issue #918 **Gemini Live** von Google (`gemini-3.8-live`) und seit Issue #919 **GPT-Live**
+von OpenAI (`gpt-live-1.1`, mit dem Assistenten dahinter), je über ein KI-Konto des Anbieters. Gewählt wird es unter Voice › Conversation › „Who
 answers“ (`voice.liveEngine`: Konto und Modell, `null` für diesen Rechner, der Standard). Nur ein Mensch wählt ein
 Modul in der Cloud; Agenten dürfen die Liste lesen und auf diesen Rechner zurückstellen.
 
@@ -1233,6 +1233,54 @@ Module, über ein Konto „Google Gemini“ mit Schlüssel.
   Verfügung, ein Gespräch mit dem echten Dienst wurde nicht geführt. Zu prüfen von Hand: Kopfzeile oder `?key=`,
   Ort von `responseModalities` (unter `generationConfig`, wie die Referenz sagt), `historyConfig`,
   `voiceActivity`, Wirkung von `BLOCKING`, Deutsch.
+
+##### GPT-Live mit dem Assistenten dahinter (Issue #919)
+
+GPT-Live trennt Stimme und Denken: Das Modell hört und spricht, gedacht und gehandelt wird vom **Torro-Assistenten**.
+Darum ist es ein Modul „mit dem Assistenten dahinter“ (`LiveEngineOption.assistant`): Was die Person sagt, geht als
+Text an das Chat-Modell der Einstellungen (Slot `chat`; ohne Slot das Standardmodell des OpenAI-Kontos; ist die
+Engine des Slots weg, bleibt die Aufgabe still, es springt nie ein anderer Anbieter ein), mit seinen Skills und
+Werkzeugen, und die Antwort spricht GPT-Live. Rechte, Freigaben und Protokoll sind die des Chats, denn es
+ist dieselbe Antwort wie auf eine getippte Nachricht. Es braucht deshalb **keine eigene Einstellung** für das denkende
+Modell: Wer ein anderes will, wählt es wie im Chat.
+
+Stand der Doku vom 23.11.2026 (`developers.openai.com/api/docs/guides/live` und Unterseiten), Adapter `live/gpt.rs`:
+
+- **Verbindung:** `wss://api.openai.com/v1/live/sessions` (keine Query), Schlüssel als `Authorization: Bearer`, Modell
+  `gpt-live-1.1` im ersten Ereignis `session.start`. Das ist nicht das Protokoll der Realtime API. Ton hinein und
+  heraus 24 kHz PCM; Stimme `juni` bei deutscher, `marin` bei englischer Oberfläche.
+- **Modus „client“:** `"delegation": {"type": "client"}`, je Sitzung fest. GPT-Live entscheidet selbst, wann die Person
+  fertig ist, und meldet das als `session.delegation.created` (mit dem Zeitpunkt `offset_ms`, ohne Text). Dann
+  wird die Mitschrift (`session.input_transcript.delta`, in Stücken) als Satz der Person gemeldet, 0,3 Sekunden nach dem
+  letzten Stück, spätestens 1,5 Sekunden nach der Aufgabe; Stücke, die vor `offset_ms` begannen, gehören zum gemeldeten
+  Satz und beginnen keinen neuen. Das erste Stück eines neuen Satzes ist Sprechbeginn, auch mitten in der Antwort
+  (Unterbrechen, #835).
+- **Antwort:** Der Dienst liest die Antwort des Assistenten satzweise, wie das Vorlesen im Fenster
+  (`answer_so_far`), und gibt jeden Satz als `session.commentary.append` mit der Kennung der Aufgabe zurück (GPT-Live
+  spricht ihn, höchstens 500 Token je Satz). Ein Satz über eine Freigabe oder einen Fehler kommt zuletzt. Eine
+  Antwort ohne Worte gibt die Aufgabe still frei (`session.thinking.append` ohne Inhalt). GPT-Live spricht von sich
+  aus kurze Zwischenansagen („Moment …“) während der Assistent arbeitet.
+- **Freigabe:** Wartet die Antwort auf eine Freigabe, sagt GPT-Live den Satz „bitte ins Fenster sehen“ und der Dienst
+  liest weiter, sobald die Person im Fenster entschieden hat (bis zu 10 Minuten).
+- **Unterbrechen und Stopp:** Spricht die Person hinein, hält GPT-Live von selbst an und die Antwort des Assistenten
+  endet mit dem Gehörten (#835). „Stop“ im Fenster erreicht GPT-Live nicht (kein Ereignis dafür bekannt): der Dienst
+  spielt den Rest nicht mehr ab, bis die Person wieder spricht. Ein Satz, aus dem GPT-Live keine Aufgabe macht (ein
+  „Danke“), endet nach 4 Sekunden ohne Worte an den Assistenten; antwortet GPT-Live darauf selbst, spielt der Dienst
+  es ab. Spricht die Person, während der Assistent noch arbeitet, bekommt dieser Satz keine eigene Antwort: GPT-Live
+  spricht für ihn die Antwort, die schon läuft.
+- **Ende:** GPT-Live meldet weder das Ende seines Tons noch die abgespielte Menge. Der Dienst zählt die Antwort als
+  zu Ende, wenn alles übergeben ist und 2 Sekunden kein Ton mehr kommt. Das Gehörte bei einer Unterbrechung ist
+  die Mitschrift dessen, was GPT-Live gesprochen hat (`session.output_transcript.delta`).
+- **Verlauf und Zeitgrenze:** Der Verlauf wird nicht an GPT-Live geschickt; der Assistent hat ihn. Eine Verbindung
+  wird nach 30 Minuten in einer Pause erneuert (eine Höchstdauer nennt die Doku nicht), bei Abbruch wie bei den
+  anderen Modulen.
+- **Kosten und Zugang:** 0,05 $ je aktive Minute, das denkende Modell zusätzlich. Ob normale Konten Zugang haben, nennt
+  die Doku nicht (eine Drittquelle sprach von Early Access); ohne Zugang endet der Verbindungsaufbau mit einem
+  Fehler des Anbieters und die lokale Kette antwortet.
+- **Geprüft:** nur gegen die Doku und Nachrichten in deren Form (`tests/fixtures/live/gpt_live_round.jsonl`, nicht
+  aufgenommen). Es stand kein Zugang zu GPT-Live zur Verfügung. Zu prüfen von Hand: Zugang für normale Konten,
+  Form von `session.start` (`audio.output.voice`), Ereignisse beim Unterbrechen, Wirkung von `commentary.append` ohne
+  Kennung nach einer neuen Verbindung, Zeitpunkt der Mitschrift nach `session.delegation.created`, Deutsch.
 
 ## Wo die Logik liegt
 

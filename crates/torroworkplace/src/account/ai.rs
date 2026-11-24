@@ -40,8 +40,8 @@ use tokio::sync::RwLock;
 use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
 use torro_core::ai::{
-    self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, LocalProgram, ModelSwitches, Provider,
-    anthropic, oauth, openai, responses, strata, systemone,
+    self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, LiveProtocol, LocalProgram, ModelSwitches,
+    Provider, anthropic, oauth, openai, responses, strata, systemone,
 };
 use torro_core::i18n::{tr, trf};
 use torro_ipc::{AccountInfo, AiObservation, AiObservationStatus, AiServer};
@@ -2093,6 +2093,7 @@ impl AiAccounts {
                     model: model.id.to_string(),
                     name: model.name.to_string(),
                     missing,
+                    assistant: model.protocol.assistant_thinks(),
                 })
             })
             .collect()
@@ -2111,14 +2112,15 @@ impl AiAccounts {
     /// takes it there ([`live_auths`]). Only where a key may travel ([`ai::key_may_travel`]); errors never repeat it
     /// ([`openai::scrub`]). The key stays here: the caller gets the connection, never the key.
     pub async fn live_socket(&self, account: &str, model: &str) -> Result<LiveSocket, AiError> {
-        let (provider, base, key) = {
+        let (provider, protocol, base, key) = {
             let slots = self.slots.read().await;
             let slot = slots.iter().find(|slot| slot.account.id == account).ok_or_else(|| no_account(account))?;
-            if ai::live_models(slot.provider()).iter().all(|live| live.id != model) {
+            let Some(live) = ai::live_model(slot.provider(), model) else {
                 return Err(AiError::NotFound(format!("no conversation engine {model:?}")));
-            }
+            };
             (
                 slot.provider(),
+                live.protocol,
                 slot.account.server.trim_end_matches('/').to_string(),
                 slot.key.clone().ok_or(AiError::NoKey)?,
             )
@@ -2128,7 +2130,7 @@ impl AiAccounts {
                 tr("An API key is only sent over https or to this computer. Use an https address.").into(),
             ));
         }
-        let address = live_address(provider, &base, model)?;
+        let address = live_address(protocol, &base, model)?;
         open_live_for(provider, &address, key.expose()).await
     }
 
@@ -2187,20 +2189,22 @@ pub(crate) fn live_auths(provider: AiProvider) -> &'static [LiveAuth] {
 /// The path of Gemini Live on the host of its API (version v1beta, checked on 2026-11-23).
 const GEMINI_LIVE_PATH: &str = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
-/// The WebSocket address of `provider`'s engine `model` at the account's address `base` (`http` becomes `ws`, `https`
-/// `wss`), without the key.
-pub(crate) fn live_address(provider: AiProvider, base: &str, model: &str) -> Result<String, AiError> {
+/// The WebSocket address of the engine `model` that speaks `protocol` at the account's address `base` (`http` becomes
+/// `ws`, `https` `wss`), without the key.
+pub(crate) fn live_address(protocol: LiveProtocol, base: &str, model: &str) -> Result<String, AiError> {
     let Some((scheme, rest)) = base.split_once("://") else {
         return Err(AiError::Invalid(tr("Enter the address of the server, like http://localhost:11434.").into()));
     };
     let scheme = if scheme == "https" { "wss" } else { "ws" };
-    Ok(match provider {
+    Ok(match protocol {
         // Its own protocol on the host of the API: the model goes into the first message, not the address.
-        AiProvider::Gemini => {
+        LiveProtocol::Gemini => {
             let host = rest.split('/').next().unwrap_or(rest);
             format!("{scheme}://{host}{GEMINI_LIVE_PATH}")
         }
-        _ => format!("{scheme}://{rest}/realtime?model={model}"),
+        // GPT-Live (issue #919): its own endpoint under the API's address, no query; the model is in `session.start`.
+        LiveProtocol::GptLive => format!("{scheme}://{rest}/live/sessions"),
+        LiveProtocol::Realtime => format!("{scheme}://{rest}/realtime?model={model}"),
     })
 }
 
@@ -2360,7 +2364,7 @@ mod live_tests {
     #[test]
     fn the_address_follows_the_provider() {
         let gemini = live_address(
-            AiProvider::Gemini,
+            LiveProtocol::Gemini,
             "https://generativelanguage.googleapis.com/v1beta/openai",
             "gemini-3.8-live",
         )
@@ -2370,14 +2374,18 @@ mod live_tests {
             "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
         );
         assert_eq!(
-            live_address(AiProvider::OpenAi, "https://api.openai.com/v1", "gpt-realtime-2.1").expect("address"),
+            live_address(LiveProtocol::Realtime, "https://api.openai.com/v1", "gpt-realtime-2.1").expect("address"),
             "wss://api.openai.com/v1/realtime?model=gpt-realtime-2.1"
         );
         assert_eq!(
-            live_address(AiProvider::Gemini, "http://127.0.0.1:9000/x", "m").expect("address"),
+            live_address(LiveProtocol::GptLive, "https://api.openai.com/v1", "gpt-live-1.1").expect("address"),
+            "wss://api.openai.com/v1/live/sessions"
+        );
+        assert_eq!(
+            live_address(LiveProtocol::Gemini, "http://127.0.0.1:9000/x", "m").expect("address"),
             format!("ws://127.0.0.1:9000{GEMINI_LIVE_PATH}")
         );
-        assert!(live_address(AiProvider::OpenAi, "api.openai.com", "m").is_err());
+        assert!(live_address(LiveProtocol::Realtime, "api.openai.com", "m").is_err());
         assert_eq!(query_value("a b/c+d"), "a%20b%2Fc%2Bd");
     }
 }

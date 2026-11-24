@@ -1721,6 +1721,7 @@ fn live_engines() -> Vec<torro_ipc::LiveEngineOption> {
         model: model.into(),
         name: name.into(),
         missing,
+        assistant: model.starts_with("gpt-live"),
     };
     vec![
         engine("ai:openai@api.openai.com", AiProvider::OpenAi, "gpt-realtime-2.1", "OpenAI Realtime", None),
@@ -1739,6 +1740,7 @@ fn live_engines() -> Vec<torro_ipc::LiveEngineOption> {
             "Gemini Live",
             None,
         ),
+        engine("ai:openai@api.openai.com", AiProvider::OpenAi, "gpt-live-1.1", "GPT-Live", None),
     ]
 }
 
