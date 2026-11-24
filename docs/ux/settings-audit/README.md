@@ -3,6 +3,12 @@
 Visuelles Audit **aller Einstellungsseiten** der Steuerzentrale und der Apps, mit Bildern aus der laufenden Demo, Befunden, Regelvorschlag, Mockups und priorisierten
 Empfehlungen. Stand: 2026-11-23, `main` bei `7789963d`. **Es wurde kein Produktcode geändert**; alles hier ist Dokumentation und Bildmaterial.
 
+Nachgezogen am 2026-11-25 auf `main` bei `3b01d52b`: Seit dem Audit kam unter Mail › Categorization der Abschnitt
+„Always for this sender“ hinzu (#577). Die Zustände `categorization-category` und `categorization-phishing` sind neu
+aufgenommen; alle anderen Mail- und Hub-Bilder sind gleich geblieben (Abweichungen nur bei Datum, Uhrzeit und
+Lade-Symbol). Die Übersichtsbögen in `sheets/` zeigen noch den Stand vom 23.11. Steuerzentrale, Kalender, Aufgaben und
+Assistent wurden nicht neu aufgenommen, weil die Änderungen an `torro-settings-ui` nur Mail und Hub betreffen.
+
 ## Lesereihenfolge
 
 | Datei | Inhalt |
