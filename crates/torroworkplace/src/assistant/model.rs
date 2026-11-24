@@ -71,9 +71,11 @@ use torro_ipc::extensions::ExtensionTool;
 use torro_ipc::{ApprovalState, ClientInfo, Request, Response};
 
 use super::compact;
+use super::jobs::{Gate, JobLink};
 use super::tools::{self, FIND_TOOLS};
 use super::{Assistant, Partial, prompt, store};
 use torro_core::ai::Place;
+use torro_ipc::assistant::{JobReason, JobState};
 
 /// What the assistant needs of the core to answer with a model. The core implements it
 /// (`crate::core::Core`) and hands itself over once it runs ([`Assistant::attach`]); tests bring a
@@ -668,6 +670,10 @@ pub(super) struct Job {
     /// person itself and speaks all it says. The prompt ends with [`prompt::voice`] only, and no context fill is kept:
     /// the engine holds the conversation. `None` for every other answer.
     pub live: Option<Arc<super::live::LiveTurn>>,
+    /// The long-running job the answer belongs to (issue #961, [`super::jobs`]): every tool call is journaled before
+    /// and after it reaches the core, a call already confirmed is not run again, and the job pauses where a person
+    /// must decide. `None` for every normal answer, which runs as it always did.
+    pub journal: Option<super::jobs::JobLink>,
 }
 
 /// The context window assumed for a conversation engine (issue #838): it keeps the conversation itself, so the loop
@@ -709,7 +715,7 @@ fn without_thinking(messages: &mut [ChatMessage]) {
 }
 
 /// How a command the model called ended.
-enum Outcome {
+pub(super) enum Outcome {
     /// The core's answer, also after a person allowed it.
     Answered(Box<Response>),
     Denied,
@@ -720,9 +726,40 @@ enum Outcome {
 /// the model answers, fails, takes too many steps, or the run is stopped. Its last entry ends the run.
 pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: Job) {
     let mut run = prepare(assistant, host, job).await;
-    if let Err(error) = run.go().await {
+    let ended = run.go().await;
+    if let Err(error) = &ended {
         let entry = EntryContent::Error { code: error.code().into(), message: error.to_string() };
         run.add(entry, true).await;
+    }
+    // A job (issue #961) ends with its answer, or pauses where resuming can mend it: never with another model.
+    if let Some(link) = run.job.journal.clone() {
+        let model = run.job.model.clone().unwrap_or_default();
+        let outcome = match &ended {
+            Ok(()) if run.completed => Some((JobState::Completed, None, None)),
+            Ok(()) => None,
+            Err(error @ (Ended::Model(_) | Ended::ModelChanged(_))) => Some((
+                JobState::Paused,
+                Some(JobReason::ModelUnavailable),
+                Some(trf(
+                    "The model {model} is not available ({code}). The job is paused: resume it once the model is back, \
+                     or resume it with another model.",
+                    &[("model", &model), ("code", &error.code())],
+                )),
+            )),
+            Err(error @ Ended::TooManySteps(_)) => {
+                Some((JobState::Paused, Some(JobReason::StepLimit), Some(error.to_string())))
+            }
+            Err(error) => Some((JobState::Failed, Some(JobReason::Error), Some(error.to_string()))),
+        };
+        // Ended without its answer and without a pause (an entry could not be stored): it must not stay `running`
+        // with nothing that runs it. A pause or stop before keeps its own reason.
+        let outcome = outcome.or_else(|| {
+            let message = tr("The job stopped unexpectedly. Resume it to go on.").to_string();
+            (!run.completed).then_some((JobState::Paused, Some(JobReason::Error), Some(message)))
+        });
+        if let Some((state, reason, message)) = outcome {
+            super::jobs::end(&link, state, reason, message).await;
+        }
     }
 }
 
@@ -805,6 +842,7 @@ async fn prepare(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: Job) -> An
         said,
         summaries: BTreeMap::new(),
         repeated: BTreeMap::new(),
+        completed: false,
     }
 }
 
@@ -850,6 +888,8 @@ struct Answering {
     summaries: BTreeMap<String, String>,
     /// How often this answer's model called each tool with each input (issue #701, [`REPEATS`]).
     repeated: BTreeMap<(String, String), usize>,
+    /// The model's final answer was stored: for a job (issue #961), it is done.
+    completed: bool,
 }
 
 /// Adds what `message` takes to `unshortened`, the size of the conversation's messages unshortened (issue #831), once
@@ -875,6 +915,9 @@ enum Ended {
     TooManySteps(usize),
     /// The model called the tool (its catalogue name) a [`REPEATS`]th time with the same input (issue #701).
     Repeating(String),
+    /// The model a job chose (issue #961) is not what the account answers with now (it was switched off, and
+    /// "Automatic" would take another): the job never goes on with another model by itself.
+    ModelChanged(String),
 }
 
 impl Ended {
@@ -882,6 +925,7 @@ impl Ended {
         match self {
             Ended::Model(error) => error.code(),
             Ended::Empty | Ended::TooManySteps(_) | Ended::Repeating(_) => "error",
+            Ended::ModelChanged(_) => "unsupported",
         }
     }
 }
@@ -899,6 +943,11 @@ impl std::fmt::Display for Ended {
                 "The assistant called {tool} three times with the same input and stopped so it does not go round in \
                  circles. Ask again in other words to let it go on.",
                 &[("tool", tool)],
+            )),
+            Ended::ModelChanged(model) => f.write_str(&trf(
+                "The model {model} chosen for this job is not available. The job does not go on with another model by \
+                 itself.",
+                &[("model", model)],
             )),
         }
     }
@@ -920,6 +969,12 @@ impl Answering {
             None => self.host.model(&self.job.engine, self.job.model.as_deref()).await.map_err(Ended::Model)?,
         };
         let model = access.model.clone();
+        // A job keeps its model (issue #961): no silent move to another, which might send the person's data elsewhere.
+        if let Some(chosen) = self.job.model.as_deref().filter(|_| self.job.journal.is_some())
+            && chosen != model
+        {
+            return Err(Ended::ModelChanged(chosen.to_string()));
+        }
         let small = tools::is_small(&model, access.place == Place::Local);
         // A small model loses its way sooner (issue #701).
         let steps = if small { self.limits.small_steps } else { self.limits.max_steps };
@@ -1020,6 +1075,7 @@ impl Answering {
                     }
                 }
                 if done {
+                    self.completed = true;
                     return Ok(());
                 }
             }
@@ -1241,9 +1297,17 @@ impl Answering {
             Err(message) => return self.refused(&call.id, name, input, "error", &message, None).await,
         };
         let area = request.operation().area();
+        // A job's call (issue #961): journaled and checked again before it reaches the core.
+        let step = match self.job.journal.clone() {
+            Some(link) => match self.gate(&link, &call.id, &name, &request, &input).await {
+                Gate::Run(seq) => Some((link, seq)),
+                Gate::Answer(answer) => return answer,
+            },
+            None => None,
+        };
         // The voice chat says which kind of tool runs (issue #830): its name only, and only while it runs.
         lock(&self.job.partial).tool = Some(name.clone());
-        let outcome = self.run(request.clone()).await;
+        let outcome = self.run(request.clone(), step.clone()).await;
         lock(&self.job.partial).tool = None;
         let outcome = outcome?;
         // A card after a command that made an item (issue #225): the core's own answer, read before
@@ -1335,8 +1399,28 @@ impl Answering {
             _ => None,
         };
         let summary = lack.map_or(summary, tools::lack_summary);
+        let refused = error.as_deref() == Some("forbidden");
         let line = EntryContent::Tool { name: name.clone(), input, summary, error, lack };
         let result = self.add_tool(&call.id, line, result).await?;
+        if let Some((link, seq)) = &step {
+            if let Some(entry) = self.assistant.last_seq(&self.job.conversation).await {
+                super::jobs::keep_result(link, *seq, entry).await;
+            }
+            // The outcome is not known (the approval could not be read, the task ended): the job waits for a person.
+            if super::jobs::is_uncertain(link, *seq).await {
+                self.pause(JobReason::Uncertain, super::jobs::uncertain_message()).await;
+                return None;
+            }
+            // Rights withdrawn meanwhile (issue #961): the job stops here, it does not try its way around.
+            if refused {
+                let message = trf(
+                    "The assistant may no longer run {tool}. The job is paused; change its access, then resume it.",
+                    &[("tool", &name)],
+                );
+                self.pause(JobReason::Forbidden, message).await;
+                return None;
+            }
+        }
         if let Some(seen) = seen
             && !self.assistant.see(&self.job.conversation, self.job.run, &name, seen).await
         {
@@ -1349,6 +1433,95 @@ impl Answering {
             return None;
         }
         Some(result)
+    }
+
+    /// What a job's call (issue #961) may do before it reaches the core: a call already confirmed in this job answers
+    /// what it did without running again; without the assistant's client, or with rights that no longer cover the
+    /// call, the job pauses and nothing runs; otherwise the call is written down (`planned`) and then handed over
+    /// (`dispatched`), only while the job still runs.
+    async fn gate(&mut self, link: &JobLink, call: &str, name: &str, request: &Request, input: &Value) -> Gate {
+        let key = super::journal::call_key(name, request);
+        let (id, looked) = (link.id.clone(), key.clone());
+        match super::jobs::on(link, move |journal| journal.confirmed_with(&id, &looked)).await {
+            Ok(Some(step)) => {
+                let kept = match step.result {
+                    Some(seq) => self.assistant.result_of(&self.job.conversation, seq).await,
+                    None => None,
+                };
+                let answer = json!({
+                    "already_done": true,
+                    "step": step.seq,
+                    "result": kept,
+                    "note": "This exact call was already done in this job; it did not run again. Go on with the next step.",
+                });
+                let summary = tr("Already done in this job; not run again").to_string();
+                let line = EntryContent::Tool {
+                    name: name.to_string(),
+                    input: input.clone(),
+                    summary,
+                    error: None,
+                    lack: None,
+                };
+                return Gate::Answer(self.add_tool(call, line, answer.to_string()).await);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                self.pause(
+                    JobReason::Error,
+                    tr("The job's journal cannot be used. The job is paused; nothing ran.").into(),
+                )
+                .await;
+                return Gate::Answer(None);
+            }
+        }
+        if self.host.client_of(&self.job.actor).is_none() {
+            let message = tr("The assistant has no access set up any more. The job is paused; nothing ran.");
+            self.pause(JobReason::NoClient, message.into()).await;
+            return Gate::Answer(None);
+        }
+        if let Some(lack) = self.lack(request) {
+            let _ = self.refused(call, name.to_string(), input.clone(), "forbidden", &lack.message(), Some(lack)).await;
+            let message = trf(
+                "The assistant may no longer run {tool}. The job is paused; change its access, then resume it.",
+                &[("tool", &name)],
+            );
+            self.pause(JobReason::Forbidden, message).await;
+            return Gate::Answer(None);
+        }
+        let repeatable = super::jobs::repeatable(self.host.extension_operation(request), name);
+        let (id, tool) = (link.id.clone(), name.to_string());
+        let handed = super::jobs::on(link, move |journal| {
+            let now = Utc::now();
+            let seq = journal.plan(&id, &tool, &key, repeatable, now)?;
+            journal.step_to(&id, seq, torro_ipc::assistant::StepState::Dispatched, None, now)?;
+            Ok(seq)
+        })
+        .await;
+        match handed {
+            Ok(seq) => Gate::Run(seq),
+            // Paused or cancelled meanwhile: nothing more of the job starts.
+            Err(super::journal::JournalError::Conflict(_)) => {
+                self.assistant.end_run(&self.job.conversation, self.job.run).await;
+                Gate::Answer(None)
+            }
+            Err(_) => {
+                self.pause(
+                    JobReason::Error,
+                    tr("The job's journal cannot be used. The job is paused; nothing ran.").into(),
+                )
+                .await;
+                Gate::Answer(None)
+            }
+        }
+    }
+
+    /// Pauses this answer's job (issue #961) for `reason`, and ends the answer with an entry that says why in
+    /// `message`: what the chat shows of it.
+    async fn pause(&self, reason: JobReason, message: String) {
+        if let Some(link) = &self.job.journal {
+            super::jobs::end(link, JobState::Paused, Some(reason), Some(message.clone())).await;
+        }
+        self.add(EntryContent::Error { code: "paused".into(), message }, true).await;
     }
 
     /// The name of the bot `request` names, as stored now; its id when it is gone.
@@ -1485,7 +1658,7 @@ impl Answering {
 
     /// Hands `request` to the core as the assistant's client and waits for a person where it must.
     /// The core runs it on a task of its own, so stopping the answer never stops a command half way.
-    async fn run(&self, request: Request) -> Option<Outcome> {
+    async fn run(&self, request: Request, step: Option<(super::jobs::JobLink, u32)>) -> Option<Outcome> {
         let (host, engine, untrusted) = (Arc::clone(&self.host), self.job.engine.clone(), self.untrusted);
         let (actor, mode) = (self.job.actor.clone(), self.job.mode);
         let (main, without) = (self.job.conversation.clone(), self.job.without.clone());
@@ -1504,8 +1677,14 @@ impl Answering {
         // Asking a bot (task B.2) needs the conversation: the person must have asked for the bot here;
         // and so does the web (task WEB.5): the person says yes once per conversation. A chat about a mail
         // (issue #605) names it, so its suggestion counts as reading.
+        // The journal of a job (issue #961) learns the outcome on the same task, so a stop of the answer meanwhile
+        // still records what the core did.
+        let settling = step.clone();
+        // While it runs, nobody decides the step by hand (issue #961): its outcome is still to come.
+        let flight = step.as_ref().map(|(link, seq)| super::jobs::Flight::start(&self.assistant, &link.id, *seq));
         let ran = tokio::spawn(async move {
-            match (&actor, &request, web, about) {
+            let _flight = flight;
+            let response = match (&actor, &request, web, about) {
                 (Actor::Assistant, ..) if terminal.is_some() => {
                     let terminal = terminal.unwrap_or_default();
                     host.run_terminal(&actor, request, &engine, mode, terminal).await
@@ -1519,10 +1698,23 @@ impl Answering {
                     host.run_about(&actor, request, &engine, untrusted, mode, &about).await
                 }
                 _ => host.run_in(&actor, request, &engine, untrusted, mode).await,
+            };
+            if let Some((link, seq)) = &settling {
+                super::jobs::settle(link, *seq, &response).await;
             }
+            response
         })
         .await;
-        let response = ran.unwrap_or_else(|err| failed(&format!("the command did not finish: {err}")));
+        let response = match ran {
+            Ok(response) => response,
+            Err(err) => {
+                // The task ended without an answer: whether the command ran is not known.
+                if let Some((link, seq)) = &step {
+                    super::jobs::unsure(link, *seq).await;
+                }
+                failed(&format!("the command did not finish: {err}"))
+            }
+        };
         let Response::Pending { approval } = response else { return Some(Outcome::Answered(Box::new(response))) };
         // It waits for a person now, not for the tool (issue #830): the voice chat no longer names it.
         lock(&self.job.partial).tool = None;
@@ -1531,15 +1723,24 @@ impl Answering {
         }
         loop {
             tokio::time::sleep(self.limits.approval_poll).await;
-            match self.host.approval_as(&self.job.actor, &approval.id).await {
+            let (outcome, known) = match self.host.approval_as(&self.job.actor, &approval.id).await {
                 Response::Approval { approval } => match approval.state {
-                    ApprovalState::Pending | ApprovalState::Running => {}
-                    ApprovalState::Done { response } => return Some(Outcome::Answered(response)),
-                    ApprovalState::Denied => return Some(Outcome::Denied),
-                    ApprovalState::Expired => return Some(Outcome::Expired),
+                    ApprovalState::Pending | ApprovalState::Running => continue,
+                    ApprovalState::Done { response } => (Outcome::Answered(response), true),
+                    ApprovalState::Denied => (Outcome::Denied, true),
+                    ApprovalState::Expired => (Outcome::Expired, true),
                 },
-                other => return Some(Outcome::Answered(Box::new(other))),
+                // The approval could not be read: the person may still allow it, so its outcome is unknown.
+                other => (Outcome::Answered(Box::new(other)), false),
+            };
+            if let Some((link, seq)) = &step {
+                if known {
+                    super::jobs::decided(link, *seq, &outcome).await;
+                } else {
+                    super::jobs::unsure(link, *seq).await;
+                }
             }
+            return Some(outcome);
         }
     }
 }
@@ -2090,12 +2291,21 @@ pub(crate) mod tests {
     }
 
     /// The core as the loop sees it: the assistant's rights, a model, and fixed answers.
-    struct FakeHost {
-        rights: Mutex<Option<Rights>>,
+    pub(crate) struct FakeHost {
+        pub(crate) rights: Mutex<Option<Rights>>,
         place: Place,
         script: Arc<Script>,
         answer: fn(&Request) -> Response,
-        ran: Mutex<Vec<(Request, String)>>,
+        pub(crate) ran: Mutex<Vec<(Request, String)>>,
+        /// Commands that never answer (issue #961): the core died while they ran.
+        pub(crate) hang: Mutex<Vec<&'static str>>,
+        /// The state every approval is in; `None`: expired.
+        pub(crate) approvals: Mutex<Option<ApprovalState>>,
+        /// Approvals cannot be read (issue #961): every status answer is `forbidden`.
+        pub(crate) approvals_gone: std::sync::atomic::AtomicBool,
+        /// The only model that is on (issue #961): any other asked for is off, so "Automatic" takes this one, as the
+        /// core's [`ModelAccess::choose_on`] does.
+        pub(crate) only_on: Mutex<Option<&'static str>>,
         /// Whether each request of `ran` came after the conversation read untrusted data.
         untrusted: Mutex<Vec<bool>>,
         /// Whom each request of `ran` ran as (task B.1).
@@ -2132,14 +2342,19 @@ pub(crate) mod tests {
             _engine: &'a str,
             model: Option<&'a str>,
         ) -> BoxFuture<'a, Result<ModelAccess, AiError>> {
-            Box::pin(scripted_access(&self.script, model, self.place))
+            let only = *self.only_on.lock().expect("lock");
+            Box::pin(scripted_access(&self.script, only.or(model), self.place))
         }
 
         fn run<'a>(&'a self, request: Request, engine: &'a str, untrusted: bool) -> BoxFuture<'a, Response> {
             Box::pin(async move {
                 let response = (self.answer)(&request);
+                let hangs = self.hang.lock().expect("lock").contains(&request.operation().name());
                 self.untrusted.lock().expect("lock").push(untrusted);
                 self.ran.lock().expect("lock").push((request, engine.to_string()));
+                if hangs {
+                    std::future::pending::<()>().await;
+                }
                 response
             })
         }
@@ -2159,9 +2374,13 @@ pub(crate) mod tests {
             }
         }
 
-        /// Every approval expires here; deciding is tested with the real core.
+        /// Every approval expires here, unless a test set another state; deciding is tested with the real core.
         fn approval<'a>(&'a self, _id: &'a str) -> BoxFuture<'a, Response> {
-            Box::pin(async { Response::Approval { approval: approval(ApprovalState::Expired) } })
+            let state = self.approvals.lock().expect("lock").clone().unwrap_or(ApprovalState::Expired);
+            if self.approvals_gone.load(std::sync::atomic::Ordering::SeqCst) {
+                return Box::pin(async { forbidden("approvals.approval_status") });
+            }
+            Box::pin(async { Response::Approval { approval: approval(state) } })
         }
 
         /// A bot's client has the same rights here, with its kind; the runs are kept the same way.
@@ -2248,7 +2467,7 @@ pub(crate) mod tests {
         }
     }
 
-    const ENGINE: &str = "ai:ollama@localhost:11434";
+    pub(crate) const ENGINE: &str = "ai:ollama@localhost:11434";
 
     fn mail_item(id: &str, title: &str) -> torro_inbox::Item {
         let time = Utc::now();
@@ -2282,7 +2501,7 @@ pub(crate) mod tests {
 
     /// The core's answers in these tests: calendars none, the inbox one mail entry, deleting a
     /// template waits for a person, the rest ok.
-    fn answers(request: &Request) -> Response {
+    pub(crate) fn answers(request: &Request) -> Response {
         match request {
             Request::CalendarCollections => Response::Collections { collections: Vec::new() },
             Request::ListItems { .. } => Response::Items { items: vec![mail_item("a1", "Invoice 42 from ACME")] },
@@ -2319,7 +2538,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn reader() -> Rights {
+    pub(crate) fn reader() -> Rights {
         // Without the tools and servers the assistant starts with since issue #666: a test names
         // those it means.
         let mut rights = Rights::assistant();
@@ -2341,7 +2560,7 @@ pub(crate) mod tests {
     }
 
     /// [`set_up`] with a fake core that answers `answer`.
-    fn set_up_with(
+    pub(crate) fn set_up_with(
         dir: &std::path::Path,
         rights: Option<Rights>,
         place: Place,
@@ -2375,6 +2594,10 @@ pub(crate) mod tests {
             abouts: Mutex::new(Vec::new()),
             terminals: Mutex::new(Vec::new()),
             terminal: std::sync::atomic::AtomicBool::new(false),
+            hang: Mutex::new(Vec::new()),
+            approvals: Mutex::new(None),
+            approvals_gone: std::sync::atomic::AtomicBool::new(false),
+            only_on: Mutex::new(None),
         });
         let weak = Arc::downgrade(&host);
         let weak: std::sync::Weak<dyn Host> = weak;
@@ -2382,7 +2605,12 @@ pub(crate) mod tests {
         (assistant, host)
     }
 
-    async fn ask(assistant: &Arc<Assistant>, conversation: Option<&str>, text: &str, without: Vec<Area>) -> String {
+    pub(crate) async fn ask(
+        assistant: &Arc<Assistant>,
+        conversation: Option<&str>,
+        text: &str,
+        without: Vec<Area>,
+    ) -> String {
         ask_model(assistant, conversation, text, without, None).await
     }
 
@@ -2415,7 +2643,7 @@ pub(crate) mod tests {
         }
     }
 
-    async fn read(assistant: &Assistant, id: &str, after: Option<u64>) -> (ConversationSummary, Vec<Entry>) {
+    pub(crate) async fn read(assistant: &Assistant, id: &str, after: Option<u64>) -> (ConversationSummary, Vec<Entry>) {
         match assistant.get(id, after).await {
             Response::Conversation { conversation, entries } => (conversation, entries),
             other => panic!("expected a conversation, got {other:?}"),

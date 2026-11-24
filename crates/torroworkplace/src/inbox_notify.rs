@@ -327,6 +327,8 @@ async fn show_reminder_popup(
     answer: Box<dyn FnOnce(ReminderAnswer) + Send>,
 ) -> notify_rust::error::Result<()> {
     use notify_rust::{Hint, NotificationResponse, Urgency};
+    // The other systems go through `notify::show`, which marks the title itself.
+    let Some(summary) = crate::notify::title(summary) else { return Ok(()) };
     let mut notification = notify_rust::Notification::new();
     notification
         .appname(crate::notify::APP_NAME)
@@ -858,6 +860,8 @@ impl Desktop for SystemDesktop {
 async fn show_popup(popup: Popup, answer: Box<dyn FnOnce(Answer) + Send>) -> notify_rust::error::Result<()> {
     use notify_rust::{Hint, NotificationResponse, Urgency};
     let (summary, body) = popup.text();
+    // The other systems go through `notify::show`, which marks the title itself.
+    let Some(summary) = crate::notify::title(summary) else { return Ok(()) };
     let mut notification = notify_rust::Notification::new();
     notification
         .appname(crate::notify::APP_NAME)

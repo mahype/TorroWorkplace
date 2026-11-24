@@ -466,7 +466,10 @@ docker run -d --name torro354-radicale -p 127.0.0.1:5232:5232 -v "$PWD/radicale/
 ```
 
 **Der Test-Kern:** ein Debug-Build mit `daemon --headless` und `TORRO_CONFIG_HOME`, `TORRO_DATA_HOME` und
-`TORRO_STATE_HOME` in einem Arbeitsordner; Requests als Umschlag-Zeile mit seinem `app.key` an seinen `core.sock`.
+`TORRO_STATE_HOME` in einem Arbeitsordner; Requests als Umschlag-Zeile mit seinem `app.key` an seinen `core.sock`. Wie man
+ihn startet, ohne den echten Schlüsselbund-Tresor und die echten Mitteilungen zu berühren:
+[`core.md`, „Zweiter Kern für Prüfungen“](core.md#zweiter-kern-für-prüfungen-877). Bei #354 lief er noch aus einer
+gepatchten Kopie, das ist seit #877 nicht mehr nötig.
 
 - **Nicht den echten Schlüsselbund benutzen.** Auf macOS liegen alle Geheimnisse der Suite in einem Eintrag (Dienst
   `torroworkplace`, Konto `torro-vault`). Ein zweiter Kern läse den echten Tresor und schriebe beim Verbinden seine

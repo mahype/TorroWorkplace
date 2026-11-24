@@ -603,6 +603,17 @@ pub fn ids(request: &Request) -> Vec<String> {
             .collect(),
         // Issue #852: the conversation and the engine chosen, as for a message; never the model's name.
         Request::ChooseModel { id, engine, .. } => vec![random("conversation", id), engine_id(engine)],
+        // Issue #961: the job, its conversation and engine; never the goal.
+        Request::StartJob { engine, conversation, .. } => {
+            conversation.iter().map(|id| random("conversation", id)).chain([engine_id(engine)]).collect()
+        }
+        Request::ListJobs { conversation } => conversation.iter().map(|id| random("conversation", id)).collect(),
+        Request::GetJob { id } | Request::PauseJob { id } | Request::CancelJob { id } | Request::ResolveJobStep { id, .. } => {
+            vec![random("job", id)]
+        }
+        Request::ResumeJob { id, engine, .. } => {
+            [random("job", id)].into_iter().chain(engine.as_deref().map(engine_id)).collect()
+        }
         // The check before such a chat: the same, without a conversation.
         Request::CheckAbout { engine, about, .. } => {
             vec![engine_id(engine), account(&about.account), format!("message:{}", hashed(&about.id))]

@@ -784,6 +784,22 @@ pub struct SourceInfo {
     /// it works and for every other source. Kept by the core in memory (task E5.2), never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health: Option<SourceHealth>,
+    /// What the person should know about a source that does bring something, so nobody takes it for
+    /// complete (issue #947): the GitHub token lacks `repo`, so private repositories are left out.
+    /// Unlike [`SourceInfo::health`] the source works; `None` for every source without a note, and
+    /// left out of the JSON then, so older clients read the list as before. Kept by the core in
+    /// memory, never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<SourceNotice>,
+}
+
+/// What a working source still leaves out ([`SourceInfo::notice`], issue #947).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceNotice {
+    /// A classic GitHub token without the `repo` scope: GitHub lists the notifications of public
+    /// repositories only. A fine-grained token reports no scopes and is `missing_scope` instead.
+    PublicOnly,
 }
 
 /// Why a remote source is quiet ([`SourceInfo::health`], task E5.1).
@@ -1212,13 +1228,19 @@ mod tests {
         }
         let foreign: Vec<FacetKey> = keys.iter().map(|(key, _)| *key).filter(|key| key.is_foreign()).collect();
         assert_eq!(foreign, [FacetKey::Repo, FacetKey::App, FacetKey::Person, FacetKey::Tag]);
-        let info = SourceInfo { source: SourceRef::github("mahype"), open: 0, muted: false, health: None };
+        let info =
+            SourceInfo { source: SourceRef::github("mahype"), open: 0, muted: false, health: None, notice: None };
         assert!(json(&info).get("health").is_none(), "left out while it works");
+        assert!(json(&info).get("notice").is_none(), "left out without a note");
+        let noted = SourceInfo { notice: Some(SourceNotice::PublicOnly), ..info.clone() };
+        assert_eq!(json(&noted)["notice"], "public_only");
+        assert_eq!(serde_json::from_value::<SourceInfo>(json(&noted)).expect("read"), noted);
         let quiet = SourceInfo { health: Some(SourceHealth::MissingScope), ..info.clone() };
         assert_eq!(json(&quiet)["health"], "missing_scope");
         assert_eq!(serde_json::from_value::<SourceInfo>(json(&quiet)).expect("read"), quiet);
         let older = serde_json::json!({ "source": { "kind": "script", "name": "ci" }, "open": 2, "muted": false });
-        assert_eq!(serde_json::from_value::<SourceInfo>(older).expect("read").health, None);
+        let older = serde_json::from_value::<SourceInfo>(older).expect("read");
+        assert_eq!((older.health, older.notice), (None, None), "an older core says neither");
         for (health, name) in [
             (SourceHealth::MissingApp, "missing_app"),
             (SourceHealth::SignedOut, "signed_out"),
@@ -1284,6 +1306,6 @@ mod tests {
             assert!(schema.contains(field), "{field} missing in {schema}");
         }
         let sources = serde_json::to_string(&schemars::schema_for!(SourceInfo)).expect("serialize schema");
-        assert!(sources.contains("muted"));
+        assert!(sources.contains("muted") && sources.contains("public_only"), "{sources}");
     }
 }

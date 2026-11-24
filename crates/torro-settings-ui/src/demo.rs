@@ -17,6 +17,7 @@ use torro_core::ai::AiModel;
 use torro_core::i18n::tr;
 use torro_core::settings::{AssistantDefault, CalendarReminders, Reminders, Settings, ToolId, Tools};
 use torro_core::theme::Appearance;
+use torro_inbox::item::SourceNotice;
 use torro_inbox::item::{Facet, FacetKey};
 use torro_inbox::{Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{
@@ -653,11 +654,15 @@ impl Demo {
     /// The sample inbox sources (`inbox.list_sources`, task S.20): Talk is muted, so "Sources"
     /// shows a switch turned off; the others are on.
     fn sources(&self) -> Vec<SourceInfo> {
-        let source = |source: SourceRef, open, muted| SourceInfo { source, open, muted, health: None };
+        let source = |source: SourceRef, open, muted| SourceInfo { source, open, muted, health: None, notice: None };
+        // The GitHub token of anna-dev is a classic one without `repo` (issue #947), so its row says
+        // that only public repositories come.
+        let public_only =
+            SourceInfo { notice: Some(SourceNotice::PublicOnly), ..source(SourceRef::github("anna-dev"), 2, false) };
         vec![
             source(SourceRef::nextcloud("anna@cloud.example.org"), 3, false),
             source(SourceRef::talk("anna@cloud.example.org"), 0, true),
-            source(SourceRef::github("anna-dev"), 2, false),
+            public_only,
             source(SourceRef::ntfy("push.example.org"), 1, false),
             source(SourceRef::mail(MAIL_ADDRESS), 7, false),
         ]
@@ -693,6 +698,17 @@ impl Demo {
             Rule {
                 sender: Some("max@example.org".into()),
                 ..rule("r5", SourceRef::mail(MAIL_ADDRESS), RuleEffect::Trusted, 14)
+            },
+            // "Always for this sender" (issue #577), the sorting rule `k1` as the core lists it: on
+            // the page of Invoice in the mail window, not in the Notification Hub.
+            Rule {
+                sender: Some("billing@shop.example".into()),
+                ..rule(
+                    "k1",
+                    SourceRef::mail(MAIL_ADDRESS),
+                    RuleEffect::Category { category: torro_mail::Category::Invoice },
+                    15,
+                )
             },
         ];
         let hits = vec![
@@ -1036,7 +1052,7 @@ impl Demo {
             torro_mail::CustomCategory::new(1).map_or(torro_mail::Category::Document, torro_mail::Category::Custom);
         vec![
             rule(
-                "r1",
+                "k1",
                 torro_mail::Category::Invoice,
                 vec![on(SortField::Sender, "billing@shop.example")],
                 vec![],

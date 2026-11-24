@@ -313,6 +313,7 @@ Einträge von GitHub, Talk und ntfy lassen die Kategorie leer. Sie haben mit ihr
 | Abgefangenes sehen (Issue #506) | Unerwünscht › Betrug bzw. Spam | Feld und Filter `caught` in `mail.search_messages` · Read | `mail_search_messages` |
 | „Kein Betrug“ (Issue #506) | Knopf im Band | `inbox.release_mail` mit `trust` · Admin (ein Agent nur mit Freigabe, der App-Schlüssel direkt) | `inbox_release_mail` |
 | Vertraute Absender (Issue #506) | Einstellungen › Categorization, Seiten Spam und Betrug | `inbox.list_rules` (Art `trusted`) · Read, `inbox.remove_rule` · Admin | `inbox_list_rules`, `inbox_remove_rule` |
+| Regeln „Always for this sender“ (Issue #577) | Einstellungen › Categorization, Seite ihrer Kategorie | `inbox.list_rules` (Art `category`) · Read, `inbox.remove_rule` · Admin | `inbox_list_rules`, `inbox_remove_rule` |
 | Mail von Kontakten als persönlich (Issue #390) | Einstellungen › Categorization › Contacts | `settings.set_setting` mit `mail_contacts_personal` · Admin, lesen über `settings.get_settings` (`mailContactsPersonal`) · Read | `settings_set_setting`, `settings_get_settings` |
 
 Kein Befehl braucht `Never`: Es sind keine Geheimnisse beteiligt, Schlüssel bleiben wie bisher im
@@ -366,8 +367,11 @@ abgeschaltete zählen nicht. Filter ohne Kategorie (nur gelesen oder Papierkorb)
 filters“ am Ende des Tabs Categories.
 
 Die gemerkten Regeln aus „Always for this sender?“ sind Sortierregeln mit einer Bedingung
-„Absender“ und stehen bei ihrer Kategorie. Über `inbox.list_rules` und `inbox.remove_rule` sind sie
-weiter erreichbar.
+„Absender“ und stehen bei ihrer Kategorie, in einer eigenen Liste „Always for this sender“ mit
+„Remove“ unter den festen Regeln (Issue #577), nicht ein zweites Mal unter „Fixed rules“. Im Notification
+Hub › Rules stehen sie nicht mehr: Sie wirken nur auf Mail. Über `inbox.list_rules` und
+`inbox.remove_rule` sind sie weiter erreichbar. Wird eine im Editor zu mehr als einem Absender oder
+abgeschaltet, ist sie eine feste Regel wie jede andere.
 
 ### Vorrang
 

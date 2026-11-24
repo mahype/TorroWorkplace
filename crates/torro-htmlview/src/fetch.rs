@@ -8,6 +8,9 @@
 //! core's cleaning already drops `<link>`, a `<style>` of the mail may still name the others. `@import` is
 //! removed before Blitz parses the mail (`Content::build`), so it never gets here.
 //!
+//! A mail limited to some hosts ([`Web::Hosts`]) asks only those; a redirect may also move to another host of
+//! the provider the mail named (`img.example.com` → `cdn.example.com`, issue #696), never to another provider.
+//!
 //! Web requests reach only public hosts (review of M9.6): an IP literal or `localhost` that is not public is
 //! refused before the request, every redirect is checked the same way ([`Guard`]), and host names resolve
 //! through [`PublicResolver`], which drops every address that is not public – so neither a redirect nor DNS
@@ -48,8 +51,10 @@ pub enum Web {
     /// From every public host ("Always show").
     All,
     /// Only from these hosts – small letters, Punycode, without port and the dot at the end, as
-    /// `url::Url::host_str` gives them and the core lists them (`external` of `mail.get_message`) –,
-    /// also at every redirect. Every other request is refused before it goes out.
+    /// `url::Url::host_str` gives them and the core lists them (`external` of `mail.get_message`). Every
+    /// other request is refused before it goes out. A redirect is followed to a listed host and to another
+    /// host of the same provider as the one asked first (`torro_core::privacy::same_provider`, issue #696):
+    /// newsletters serve their pictures from a CDN of their own, and that provider was allowed already.
     Hosts(BTreeSet<String>),
     /// From nowhere: nothing goes to the network ("Never show", a mail not asked about yet, tests).
     #[default]
@@ -94,7 +99,8 @@ impl Default for Limits {
 pub(crate) enum FetchError {
     /// Not `http`, `https`, `data` or `cid`, or a web URL while web pictures are off ([`Web::Off`]).
     Scheme,
-    /// A web URL, or a redirect, to a host [`Web::Hosts`] does not list (issue #672).
+    /// A web URL to a host [`Web::Hosts`] does not list, or a redirect to one that is neither listed nor of
+    /// the provider asked first (issues #672, #696).
     NotAllowed,
     /// The host, a redirect's host or every address a host name resolves to is not public (loopback, the
     /// local network, link-local …).
@@ -193,6 +199,17 @@ impl Fetcher {
     pub(crate) fn reaching_only(local: Vec<SocketAddr>, hosts: BTreeSet<String>, limits: Limits) -> Self {
         let guard = Guard { local, hosts: Some(Arc::new(hosts)) };
         Self::build(true, build_client(guard.clone()), guard, None, limits)
+    }
+
+    /// [`Fetcher::reaching_only`] whose client finds each of `names` at `at` – the tests' mock server –
+    /// without asking DNS, so redirects between host names can be tried without the network. Only tests can
+    /// build one: the names bypass [`PublicResolver`].
+    #[cfg(test)]
+    pub(crate) fn naming(names: &[&str], at: SocketAddr, hosts: BTreeSet<String>, limits: Limits) -> Self {
+        let guard = Guard { local: Vec::new(), hosts: Some(Arc::new(hosts)) };
+        let client =
+            names.iter().fold(client_builder(guard.clone()), |builder, name| builder.resolve(name, at)).build().ok();
+        Self::build(true, client, guard, None, limits)
     }
 
     fn build(
@@ -393,6 +410,25 @@ impl Guard {
         }
     }
 
+    /// `Ok` when a redirect from the chain that began at `first` may go on to `target`: the guard lists no
+    /// hosts, it lists `target`'s, or `first` was listed and `target` belongs to the same provider (issue
+    /// #696). The provider is the first URL's, the one the mail named and the person allowed, never a later
+    /// hop's: a chain cannot walk from one provider's CDN to another provider.
+    fn follows(&self, first: Option<&Url>, target: &Url) -> Result<(), NotListed> {
+        if self.listed(target).is_ok() {
+            return Ok(());
+        }
+        match (first, target.host_str()) {
+            (Some(first), Some(to))
+                if self.listed(first).is_ok()
+                    && first.host_str().is_some_and(|from| torro_core::privacy::same_provider(from, to)) =>
+            {
+                Ok(())
+            }
+            _ => Err(NotListed),
+        }
+    }
+
     /// `Ok` for a host name other than `localhost`/`*.localhost` and for a public IP literal (IPv4-mapped
     /// IPv6 counts as its IPv4 address); `Blocked` for the rest and for a URL without host.
     fn check(&self, url: &Url) -> Result<(), Blocked> {
@@ -575,6 +611,11 @@ fn client() -> Option<&'static reqwest::Client> {
 /// about the app, at most [`MAX_REDIRECTS`] redirects each checked by `guard`, and names resolved through
 /// [`PublicResolver`].
 fn build_client(guard: Guard) -> Option<reqwest::Client> {
+    client_builder(guard).build().inspect_err(|err| eprintln!("htmlview: cannot build the picture client: {err}")).ok()
+}
+
+/// The builder of [`build_client`], before it is built (tests add names to it, [`Fetcher::naming`]).
+fn client_builder(guard: Guard) -> reqwest::ClientBuilder {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::ACCEPT,
@@ -582,7 +623,8 @@ fn build_client(guard: Guard) -> Option<reqwest::Client> {
     );
     let limit = reqwest::redirect::Policy::limited(MAX_REDIRECTS);
     let redirect = reqwest::redirect::Policy::custom(move |attempt| {
-        if let Err(not_listed) = guard.listed(attempt.url()) {
+        // `previous` holds the URL asked first and every hop before this one.
+        if let Err(not_listed) = guard.follows(attempt.previous().first(), attempt.url()) {
             return attempt.error(not_listed);
         }
         match guard.check(attempt.url()) {
@@ -597,9 +639,6 @@ fn build_client(guard: Guard) -> Option<reqwest::Client> {
         .redirect(redirect)
         .dns_resolver(PublicResolver)
         .connect_timeout(Duration::from_secs(10))
-        .build()
-        .inspect_err(|err| eprintln!("htmlview: cannot build the picture client: {err}"))
-        .ok()
 }
 
 #[cfg(test)]
@@ -989,6 +1028,66 @@ mod tests {
         assert_eq!(block(off.picture(&url(&server.url("/p.png")))), Err(FetchError::Scheme));
         assert_eq!(host_key("CDN.Example.COM."), "cdn.example.com");
         assert_eq!(host_key("[2001:db8::1]"), "2001:db8::1");
+    }
+
+    /// Issue #696: a redirect from a listed host to another host of its provider loads the picture, one to
+    /// another provider is refused before the other provider is asked, also when a hop of the same provider
+    /// comes first.
+    #[test]
+    fn a_redirect_may_stay_with_the_provider_the_mail_named() {
+        let server = MockServer::start();
+        let port = server.port();
+        let picture = server.mock(|when, then| {
+            when.method(GET).path("/cdn/p.png");
+            then.status(200).header("Content-Type", "image/png").body(PNG);
+        });
+        let elsewhere = server.mock(|when, then| {
+            when.method(GET).path("/other/p.png");
+            then.status(200).body(PNG);
+        });
+        for (from, to) in [
+            ("/same", format!("http://cdn.example.com:{port}/cdn/p.png")),
+            ("/other", format!("http://img.example.org:{port}/other/p.png")),
+            ("/lookalike", format!("http://example.com.evil.example:{port}/other/p.png")),
+            ("/hop", format!("http://cdn.example.com:{port}/onwards")),
+        ] {
+            server.mock(|when, then| {
+                when.method(GET).path(from);
+                then.status(302).header("Location", to);
+            });
+        }
+        server.mock(|when, then| {
+            when.method(GET).path("/onwards");
+            then.status(302).header("Location", format!("http://img.example.org:{port}/other/p.png"));
+        });
+        let names = ["img.example.com", "cdn.example.com", "img.example.org", "example.com.evil.example"];
+        let listed = BTreeSet::from(["img.example.com".to_string()]);
+        let fetcher = Fetcher::naming(&names, *server.address(), listed, Limits::default());
+        let asked = |path: &str| url(&format!("http://img.example.com:{port}{path}"));
+        assert_eq!(block(fetcher.picture(&asked("/same"))).as_deref(), Ok(PNG), "the same provider's CDN");
+        picture.assert_calls(1);
+        for path in ["/other", "/lookalike", "/hop"] {
+            assert_eq!(block(fetcher.picture(&asked(path))), Err(FetchError::NotAllowed), "{path}");
+        }
+        elsewhere.assert_calls(0);
+        // The provider counts only for redirects: the mail itself still reaches only what it lists.
+        let direct = url(&format!("http://cdn.example.com:{port}/cdn/p.png"));
+        assert_eq!(block(fetcher.picture(&direct)), Err(FetchError::NotAllowed));
+        picture.assert_calls(1);
+    }
+
+    /// The redirect rule as a pure function (issue #696).
+    #[test]
+    fn the_guard_follows_redirects_within_the_provider_asked_first() {
+        let guard = Guard { local: Vec::new(), hosts: Some(Arc::new(BTreeSet::from(["img.example.com".into()]))) };
+        let first = url("https://img.example.com/p.png");
+        assert_eq!(guard.follows(Some(&first), &url("https://cdn.example.com/p.png")), Ok(()));
+        assert_eq!(guard.follows(Some(&first), &url("https://img.example.com/q.png")), Ok(()));
+        assert_eq!(guard.follows(Some(&first), &url("https://cdn.example.org/p.png")), Err(NotListed));
+        let unlisted = url("https://news.example.com/p.png");
+        assert_eq!(guard.follows(Some(&unlisted), &url("https://cdn.example.com/p.png")), Err(NotListed));
+        assert_eq!(guard.follows(None, &url("https://cdn.example.com/p.png")), Err(NotListed));
+        assert_eq!(Guard::default().follows(None, &url("https://anything.example/p.png")), Ok(()));
     }
 
     /// At most five redirects, like before the custom policy.

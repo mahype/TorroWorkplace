@@ -721,7 +721,8 @@ funktionieren.
 | 5 | **Breit** | sonst | bündig mit Linie (`inset` 0) | Seitenleiste 240 (oder Leiste 60) + Kopf 64 + Eigenschaften 300 | Woche + Eigenschaften / Liste 440 + Detail + Eigenschaften-Spalte 300 |
 
 **Aufgaben-App** (Entwurf `docs/prototypes/tasks/redesign.html`, R.1–R.4): ohne offene Aufgabe steht
-die Liste allein links (max. `size::content_max()`). Mit offener Aufgabe: **Breit** ab Inhaltsbreite 1320
+die Liste allein und füllt die ganze Breite neben der Seitenleiste (#436, wie die Listen von Linear: die Zellen behalten
+ihre Breite, der Titel bekommt den Rest). Mit offener Aufgabe: **Breit** ab Inhaltsbreite 1320
 drei Spalten – Liste `size::list()` 460 | Detail (Text max. 640, Innenrand 32) | Eigenschaften `size::props()` 300
 (Blöcke durch `LINE` getrennt: Status, Priority, Due · „Organisation“ · „Source“), je eine `LINE`
 dazwischen; schmaler wie Mittel. **Mittel:** Liste `size::list_medium()` 380 neben dem Detail, die Eigenschaften
@@ -750,7 +751,8 @@ Regeln:
   die Liste in `mini-tall` deshalb nicht als Fehler.
 - **Mini und Mini hoch auf dem Mac** (#554, entschieden): Oben bleibt der Streifen der Ampel frei (die Höhe der oberen
   Zeile, Mitte bei y = 20). Der Leerraum dort ist kein Befund; im Bild von `shots.sh` fehlt nur die Ampel selbst.
-- **Groß heißt nicht gestreckt:** Leselisten (Mail, Aufgaben, Chat) und Fließtext max. `size::content_max()`,
+- **Groß heißt nicht gestreckt:** Leselisten (Mail, Chat) und Fließtext max. `size::content_max()`; die Aufgabenliste
+  ohne offene Aufgabe füllt die Breite (#436, Abschnitt „Aufgaben-App“),
   Formulare `size::form_max()`, zentriert bzw. links mit Seitenleiste; zusätzlicher Platz geht an Inhalt (mehr Tage,
   Detail daneben, mehr Spalten), nicht an Leerraum zwischen Elementen.
 - **Einstellungs-, Übersichts- und Kennzahlenseiten** (#464, #529: Host der Einstellungen, Steuerzentrale,

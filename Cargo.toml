@@ -230,6 +230,8 @@ winit = { version = "0.30.13", default-features = false }
 # tao window with the system's web view (wry: WKWebView, WebView2) for YouTube's embedded player, which Iced cannot
 # draw. Without default features: no GTK web view and no X11, Linux has no player. muda: the player's menu on macOS
 # (Close window, Quit), where key equivalents only come through the menu bar; the version tray-icon already brings.
+# The compose window of torroinbox (issue #969) uses them too, and on Linux it turns the GTK web view on for itself
+# (`os-webview`: WebKitGTK `webkit2gtk-4.1`, torroinbox's target table), so the workspace default stays "no GTK".
 tao = { version = "0.37.1", default-features = false, features = ["rwh_06"] }
 wry = { version = "0.57.0", default-features = false }
 muda = { version = "0.21.2", default-features = false }

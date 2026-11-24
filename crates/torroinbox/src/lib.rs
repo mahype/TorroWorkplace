@@ -102,7 +102,7 @@ use torro_inbox::demo::DemoSource;
 use torro_ipc::inbox::InboxClient;
 
 use crate::app::{App, Launch, Message};
-use crate::compose::{ComposeSource, Window};
+use crate::compose::ComposeSource;
 use crate::hub::HubSource;
 use crate::insights::StatsSource;
 use crate::mail::MailSource;
@@ -150,8 +150,18 @@ pub fn start(app: AppId, args: Vec<String>) -> ExitCode {
             return ExitCode::from(64);
         }
     };
-    // `--demo --shots <dir>` (issue #492): the views as pictures, without a window; the compose
-    // window's are named apart from the inbox's.
+    // The compose window is a webview (issue #969): it has no pictures without a window. Take them from the window.
+    if launch.compose.is_some() && args.iter().any(|arg| arg == "--shots" || arg.starts_with("--shots=")) {
+        report_start_error(app, "the compose window is a web view and has no --shots; take a screenshot of its window");
+        return ExitCode::from(64);
+    }
+    // Linux with NVIDIA: WebKitGTK needs a variable set before it starts, so the window starts again with it.
+    if launch.compose.is_some()
+        && let Some(code) = compose::web::relaunch()
+    {
+        return code;
+    }
+    // `--demo --shots <dir>` (issue #492): the views as pictures, without a window.
     let name = if launch.compose.is_some() { format!("{}-compose", app.binary) } else { app.binary.to_string() };
     let shots = match Shots::from_args(&name, &args) {
         Ok(shots) => shots,
@@ -172,11 +182,17 @@ pub fn start(app: AppId, args: Vec<String>) -> ExitCode {
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
     torro_gui::design::start_for(&suite, &launch.forced());
     let result = match (launch.compose.is_some(), launch.demo) {
-        (true, true) => compose(Arc::new(DemoSource::new(launch.start())), suite, launch, shots.as_ref()),
-        (true, false) => compose(Arc::new(InboxClient::default()), suite, launch, shots.as_ref()),
+        (true, true) => {
+            compose(Arc::new(DemoSource::new(launch.start())), suite, launch).map_err(|err| err.to_string())
+        }
+        (true, false) => compose(Arc::new(InboxClient::default()), suite, launch).map_err(|err| err.to_string()),
         // `--open pinned-one` has a demo of one mail account (issue #476).
-        (false, true) => run(Arc::new(launch.demo_source()), suite, launch, shots.as_ref()),
-        (false, false) => run(Arc::new(InboxClient::default()), suite, launch, shots.as_ref()),
+        (false, true) => {
+            run(Arc::new(launch.demo_source()), suite, launch, shots.as_ref()).map_err(|err| err.to_string())
+        }
+        (false, false) => {
+            run(Arc::new(InboxClient::default()), suite, launch, shots.as_ref()).map_err(|err| err.to_string())
+        }
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -282,29 +298,6 @@ fn view<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sug
     element
 }
 
-/// [`Window::update`] of the compose window, timed like [`update`].
-fn compose_update<S: ComposeSource + 'static>(
-    window: &mut Window<S>,
-    message: compose::Message,
-) -> Task<compose::Message> {
-    if matches!(message, compose::Message::Loaded(Ok(_))) {
-        timing::once("first data");
-    }
-    let started = Instant::now();
-    let task = window.update(message);
-    timing::slow("update", started);
-    task
-}
-
-/// [`Window::view`] of the compose window, timed like [`view`].
-fn compose_view<S: ComposeSource + 'static>(window: &Window<S>) -> Element<'_, compose::Message> {
-    let started = Instant::now();
-    let element = window.view();
-    timing::once("first frame");
-    timing::slow("view", started);
-    element
-}
-
 /// The longest mail id `--message` takes, as the core's mail commands.
 const MESSAGE_MAX: usize = 300;
 
@@ -334,26 +327,20 @@ fn start_message(args: &[String]) -> Result<Option<String>, String> {
     Ok(found)
 }
 
-/// The compose window on `source`: the core's client or the demo source; with `shots` its pictures
-/// instead ([`torro_gui::shots::run`]).
+/// The compose window on `source`: the core's client or the demo source (issue #969, [`compose::web`]): a window with
+/// the system's webview and the editor Squire, not an Iced window.
 fn compose<S: ComposeSource + 'static>(
     source: Arc<S>,
     suite: Source,
     launch: Launch,
-    shots: Option<&Shots>,
-) -> Result<(), RunError> {
-    let application = iced::application(
-        move || Window::new(source.clone(), suite.clone(), launch.clone()),
-        compose_update,
-        compose_view,
-    )
-    .settings(torro_gui::settings())
-    .title(Window::title)
-    .theme(Window::theme)
-    .scale_factor(Window::scale_factor)
-    .subscription(Window::subscription)
-    .window(compose::window_settings());
-    torro_gui::shots::run(application, shots)
+) -> Result<(), compose::web::WebError> {
+    let start = launch.compose.clone().unwrap_or(compose::Start {
+        kind: compose::Kind::New,
+        account: None,
+        open: None,
+        attach: None,
+    });
+    compose::web::run(source, suite, start)
 }
 
 /// A test's `iced_test::Simulator` of `element` at `size`, with the lock that lets only one exist at a time

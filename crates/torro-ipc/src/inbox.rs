@@ -1553,7 +1553,13 @@ mod tests {
                 ))],
             },
             Request::ListSources => Response::Sources {
-                sources: vec![SourceInfo { source: SourceRef::script("ci"), open: 2, muted: false, health: None }],
+                sources: vec![SourceInfo {
+                    source: SourceRef::script("ci"),
+                    open: 2,
+                    muted: false,
+                    health: None,
+                    notice: None,
+                }],
             },
             // A dismissed entry is titled so, to see the flag arrived.
             Request::SetItemDone { id, done, dismissed } => {
@@ -1911,7 +1917,10 @@ mod tests {
     async fn sources_are_listed() {
         let core = start(|request| async move { answer(request) }).await;
         let sources = core.client().list_sources().await.expect("listed");
-        assert_eq!(sources, vec![SourceInfo { source: SourceRef::script("ci"), open: 2, muted: false, health: None }]);
+        assert_eq!(
+            sources,
+            vec![SourceInfo { source: SourceRef::script("ci"), open: 2, muted: false, health: None, notice: None }]
+        );
     }
 
     #[tokio::test]

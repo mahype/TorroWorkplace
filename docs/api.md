@@ -767,7 +767,9 @@ vor der Freigabe und bei der Ausführung); ein Repo außerhalb seiner Reichweite
 Ausblenden und Stummschalten wirken nie zurück. Die Freigabe nennt es („…, mark its GitHub notification done and any mail about it read“,
 „… and delete its Nextcloud notification“, „… and mark the Talk conversation read“). **Zustand:** `list_sources`
 nennt in `health`, warum eine fremde Quelle gerade nichts bringt (`missing_app`, `missing_scope`, `signed_out`,
-`offline`), auch ohne Einträge; nur im Speicher. **Konto entfernt:** Die offenen Einträge der Quelle (bei Nextcloud
+`offline`), auch ohne Einträge; nur im Speicher. In `notice` steht, was eine Quelle, die arbeitet, trotzdem
+auslässt: `public_only` (klassisches GitHub-Token ohne Scope `repo`, private Repos fehlen; ein Fine-grained-Token
+meldet keine Scopes und bleibt `missing_scope`); fehlt das Feld, gibt es nichts zu sagen (#947). Das Feld verrät einem Client mit `inbox` und `github` ein Bit über das Token („kein `repo`“), nie die Scopes selbst; die stehen nur in `accounts.list_accounts`. **Konto entfernt:** Die offenen Einträge der Quelle (bei Nextcloud
 auch die von Talk) sind erledigt, Statistik, Lesestand (`cursors`) und Kennungen gehen mit, und die Quelle
 verschwindet aus den Rechten aller Clients. **Nextcloud (E5.8):** je Nextcloud-Konto (nicht CalDAV, nicht Mail) alle 60
 s die Benachrichtigungen mit ETag (`304` = nichts Neues), die Capabilities beim Start und stündlich; die erste Abfrage

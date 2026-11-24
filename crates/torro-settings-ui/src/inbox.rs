@@ -177,7 +177,7 @@ pub mod notifications {
 /// notifications, its Talk, a GitHub account, an ntfy **server**. A mail account has its own field
 /// instead (`accounts.update_mail_account`, `notify`), with three steps.
 pub mod sources {
-    use torro_inbox::item::SourceHealth;
+    use torro_inbox::item::{SourceHealth, SourceNotice};
     use torro_inbox::{SourceKind, SourceRef};
     use torro_mail::Notify;
 
@@ -263,6 +263,21 @@ pub mod sources {
     /// Why `source` brings nothing at the moment, as the core keeps it.
     fn health_of(data: &Data, source: &SourceRef) -> Option<SourceHealth> {
         data.sources.iter().find(|info| info.source == *source).and_then(|info| info.health)
+    }
+
+    /// What `source` leaves out although it works, as the core keeps it (issue #947).
+    fn notice_of(data: &Data, source: &SourceRef) -> Option<SourceNotice> {
+        data.sources.iter().find(|info| info.source == *source).and_then(|info| info.notice)
+    }
+
+    /// What a working source leaves out, in calm words that say where to look: the account's page
+    /// has the group "Permissions" with the token's scopes (issue #947).
+    pub fn notice_text(notice: SourceNotice) -> &'static str {
+        match notice {
+            SourceNotice::PublicOnly => tr(
+                "Only public repositories: the token has no repo scope. See Permissions on the account's page under Accounts.",
+            ),
+        }
     }
 
     /// Why a source of `kind` is quiet, in calm words that say what helps (ported from the control
@@ -429,7 +444,18 @@ pub mod sources {
         }
     }
 
-    /// One source with its switch: its name, under it why it is quiet, else what it brings.
+    /// The sentence under a source's name: why it is quiet, else what it leaves out
+    /// ([`notice_text`]), else `brings`.
+    fn detail_of(data: &Data, source: &SourceRef, brings: Option<&'static str>) -> Option<String> {
+        health_of(data, source)
+            .map(|health| health_text(source.kind, health))
+            .or_else(|| notice_of(data, source).map(notice_text))
+            .or(brings)
+            .map(str::to_string)
+    }
+
+    /// One source with its switch: its name, under it why it is quiet, else what it leaves out
+    /// ([`notice_text`]), else what it brings.
     fn switch_row<'a>(
         label: &'static str,
         brings: Option<&'static str>,
@@ -437,8 +463,7 @@ pub mod sources {
         data: &Data,
     ) -> Element<'a, Message> {
         let shown = is_shown(data, &source);
-        let kind = source.kind;
-        let detail = health_of(data, &source).map(|health| health_text(kind, health)).or(brings).map(str::to_string);
+        let detail = detail_of(data, &source, brings);
         let control = switch(shown, move |shown| Message::Shown { source: source.clone(), shown });
         setting_row(None, label, detail, control)
     }
@@ -504,7 +529,7 @@ pub mod sources {
         }
 
         fn muted(source: SourceRef) -> SourceInfo {
-            SourceInfo { source, open: 0, muted: true, health: None }
+            SourceInfo { source, open: 0, muted: true, health: None, notice: None }
         }
 
         /// A switch sends `inbox.mute_source` for its own source and nothing else.
@@ -709,6 +734,34 @@ pub mod sources {
             }
         }
 
+        /// Issue #947: a GitHub source that works but reaches public repositories only says so under
+        /// its name, in place of what it brings; a source that is quiet says why first.
+        #[tokio::test]
+        async fn a_source_with_a_notice_says_what_it_leaves_out() {
+            let mut data = data().await;
+            let github = SourceRef::github("anna-dev");
+            let brings = Some("What it brings");
+            // The demo's GitHub token has no `repo`, so the row says it (the pictures of the design check).
+            assert_eq!(detail_of(&data, &github, brings).as_deref(), Some(notice_text(SourceNotice::PublicOnly)));
+            let info = data.sources.iter_mut().find(|info| info.source == github).expect("demo source");
+            info.notice = None;
+            assert_eq!(detail_of(&data, &github, brings).as_deref(), brings, "no note, no sentence of its own");
+            let info = data.sources.iter_mut().find(|info| info.source == github).expect("demo source");
+            info.notice = Some(SourceNotice::PublicOnly);
+            assert_eq!(detail_of(&data, &github, brings).as_deref(), Some(notice_text(SourceNotice::PublicOnly)));
+            let info = data.sources.iter_mut().find(|info| info.source == github).expect("demo source");
+            info.health = Some(SourceHealth::Offline);
+            assert_eq!(
+                detail_of(&data, &github, brings).as_deref(),
+                Some(health_text(SourceKind::Github, SourceHealth::Offline)),
+                "being quiet is the more urgent thing to say"
+            );
+            let account = data.accounts.iter().find(|account| account.id == github.key()).expect("demo account");
+            assert!(!rows_of(account, &github, &data).is_empty());
+            // The scope is named in both languages (the product's own word); the rest is translated.
+            assert!(notice_text(SourceNotice::PublicOnly).contains("repo"));
+        }
+
         /// The three steps read as the control centre's page had them.
         #[test]
         fn the_choices_read_as_all_for_me_and_off() {
@@ -718,7 +771,9 @@ pub mod sources {
     }
 }
 
-/// "Rules": every lasting rule the person made in the inbox, with "Remove".
+/// "Rules": every lasting rule the person made in the inbox, with "Remove" – but the rules that
+/// work on mail's categories alone (trusted senders, "Always for this sender"), which stand in the
+/// mail window under Categorization (issues #546, #577).
 ///
 /// Ported from the control centre's inbox page (tasks E3.10, E3.11, E8.6b, E8.8a, E8.12): the
 /// title says what a rule is about ([`subject`]), the quiet line under it what it does, where it
@@ -816,10 +871,17 @@ pub mod rules {
     }
 
     /// The rules this page lists, in the order [`ordered`] gives them: all but the trusted senders
-    /// (issue #546). They work on mail alone and stand where they work, in the mail window under
-    /// Categorization › Spam and Phishing ("Trusted senders").
+    /// (issue #546) and the rules "Always for this sender" (issue #577). Both work on mail's
+    /// categories alone and stand where they work, in the mail window under Categorization: the
+    /// trusted senders on Spam and Phishing, the others on the page of their category.
     fn listed(rules: &[Rule]) -> Vec<&Rule> {
-        ordered(rules).into_iter().filter(|rule| rule.effect != RuleEffect::Trusted).collect()
+        ordered(rules).into_iter().filter(|rule| !is_mails(rule)).collect()
+    }
+
+    /// A rule that belongs to mail's categories, not to the Notification Hub: a trusted sender or
+    /// a sender or domain kept for a category (issues #546, #577).
+    fn is_mails(rule: &Rule) -> bool {
+        rule.facet.is_none() && matches!(rule.effect, RuleEffect::Trusted | RuleEffect::Category { .. })
     }
 
     /// The rules in the order of the page: remembered lanes first, then muted sources, then muted traits, each
@@ -1125,6 +1187,26 @@ pub mod rules {
             assert_eq!(ids, ["m"]);
             let only = vec![trusted];
             assert!(listed(&only).is_empty(), "only trusted senders: the empty state");
+            let _: Element<'_, Message> = view(&State::default(), &Data { rules: only, ..Data::default() }, now());
+        }
+
+        /// Issue #577: the rules "Always for this sender" are mail's (Categorization, the page of
+        /// their category); the page leaves them out, and with only them it says where rules come from.
+        #[test]
+        fn kept_senders_are_not_listed_here() {
+            let kept = Rule {
+                sender: Some("billing@shop.example".into()),
+                ..rule(
+                    "k",
+                    SourceRef::mail("anna@example.org"),
+                    RuleEffect::Category { category: torro_mail::Category::Invoice },
+                )
+            };
+            let rules = vec![kept.clone(), rule("m", SourceRef::script("backup"), RuleEffect::Muted)];
+            let ids: Vec<&str> = listed(&rules).iter().map(|rule| rule.id.as_str()).collect();
+            assert_eq!(ids, ["m"]);
+            let only = vec![kept];
+            assert!(listed(&only).is_empty(), "only kept senders: the empty state");
             let _: Element<'_, Message> = view(&State::default(), &Data { rules: only, ..Data::default() }, now());
         }
 
