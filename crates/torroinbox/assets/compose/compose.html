@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Torro compose</title>
+<!--
+  The compose window (issue #969): this page is all of it; the program only holds the draft (crates/torroinbox/src/
+  compose/session.rs). Texts are English and carry their English words in data-t / data-title / data-ph; the
+  program swaps in its language when it sends `theme` (`strings()` in web.rs).
+-->
+<link rel="stylesheet" href="/compose.css">
+</head>
+<body data-paper="light">
+<div id="app" class="app" hidden>
+  <header class="top">
+    <div class="ttl"><b id="heading"></b><span id="status" class="muted"></span><span id="fromsmall" class="muted"></span></div>
+    <button class="ib" id="attach" data-title="Attach files"><svg viewBox="0 0 24 24"><path d="M21 11.5 12.6 20a5 5 0 0 1-7-7l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4L15.8 7.4"/></svg></button>
+    <button class="ib" id="close" data-title="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    <span class="sep"></span>
+    <button class="send" id="send"><svg viewBox="0 0 24 24"><path d="M4 12 20 4l-5 16-3-7z"/></svg><span data-t="Send">Send</span></button>
+  </header>
+
+  <div id="notice" class="notice" role="alert" hidden>
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+    <div class="msg"><b id="notice-what"></b> <span id="notice-why" class="muted"></span></div>
+    <button class="ib small" id="notice-close" data-title="Dismiss"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+  </div>
+
+  <section class="fields" id="fields">
+    <div class="fld" id="row-from">
+      <label data-t="From">From</label>
+      <div class="val">
+        <button class="select" id="from-btn" aria-haspopup="listbox"><span id="from-name"></span><svg viewBox="0 0 24 24" class="chev"><path d="m6 9 6 6 6-6"/></svg></button>
+        <span id="from-addr" class="muted"></span>
+        <div class="menu" id="from-menu" role="listbox" hidden></div>
+      </div>
+    </div>
+    <div class="fld recipients" id="row-to" data-field="to">
+      <label data-t="To">To</label>
+      <div class="val"><input class="inp bare" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+      <div class="fold"><button id="show-cc" data-t="Cc">Cc</button><button id="show-bcc" data-t="Bcc">Bcc</button></div>
+      <div class="suggest" role="listbox" hidden></div>
+    </div>
+    <div class="fld recipients" id="row-cc" data-field="cc" hidden>
+      <label data-t="Cc">Cc</label>
+      <div class="val"><input class="inp bare" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+      <div class="suggest" role="listbox" hidden></div>
+    </div>
+    <div class="fld recipients" id="row-bcc" data-field="bcc" hidden>
+      <label data-t="Bcc">Bcc</label>
+      <div class="val"><input class="inp bare" autocomplete="off" autocapitalize="off" spellcheck="false"></div>
+      <div class="suggest" role="listbox" hidden></div>
+    </div>
+    <div class="fld" id="row-subject">
+      <label data-t="Subject">Subject</label>
+      <div class="val"><input class="inp bare" id="subject" autocomplete="off" spellcheck="true"></div>
+    </div>
+  </section>
+
+  <div class="tools" id="tools" role="toolbar">
+    <button class="ib" id="aa" data-title="Hide formatting"><svg viewBox="0 0 24 24"><path d="M3 18 8 6l5 12M5 14h6M15 18l3.5-8 3.5 8M16.5 15h4"/></svg></button>
+    <span class="fmt tools-group">
+      <button class="ib" data-cmd="bold" data-title="Bold"><svg viewBox="0 0 24 24"><path d="M7 5h6a3.5 3.5 0 0 1 0 7H7zM7 12h7a3.5 3.5 0 0 1 0 7H7z"/></svg></button>
+      <button class="ib" data-cmd="italic" data-title="Italic"><svg viewBox="0 0 24 24"><path d="M14 5h-4M14 19h-4M14 5l-4 14"/></svg></button>
+      <button class="ib" data-cmd="underline" data-title="Underline"><svg viewBox="0 0 24 24"><path d="M7 4v7a5 5 0 0 0 10 0V4M5 20h14"/></svg></button>
+      <span class="sep"></span>
+      <button class="ib" data-cmd="ul" data-title="Bulleted list"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="18" r="1"/></svg></button>
+      <button class="ib" data-cmd="ol" data-title="Numbered list"><svg viewBox="0 0 24 24"><path d="M10 6h10M10 12h10M10 18h10M4 5l1.5-1v5M4 14h3l-3 4h3"/></svg></button>
+      <button class="ib" data-cmd="quote" data-title="Quote"><svg viewBox="0 0 24 24"><path d="M5 6v12M10 8h9M10 12h9M10 16h6"/></svg></button>
+      <span class="sep"></span>
+      <button class="ib" data-cmd="link" data-title="Link"><svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg></button>
+      <button class="ib" data-cmd="clear" data-title="Clear formatting"><svg viewBox="0 0 24 24"><path d="M4 7V4h16v3M5 20h6M13 4 8 20M15 15l5 5M20 15l-5 5"/></svg></button>
+      <span class="sep"></span>
+      <button class="ib" data-cmd="undo" data-title="Undo"><svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3"/></svg></button>
+      <button class="ib" data-cmd="redo" data-title="Redo"><svg viewBox="0 0 24 24"><path d="m15 14 5-5-5-5M20 9H10a6 6 0 0 0 0 12h3"/></svg></button>
+    </span>
+    <button class="ib" id="image" data-title="Insert image"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m21 17-5-5-9 8"/></svg></button>
+    <span class="spacer"></span>
+    <button class="ib" id="paper-toggle" data-title="Switch to dark paper"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 18a6 6 0 0 0 0-12v12z"/></svg></button>
+  </div>
+
+  <main class="body">
+    <div class="paperbox" id="paper">
+      <div id="editor" class="editor" role="textbox" aria-multiline="true" data-ph="Write your message…"></div>
+      <button class="linkbtn" id="history-toggle" hidden></button>
+      <div class="sig" id="signature" hidden><small data-t="Signature">Signature</small><span id="signature-text"></span></div>
+    </div>
+    <div class="atts" id="atts"></div>
+  </main>
+
+  <footer class="foot"><button class="ghost" id="discard-draft" data-t="Discard draft">Discard draft</button></footer>
+
+  <div class="popover" id="imgbar" hidden>
+    <button data-size="small" data-t="Small">Small</button><button data-size="medium" data-t="Medium">Medium</button><button data-size="large" data-t="Large">Large</button><button data-size="original" data-t="Original">Original</button>
+    <span class="sep"></span>
+    <button id="img-attach" data-t="As attachment">As attachment</button><button id="img-remove" data-t="Remove">Remove</button>
+  </div>
+  <div class="popover linkbar" id="linkbar" hidden>
+    <input class="inp" id="link-input" data-ph="https://" autocomplete="off" spellcheck="false">
+    <button id="link-apply" data-t="Apply">Apply</button><button id="link-remove" data-t="Remove link">Remove link</button>
+  </div>
+  <div class="dropzone" id="dropzone" hidden><div id="dropzone-text"></div></div>
+
+  <div class="scrim" id="scrim" hidden>
+    <div class="dialog" role="alertdialog" aria-labelledby="dialog-title">
+      <h2 id="dialog-title"></h2>
+      <p id="dialog-text" class="muted"></p>
+      <div class="actions" id="dialog-actions"></div>
+    </div>
+  </div>
+</div>
+
+<div id="loading" class="loading"><span data-t="Loading…">Loading…</span></div>
+<div id="failed" class="loading failed" hidden>
+  <div><b id="failed-what"></b><p id="failed-why" class="muted"></p><button class="ghost" id="failed-retry" data-t="Retry">Retry</button> <button class="ghost" id="failed-close" data-t="Close">Close</button></div>
+</div>
+
+<script src="/purify.min.js"></script>
+<script src="/squire.js"></script>
+<script src="/compose.js"></script>
+</body>
+</html>
