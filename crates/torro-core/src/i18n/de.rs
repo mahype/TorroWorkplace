@@ -10215,6 +10215,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Everything you say stays on this computer.", "Alles, was du sagst, bleibt auf diesem Rechner."),
     ("No API key on this computer", "Kein API-Schlüssel auf diesem Rechner"),
+    ("{provider} + chat model", "{provider} + Chat-Modell"),
     ("No account offers the conversation engine {model}.", "Kein Konto bietet das Gesprächsmodul {model} an."),
     (
         "Add a key to this engine's account in Settings › AI; until then this computer answers.",

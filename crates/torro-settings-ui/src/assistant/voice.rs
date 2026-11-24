@@ -1062,10 +1062,13 @@ fn engine_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     widgets::group(tr("Who answers"), vec![row], Some(footer))
 }
 
-/// "OpenAI · Cloud · US" under an engine: its provider and where its servers are, or that its key is missing.
+/// "OpenAI · Cloud · US" under an engine: its provider and where its servers are, or that its key is missing. An engine
+/// with the assistant behind it (issue #919) says so instead of where its servers are: otherwise it reads exactly like
+/// the plain engine of the same provider, and the menu has no room for both.
 fn engine_detail(option: &torro_ipc::LiveEngineOption) -> String {
     match option.missing {
         Some(torro_ipc::LiveMissing::Key) => tr("No API key on this computer").to_string(),
+        None if option.assistant => trf("{provider} + chat model", &[("provider", &option.provider.name())]),
         None => format!("{} · {}", option.provider.name(), option.provider.seat().label()),
     }
 }
@@ -2400,5 +2403,24 @@ mod tests {
             sent(update(&mut state, Message::SpeechVoice(SpeechProvider::Qwen, "calm_man".into()), &with)),
             (SettingKey::QwenVoice, serde_json::json!("calm_man"))
         );
+    }
+
+    /// GPT-Live reads differently from OpenAI Realtime of the same account (issue #919): the menu names the chat model
+    /// behind it instead of where the servers are.
+    #[test]
+    fn an_engine_with_the_assistant_behind_it_names_the_chat_model() {
+        let option = |model: &str, assistant| torro_ipc::LiveEngineOption {
+            account: "ai:openai@api.openai.com".into(),
+            account_name: "OpenAI".into(),
+            provider: torro_core::ai::AiProvider::OpenAi,
+            model: model.into(),
+            name: model.into(),
+            missing: None,
+            assistant,
+        };
+        let plain = engine_detail(&option("gpt-realtime-2.1", false));
+        let live = engine_detail(&option("gpt-live-1.1", true));
+        assert_eq!(live, trf("{provider} + chat model", &[("provider", &"OpenAI")]));
+        assert_ne!(plain, live);
     }
 }

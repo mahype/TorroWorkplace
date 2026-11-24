@@ -1742,6 +1742,8 @@ fn live_engines() -> Vec<torro_ipc::LiveEngineOption> {
     vec![
         engine("ai:openai@api.openai.com", AiProvider::OpenAi, "gpt-realtime-2.1", "OpenAI Realtime", None),
         engine("ai:openai@api.openai.com", AiProvider::OpenAi, "gpt-realtime-2.1-mini", "OpenAI Realtime mini", None),
+        // In the order the core lists them: by account, then as `live_models` names them.
+        engine("ai:openai@api.openai.com", AiProvider::OpenAi, "gpt-live-1.1", "GPT-Live", None),
         engine(
             "ai:xai@api.x.ai",
             AiProvider::Xai,
@@ -1756,7 +1758,6 @@ fn live_engines() -> Vec<torro_ipc::LiveEngineOption> {
             "Gemini Live",
             None,
         ),
-        engine("ai:openai@api.openai.com", AiProvider::OpenAi, "gpt-live-1.1", "GPT-Live", None),
     ]
 }
 
