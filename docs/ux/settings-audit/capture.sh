@@ -15,6 +15,11 @@ out=$root/docs/ux/settings-audit/screenshots
 scratch=${TMPDIR:-/tmp}/settings-audit-shots
 log=${TMPDIR:-/tmp}/settings-audit-capture.log
 : > "$log"
+# An empty home of its own: otherwise the apps read the real state (e.g. the mail window's remembered pane widths)
+# and the pictures depend on the machine they were taken on.
+home=${TMPDIR:-/tmp}/settings-audit-home
+rm -rf "$home"; mkdir -p "$home"
+export TORRO_CONFIG_HOME=$home TORRO_DATA_HOME=$home TORRO_STATE_HOME=$home
 
 declare -a SIZES=("wide:1600x1000" "narrow:480x900")
 
