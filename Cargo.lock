@@ -11112,6 +11112,7 @@ dependencies = [
  "png 0.18.1",
  "reqwest 0.13.5",
  "tokio",
+ "torro-core",
  "torro-gui",
 ]
 
