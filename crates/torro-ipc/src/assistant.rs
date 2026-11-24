@@ -26,6 +26,9 @@ use serde::{Deserialize, Serialize};
 use crate::api::{Access, Area, Confirm, Level, Operation, Outbound, Rights, Selection};
 use crate::{Request, Response};
 
+pub mod jobs;
+pub use jobs::{JobInfo, JobReason, JobState, StepInfo, StepState};
+
 /// The link card and the provider to ask about of a [`Card::Link`] (issue #785), as the chat with people
 /// has them: one shape in every window.
 pub use torro_chat::{ForeignProvider, LinkCard};
@@ -1023,6 +1026,13 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         Request::SendMessage { text, .. } if text.chars().count() > MAX_TEXT_CHARS => {
             refuse(format!("a message may hold at most {MAX_TEXT_CHARS} characters"))
         }
+        Request::StartJob { goal, .. } if goal.trim().is_empty() => refuse("the goal is empty".into()),
+        Request::StartJob { goal, .. } if goal.chars().count() > MAX_TEXT_CHARS => {
+            refuse(format!("a goal may hold at most {MAX_TEXT_CHARS} characters"))
+        }
+        Request::ResumeJob { engine: None, model: Some(_), .. } => {
+            refuse("name the engine with the model, so the choice is explicit".into())
+        }
         Request::RenameConversation { title, .. } if title.trim().is_empty() => refuse("the title is empty".into()),
         Request::RenameConversation { title, .. } if title.lines().count() > 1 => refuse("a title is one line".into()),
         Request::RenameConversation { title, .. } if title.trim().chars().count() > MAX_TITLE_CHARS => {
@@ -1362,7 +1372,9 @@ impl Request {
             Request::SendMessage { conversation, .. }
             | Request::AskBot { conversation, .. }
             | Request::StartTalk { conversation }
-            | Request::ShowItems { conversation, .. } => conversation.as_deref(),
+            | Request::ShowItems { conversation, .. }
+            | Request::StartJob { conversation, .. }
+            | Request::ListJobs { conversation } => conversation.as_deref(),
             _ => None,
         }
     }
@@ -1394,8 +1406,17 @@ fn assistant_ids(request: &Request) -> Vec<&str> {
                 ids.extend([about.account.as_str(), about.id.as_str()]);
             }
         }
-        Request::ChooseModel { engine, model, .. } => {
+        Request::ChooseModel { engine, model, .. } | Request::StartJob { engine, model, .. } => {
             ids.push(engine);
+            ids.extend(model.as_deref());
+        }
+        Request::GetJob { id }
+        | Request::PauseJob { id }
+        | Request::CancelJob { id }
+        | Request::ResolveJobStep { id, .. } => ids.push(id),
+        Request::ResumeJob { id, engine, model } => {
+            ids.push(id);
+            ids.extend(engine.as_deref());
             ids.extend(model.as_deref());
         }
         Request::CheckAbout { engine, model, about } => {

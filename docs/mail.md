@@ -161,42 +161,40 @@ unverändert.
   Verlauf offen, dort ist er der Inhalt. Empfänger werden Chips, Vorschläge kommen aus Adressbuch und Mails
   ([kontakte.md](kontakte.md), „Empfänger-Vorschläge“). Das **Papier** schaltet ◐ hell oder dunkel, unabhängig vom
   Fenster und von den Mailfarben des Lesers (Einstellung `compose_paper`, gemerkt); die gesendete Mail bleibt gleich.
-  Der Text bleibt ein Textfeld mit leisen Zeichen: Eine Webview lässt sich unter Wayland nicht in ein Iced-Fenster
-  einbetten, Schriftgröße und Textfarbe kann es nicht zeigen. Das Schreibfenster schreibt HTML, ohne die
-  Reintext-Voreinstellung eines Kontos umzuschreiben. Reintext-Entwürfe werden dabei als Text escaped.
-  **Bilder im Text (#461)** stehen als eigene Blöcke zwischen Textfeldern, am Cursor bzw. anstelle der Auswahl:
-   über „Bild“, Datei-Ziehen oder Cmd/Ctrl+V mit einem Screenshot. Unter Wayland liefert winit 0.30 keine
-  Datei-Drops: dort bleiben Knopf und Screenshot, ohne eigenen Drag-and-drop-Unterbau.
-  Beim gewählten Bild stehen Klein/Mittel/Groß (höchstens natürliche Breite bzw. 320/640/960 Pixel), Original,
-  „Als Anhang“ und Entfernen. Normal wird orientiert, auf höchstens 1600 Pixel Breite verkleinert, nie vergrößert,
-  JPEG mit Qualität 85, andere Formate als PNG/erster Frame. Original behält nur auf Wunsch die Quellbytes.
-  Entwürfe und Versand verwenden `cid:` und `multipart/related`; normale Anhänge bleiben daneben.
-  Originale bleiben nur im Dienst-RAM und werden nach einer Stunde ohne Nutzung vergessen; offene Fenster
-  verlängern alle 30 Minuten. Nach Wiederöffnen gilt die gespeicherte Auflösung. Ein Quellenverlust sperrt den
-  Versand, statt ein Bild unbemerkt wegzulassen. Fenster und Papier können weiterhin unabhängig hell/dunkel sein.
-  Tastatur: Cmd/Ctrl+Alt+O öffnet den Bilddialog, Cmd/Ctrl+Alt+I wählt das nächste Bild (mit Umschalt das vorige);
-  danach wählen Cmd/Ctrl+Alt+1–4 die Größe und Cmd/Ctrl+Alt+A wechselt Anhang/Einbettung.
-   Cmd/Ctrl+Alt+Rücktaste öffnet die Rückfrage vor dem Entfernen; Enter bestätigt, Escape bricht ab.
-   **Einfügen aus anderen Programmen (#462)** bevorzugt native Dateilisten (absolute lokale reguläre Dateien,
-   keine Symlinks), dann HTML, Screenshot-Pixel und Text. Bilddateien werden normale Anhänge, Screenshots nutzen
-   die bestehenden Bild-Blöcke und Uploads. HTML aus Browser, Office und Mail wird zu den Editorzeichen:
-   Fett/Kursiv/Unterstrichen, Listen, Zitate und sichere Web-/Mail-Links bleiben; Tabellen werden Text.
-   Office-Schriftstile und Mso-Listen werden semantisch normalisiert. Fremdstile, ausführbare Inhalte, sämtliche
-   Bildquellen sowie Signatur-/Historienklassen werden entfernt; nichts wird geladen.
-   Fünf Sekunden lang bietet „Mit Formatierung eingefügt · Nur Text behalten“ den Ersatz nur dieser Einfügung
-   an (auch Cmd/Ctrl+Alt+V). Textänderung, Formatierung, nächste Einfügung und Kontowechsel entwerten den Hinweis,
-   Autosave nicht. Umschalt+Cmd+V (sonst Strg+Umschalt+V) liest ausschließlich Text, ersatzweise gesäuberten
-   HTML-Klartext. Alle Klartextwege maskieren die Editorzeichen einschließlich Listen-/Zitatpräfixen.
-   Ein serieller Clipboard-Leser läuft außerhalb des UI-Threads; weitere Einfügungen melden „noch in Vorbereitung“.
-   Späte Antworten ersetzen nur ihren reservierten Bereich, erhalten späteres Tippen und übernehmen keinen
-   inzwischen anderweitigen Fokus. Entfernte Ziele und Kontowechsel verwerfen die Antwort. Fehler/Leere stellen
-   die Auswahl wieder her und brechen wartenden Versand ab; erfolgreiche Importe setzen wartendes Speichern/Senden
-   fort. Passt die wiederhergestellte Auswahl mit späteren Eingaben nicht mehr ins Größenlimit, bleibt alles sichtbar;
-   vor Speichern/Senden fordert das Fenster zum Kürzen auf. Bei fehlendem Backend bleibt Iced-Text,
-   bei offline/älterem Dienst nur Klartext. Echte Clipboard-Integration
-   auf macOS, Windows und Hyprland bleibt manuell zu prüfen; Tests verwenden injizierte Formate ohne System-Clipboard.
-   Automatische Tests prüfen Inhalt und Zustandswechsel. Die erzeugten headless PNGs werden zusätzlich visuell
-   geprüft; Bildgenerierung oder grüne Tests allein sind keine Sichtprüfung.
+  **Der Text ist seit #969 ein echter WYSIWYG-Editor** (Entscheidung 10): Das Schreibfenster ist ein tao/wry-Fenster
+  mit der Webansicht des Systems (WKWebView, WebKitGTK, WebView2) und dem Editor Squire. Der Text ist ein
+  durchgehendes, sichtbar formatiertes Dokument: Fett, Kursiv, Unterstrichen, Listen, Links, Zitate, Auswahl über
+  Absätze und Bilder, Rückgängig und Wiederholen (Squire), Formatieren ohne sichtbare Zeichen. Der alte Editor aus
+  gestapelten Iced-Textfeldern mit Markdown-Zeichen und eigenen Bild-Blöcken (`compose/document.rs`) ist entfernt; es
+  gibt keinen zweiten Weg. Aufbau, Zeilen, Chips, Vorschläge, Papier ◐, Antworten und Entwürfe sind wie oben
+  beschrieben, nur als Seite im Fenster (`crates/torroinbox/assets/compose/`); der Dienst hält den Entwurf
+  (`compose/session.rs`), die Seite zeigt ihn und meldet, was die Person tut (JSON über die Brücke).
+  **Bilder im Text (#461)** stehen an der Stelle im Text: über „Bild“, Ziehen einer Bilddatei auf den Text (an der
+  Stelle des Ziehens; Dateien an anderer Stelle des Fensters und alle anderen Dateien werden Anhänge) oder Einfügen
+  eines Screenshots. Der Dienst bereitet das Bild vor (`mail.prepare_image`, `mail.upload_image`); die Seite zeigt die
+  Vorschau unter der eigenen Adresse `/img/<cid>` des Fensters, der Entwurf nennt es `cid:<cid>`. Beim gewählten Bild
+  stehen Klein/Mittel/Groß (höchstens natürliche Breite bzw. 320/640/960 Pixel), Original, „Als Anhang“ und Entfernen.
+  Normal wird auf höchstens 1600 Pixel Breite verkleinert, nie vergrößert; Originale bleiben nur im Dienst-RAM
+  und werden nach einer Stunde ohne Nutzung vergessen; das offene Fenster bereitet sie nach 20 Minuten neu vor (Takt und Speichern). Ein
+  Quellenverlust sperrt den Versand, statt ein Bild unbemerkt wegzulassen.
+  **Einfügen (#462)**: Die Seite nimmt nicht, was die Zwischenablage anbietet, sondern gibt HTML und Text an den Dienst
+  (`html::prepare_paste`, dieselbe Bereinigung wie bisher); zurück kommt HTML, das nur enthält, was Mail erlaubt:
+  Fett/Kursiv/Unterstrichen, Listen, Zitate und sichere Web-/Mail-Links; Fremdstile, Skripte, Bilder und Signatur-/
+  Historienklassen sind weg, Tabellen werden Text. Strg+Umschalt+V (macOS Umschalt+Cmd+V) fügt nur Text ein, mit
+  maskierten Zeichen. Ein Screenshot in der Zwischenablage wird ein Bild im Text.
+  **Sicherheit:** Die Seite kommt aus dem Programm (eigenes Protokoll, kein Netz, keine Datei von der Platte); ihre
+  Content-Security-Policy erlaubt Skripte, Stile, Schrift und Bilder nur vom eigenen Ursprung und keine Verbindungen.
+  Navigation weg von der Seite und neue Fenster sind gesperrt; Links öffnen mit Cmd/Strg-Klick im Standard-Browser
+  (nur `http`, `https`, `mailto`). Die Brücke nimmt nur getypte Nachrichten vom eigenen Ursprung (höchstens 40 MiB),
+  Empfänger werden im Dienst neu gelesen, das HTML wird auf `cid:`-Bilder des Dienstes umgeschrieben und vom Kern beim
+  Speichern noch einmal bereinigt. Squire bekommt nur, was DOMPurify durchlässt. Geheimnisse und Rechte sind nie in
+  der Seite.
+  **Plattformen:** macOS (WKWebView, mit Menüleiste für ⌘C/⌘V/⌘Z), Linux (WebKitGTK `webkit2gtk-4.1`; mit NVIDIA unter
+  Wayland startet das Fenster sich selbst mit `WEBKIT_DISABLE_DMABUF_RENDERER=1`, siehe [research.md](research.md)
+  Abschnitt 9) und Windows (WebView2, bei Windows 10/11 meist vorhanden; fehlt es, meldet das Fenster das beim
+  Start). Pakete brauchen auf Linux `webkit2gtk-4.1` und GTK 3 (Bau: `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`).
+  Geprüft sind die Teile in der Pull-Request-Beschreibung von #969 (macOS mit echtem Fenster); Linux (#973), Windows
+  (#974), Pakete (#975) und die Bilder des echten Fensters (#976) sind dort ausdrücklich als offen gekennzeichnet.
 - **Einladungen** (iMIP) zeigen oben in der Nachricht „Accept / Maybe / Decline“; die Antwort
   geht per Mail zurück (iTIP `REPLY` über das Konto, Schalter „Nach außen“ wie beim Senden), der
   Termin landet in dem Kalender, der die frühere Kopie hält, sonst im ersten beschreibbaren (E8.3b,
@@ -803,17 +801,16 @@ verschieben; einen Verlauf mit mehreren Schritten gibt es nicht.
 
 ### Schreibfenster
 
-- **Strg+Z im Text:** gibt es nicht. Der Text-Editor von Iced 0.14 hat keinen eigenen Verlauf, und
-  das Schreibfenster belegt Strg+Z nicht (`editor_binding`). Dasselbe gilt für die Felder An, Cc,
-  Bcc und Betreff.
-- **Absichern statt rückgängig:** Das Fenster speichert nach wenigen Sekunden einen Entwurf
-  (`AUTOSAVE`) und fragt beim Schließen mit ungespeicherten Änderungen: „Discard changes“, „Save
-  draft“ oder weiterschreiben. Das ist keine Schritt-für-Schritt-Historie.
+- **Strg+Z im Text (seit #969):** Squires Verlauf (Strg+Z, Umschalt+Strg+Z; macOS ⌘Z, Umschalt+⌘Z) und die Knöpfe
+  „Undo“ und „Redo“ der Werkzeugzeile; er gilt für Text, Formate, Bilder im Text und Einfügungen. Er gilt nicht für die
+  Felder An, Cc, Bcc und Betreff; dort tut es der Verlauf des Feldes.
+- **Absichern zusätzlich:** Das Fenster speichert nach wenigen Sekunden einen Entwurf (`AUTOSAVE`) und fragt beim
+  Schließen mit ungespeicherten Änderungen: „Discard changes“, „Save draft“ oder weiterschreiben.
 - **Empfänger-Chip entfernen (✕), Anhang entfernen (✕):** sofort, ohne Rückfrage und **ohne**
   Rückgängig; neu hinzufügen ist der Weg zurück.
-- **Bild entfernen:** mit Rückfrage „Remove this image?“, danach nicht rückgängig.
+- **Bild entfernen:** ohne Rückfrage, mit Rückgängig (das Bild bleibt bis zum Schließen im Dienst).
 - **Entwurf verwerfen** im Mail-Fenster ist „Löschen“ (Papierkorb, 5 s Rückgängig, siehe oben).
-- **Zu großer Text:** Jede Bearbeitung, die den Text über `MAX_BODY_BYTES` triebe (Tippen wie Einfügen), wird zurückgenommen: das Feld springt auf den alten Inhalt, die Meldung „The message is too large to paste more text.“ erscheint.
+- **Zu großer Text:** Ein Text über `MAX_BODY_BYTES` wird nicht gespeichert und nicht gesendet; das Fenster meldet „The message is too large. Shorten it before saving or sending.“ und behält den Text. Ein Einfügen über 1 MiB wird abgelehnt („The message is too large to paste more text.“).
 
 ### Einstellungen (Zahnrad des Mail-Fensters)
 
@@ -960,5 +957,18 @@ freigegeben ist. M1 steht in [tasks/github.md](tasks/github.md), M7a schon in
    **Ansicht** HTML (Voreinstellung) oder Text, im Lesebereich jederzeit umschaltbar; **Farben der Mail** wie
    die App (Voreinstellung, also System/Hell/Dunkel), hell oder dunkel – nur für den Inhalt der Mail, weil
    dunkel umgefärbte Newsletter oft schlechter aussehen und man das abschalten können muss.
+10. **Das Schreibfenster ist ein Webview-Fenster mit Squire** (entschieden 2026-11-23, Issue #969, nach dem Versuch
+   #917 in [research.md](research.md) Abschnitt 9; ändert nichts an Entscheidung 9, denn der Lesebereich bleibt Blitz).
+   Der selbstgebaute Iced-Editor (gestapelte Textfelder, sichtbare Markdown-Zeichen, Bild-Blöcke) hatte kein
+   Rückgängig, keine Auswahl über Bilder und unter Wayland keine Datei-Drops; ein Rich-Text-Widget in Iced wäre ein
+   Eigenbauprojekt ohne Vorbild (Weg B) gewesen. Gewählt ist Weg A: tao/wry mit der Webansicht des Systems und dem
+   Editor Squire (MIT, 18 KB gzip, schreibt Mail-HTML) mit DOMPurify, beides mit dem Programm ausgeliefert. Weil sich
+   unter Wayland keine Webview in ein Iced-Fenster setzen lässt, ist das ganze Schreibfenster die Seite; der Dienst
+   hält den Entwurf. Verworfen: TipTap (ProseMirror-Modell, HTML nur Import/Export, mehr Umbau; erst bei Tabellen oder
+   Zusammenarbeit im Editor überlegenswert). Der alte Editor wurde gelöscht, nicht hinter einem Schalter behalten.
+   WebKitGTK kommt damit auf Linux zurück in `torroinbox` (Bau und Laufzeit, siehe oben); Windows braucht WebView2.
+   Entwürfe und Versand ändern sich nicht (HTML mit `cid:`-Bildern, `DraftAttachment::Image`): jeder gespeicherte
+   Entwurf öffnet weiter, Reintext-Entwürfe als Absätze. Keine neuen Requests, keine neuen Befehle im Katalog, keine
+   neuen MCP-Tools: Das Fenster spricht dieselben Befehle wie zuvor (`docs/api.md`).
 
 Aufgaben: [tasks/mail.md](tasks/mail.md) (M2–M5, E4, M9).

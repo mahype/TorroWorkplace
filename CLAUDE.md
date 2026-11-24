@@ -33,12 +33,12 @@ Entscheidung von Sven, 2026-11-21: [`docs/tasks/akzeptanzpruefungen.md`](docs/ta
 ## Issue-Workflow
 
 Änderungen laufen über GitHub-Issues, mit den Skills des Plugins **enon-tools** (dieselben wie im
-Enon-Projekt): `issue-create` → `issue-plan` → `issue-approve` (nur Menschen) → `issue-implement` →
+Enon-Projekt): `issue-create` → `issue-plan` → `issue-plan-accept` (nur Menschen) → `issue-implement` →
 `pr-review` (→ `pr-triage`) → `worktree-cleanup`; Abkürzungen `issue-small` und `quick-fix`, PR mit
 `pullrequest` (Synonym `pr` im Repo). Board und Typen: `.enon-tools/konventionen.json`.
 **Regeln des Repos** für diese Skills (Prüfen, Ergänzungen je Skill, Grenzen für `issue-small` und
 `quick-fix`): [`docs/issue-workflow.md`](docs/issue-workflow.md). Namen von Issues, Branches, Commits
-und PRs: [`docs/git-workflow.md`](docs/git-workflow.md). KI-Agenten setzen nie `approved`, approven
+und PRs: [`docs/git-workflow.md`](docs/git-workflow.md). KI-Agenten setzen nie `plan-accepted`, approven
 und mergen nie.
 
 ## Jede Funktion dreimal: Oberfläche, API, MCP

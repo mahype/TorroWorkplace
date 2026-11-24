@@ -58,9 +58,6 @@ use torro_ipc::assistant::Mode;
 use torro_ipc::tools::ToolId;
 use torro_ipc::{ClientInfo, Door, Key, Request, Response};
 
-/// Keychain service all suite secrets are filed under (as for the accounts).
-const KEYCHAIN_SERVICE: &str = "torroworkplace";
-
 /// Every client key's keychain account starts with this. Account ids must never start with it,
 /// or removing an account could delete a client's key and reading one could send a client key to
 /// a server ([`is_client_keychain_account`]).
@@ -99,7 +96,8 @@ pub struct SystemKeychain;
 
 impl SystemKeychain {
     fn entry(account: &str) -> Result<keyring::Entry, String> {
-        keyring::Entry::new(KEYCHAIN_SERVICE, account).map_err(|err| err.to_string())
+        // The service of this core, as for the accounts: a second core keeps its keys apart (#877).
+        keyring::Entry::new(torro_core::instance::keychain_service(), account).map_err(|err| err.to_string())
     }
 }
 

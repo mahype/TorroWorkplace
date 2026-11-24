@@ -1083,7 +1083,7 @@ mod tests {
 
     #[test]
     fn the_sidebar_lists_apps_first_and_chosen_sources_without_entries() {
-        let info = |source: SourceRef| SourceInfo { source, open: 1, muted: false, health: None };
+        let info = |source: SourceRef| SourceInfo { source, open: 1, muted: false, health: None, notice: None };
         let sources = vec![
             info(SourceRef::suite()),
             info(SourceRef::agent("codex")),
@@ -1321,7 +1321,7 @@ mod tests {
         let time = list::time_text_in(review, &view, now(), false);
         let said = format!("torro/workplace · {} · {time}", tr("Review requested"));
         assert_eq!(meta_line(review, &rows, in_column, &[]), said);
-        let info = |source: SourceRef| SourceInfo { source, open: 1, muted: false, health: None };
+        let info = |source: SourceRef| SourceInfo { source, open: 1, muted: false, health: None, notice: None };
         let two = [info(SourceRef::github("anna-berg")), info(SourceRef::github("anna-work"))];
         assert_eq!(meta_line(review, &rows, all, &two), format!("GitHub · anna-berg · {said}"));
         assert_eq!(meta_line(review, &rows, all, &two[..1]), format!("GitHub · {said}"));

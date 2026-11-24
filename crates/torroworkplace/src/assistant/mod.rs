@@ -73,6 +73,8 @@ pub(crate) mod cards;
 mod compact;
 mod delegate;
 mod engines;
+mod jobs;
+pub(crate) mod journal;
 pub mod live;
 mod model;
 pub(crate) mod profile;
@@ -162,6 +164,11 @@ pub struct Assistant {
     own: Mutex<()>,
     /// The bots (task B.1), in `<config>/assistant/bots`; none without a config folder.
     bots: Bots,
+    /// The journal of the long-running jobs (issue #961, [`journal`]): `<data>/assistant/jobs.sqlite`, in memory
+    /// without a folder.
+    journal: Arc<journal::Journal>,
+    /// The steps of jobs whose command runs now (issue #961, [`jobs::Flight`]): no person decides them meanwhile.
+    flying: StdMutex<BTreeSet<(String, u32)>>,
 }
 
 /// What [`Assistant`] holds in memory.
@@ -271,6 +278,7 @@ impl Assistant {
     /// ([`Assistant::attach`]). Offers no coding agent ([`Assistant::system`] does).
     pub fn new(dir: Option<PathBuf>, test_engine: Option<Duration>, launch: Launch) -> Assistant {
         Assistant {
+            journal: Arc::new(journal::Journal::in_dir(dir.as_deref())),
             dir,
             test_engine,
             launch,
@@ -281,6 +289,7 @@ impl Assistant {
             config: None,
             own: Mutex::new(()),
             bots: Bots::new(None),
+            flying: StdMutex::new(BTreeSet::new()),
         }
     }
 
@@ -290,6 +299,15 @@ impl Assistant {
         self.bots = Bots::new(Some(crate::bots::folder(&dir)));
         self.config = Some(dir);
         self
+    }
+
+    /// Stops every answer as a crash of the core would (issue #961): the tasks end, nothing more is written, the
+    /// journal keeps what it had. For tests of the restart.
+    #[cfg(test)]
+    pub(crate) async fn crash(&self) {
+        for (_, run) in self.state().await.running.drain() {
+            run.task.abort();
+        }
     }
 
     /// The bots (task B.1).
@@ -555,6 +573,10 @@ impl Assistant {
                 return Some(refused);
             }
         }
+        // A job command that would fail anyway (issue #961) is refused before a person is asked to approve it.
+        if let Some(refused) = self.job_refusal(request).await {
+            return Some(refused);
+        }
         let delegation = bot.as_ref().and_then(|bot| match request {
             Request::SendMessage { without, mode, .. } => for_caller(bot, from, without, *mode),
             Request::AskBot { .. } => for_caller(bot, from, &[], torro_ipc::assistant::Mode::Default),
@@ -742,7 +764,7 @@ impl Assistant {
         kind: EngineKind,
         now: DateTime<Utc>,
     ) -> Response {
-        self.send_with(message, about, kind, now, None).await
+        self.send_with(message, about, kind, now, None, None).await
     }
 
     /// What the person said to a conversation engine in the cloud (issue #838, `crate::core::live`): `text` goes to
@@ -771,7 +793,7 @@ impl Assistant {
             spoken: true,
             voice: None,
         };
-        self.send_with(message, None, EngineKind::Ai, Utc::now(), Some(turn)).await
+        self.send_with(message, None, EngineKind::Ai, Utc::now(), Some(turn), None).await
     }
 
     /// The instructions and tools a conversation engine of `engine` starts with in `conversation` (issue #838), as
@@ -807,6 +829,7 @@ impl Assistant {
             about,
             spoken: true,
             live: Some(turn),
+            journal: None,
         };
         Some(model::live_setup(Arc::clone(self), host, job).await)
     }
@@ -818,6 +841,7 @@ impl Assistant {
         kind: EngineKind,
         now: DateTime<Utc>,
         live: Option<Arc<live::LiveTurn>>,
+        job: Option<jobs::JobStart>,
     ) -> Response {
         let mut state = self.state().await;
         // A voice message (issue #859): decided under the same lock, so two of them pick the same "Voice".
@@ -865,6 +889,16 @@ impl Assistant {
             },
         };
         let about = conversation.about.clone();
+        // A job (issue #961) runs from before its message is written, so the two never part; after a restart its
+        // message is no word of the person's.
+        let automatic = matches!(job, Some(jobs::JobStart::Continue { automatic: true, .. }));
+        let journal = match job {
+            Some(start) => match self.begin_job(start, &conversation.id).await {
+                Ok(link) => Some(link),
+                Err(refused) => return refused,
+            },
+            None => None,
+        };
         let before = conversation.last();
         let entry = conversation.next(
             EntryContent::Message {
@@ -886,6 +920,16 @@ impl Assistant {
         }
         lines.push(Line::Entry { entry: entry.clone() });
         if let Err(message) = self.write(&conversation.id, lines).await {
+            if let Some(link) = &journal {
+                let error = Some(tr("The job's first message could not be stored.").to_string());
+                jobs::end(
+                    link,
+                    torro_ipc::assistant::JobState::Failed,
+                    Some(torro_ipc::assistant::JobReason::Error),
+                    error,
+                )
+                .await;
+            }
             return failure(message);
         }
         // The old "Voice" keeps its date only now the new one stands (issue #859); should that fail, the
@@ -908,7 +952,7 @@ impl Assistant {
         let said = entry.seq;
         conversation.apply(Line::Entry { entry });
         let id = conversation.id.clone();
-        if message.from.is_none() {
+        if message.from.is_none() && !automatic {
             state.said.insert(id.clone(), said);
         }
         let (history, results, untrusted) =
@@ -937,6 +981,7 @@ impl Assistant {
             about,
             spoken,
             live,
+            journal,
         };
         match kind {
             EngineKind::Test => self.start_test_answer(&mut state, &id, engine),
@@ -1155,6 +1200,14 @@ impl Assistant {
     /// an answer and adds a `stopped` entry, and stops the answers of the bots it asked (task B.2).
     /// Nothing changes when none runs.
     pub async fn cancel(&self, id: &str, now: DateTime<Utc>) -> Response {
+        // A stop in a job's conversation (issue #961) pauses the job: it can go on, unlike `assistant.cancel_job`.
+        if let Some(job) = self.active_job(id).await {
+            return match self.pause_job(&job.id, torro_ipc::assistant::JobReason::Stopped).await {
+                Response::Job { .. } => Response::Ok,
+                // Paused or ended meanwhile: stop what runs as for any conversation.
+                _ => self.stop(id, None, now).await.unwrap_or(Response::Ok),
+            };
+        }
         self.stop(id, None, now).await.unwrap_or(Response::Ok)
     }
 
@@ -1164,6 +1217,10 @@ impl Assistant {
     /// that entry now, when something was read and no `stopped` entry follows the last message yet. Its
     /// approvals stay as they are: interrupting never decides one.
     pub async fn interrupt(&self, id: &str, heard: Option<String>, now: DateTime<Utc>) -> Response {
+        // A job's conversation (issue #961): the job pauses as with a stop, its steps settled.
+        if let Some(job) = self.active_job(id).await {
+            self.pause_job(&job.id, torro_ipc::assistant::JobReason::Stopped).await;
+        }
         // Stopped first: an answer that ends meanwhile still gets the entry below.
         if let Some(answer) = self.stop(id, heard.clone(), now).await {
             return answer;
@@ -1303,7 +1360,30 @@ impl Assistant {
             return failure("the conversation cannot be deleted");
         }
         state.conversations.remove(id);
+        // Its jobs go with it (issue #961), with the goal they kept.
+        self.forget_jobs(id).await;
         Response::Ok
+    }
+
+    /// Removes the jobs of the conversation `id` from the journal (issue #961); a journal that cannot be used is
+    /// named on stderr.
+    async fn forget_jobs(&self, id: &str) {
+        let conversation = id.to_string();
+        if let Err(journal::JournalError::Blocked) =
+            jobs::on_journal(&self.journal, move |journal| journal.remove_conversation(&conversation)).await
+        {
+            eprintln!("torroworkplace: cannot remove the jobs of the conversation {id}: their journal cannot be used");
+        }
+    }
+
+    /// The number of the last entry of conversation `id`, for a job's step (issue #961).
+    async fn last_seq(&self, id: &str) -> Option<u64> {
+        self.state().await.conversations.get(id).map(Conversation::last)
+    }
+
+    /// What the model read of the tool line `seq` of conversation `id`, while it is kept (issue #714).
+    async fn result_of(&self, id: &str, seq: u64) -> Option<String> {
+        self.state().await.conversations.get(id).and_then(|conversation| conversation.results.get(&seq).cloned())
     }
 
     /// `assistant.archive_conversations` (issue #697): every id is checked first, so one unknown changes
@@ -1387,6 +1467,7 @@ impl Assistant {
                 match self.remove(&id).await {
                     Ok(()) => {
                         state.conversations.remove(&id);
+                        self.forget_jobs(&id).await;
                         removed += 1;
                     }
                     Err(err) => eprintln!("torroworkplace: cannot remove the old conversation {id}: {err}"),
@@ -1979,6 +2060,16 @@ pub async fn answer_from(
             assistant.send(message, kind, Utc::now()).await
         }
         Request::CancelAnswer { conversation } => assistant.cancel(&conversation, Utc::now()).await,
+        // Long-running jobs (issue #961).
+        Request::StartJob { goal, engine, model, conversation, without } => {
+            assistant.start_job(ai, goal, engine, model, conversation, without, from).await
+        }
+        Request::ListJobs { conversation } => assistant.list_jobs(conversation).await,
+        Request::GetJob { id } => assistant.get_job(&id).await,
+        Request::PauseJob { id } => assistant.pause_job(&id, torro_ipc::assistant::JobReason::PausedByRequest).await,
+        Request::ResumeJob { id, engine, model } => assistant.resume_job(ai, &id, engine, model, from).await,
+        Request::CancelJob { id } => assistant.cancel_job(&id).await,
+        Request::ResolveJobStep { id, step, done } => assistant.resolve_job_step(&id, step, done).await,
         Request::RenameConversation { id, title } => assistant.rename(&id, &title).await,
         Request::ChooseModel { id, engine, model, effort } => assistant.choose(ai, &id, engine, model, effort).await,
         Request::DeleteConversation { id } => assistant.delete(&id).await,

@@ -1492,6 +1492,13 @@ impl PimService {
             | Request::SendMessage { .. }
             | Request::CheckAbout { .. }
             | Request::CancelAnswer { .. }
+            | Request::StartJob { .. }
+            | Request::ListJobs { .. }
+            | Request::GetJob { .. }
+            | Request::PauseJob { .. }
+            | Request::ResumeJob { .. }
+            | Request::CancelJob { .. }
+            | Request::ResolveJobStep { .. }
             | Request::RenameConversation { .. }
             | Request::ChooseModel { .. }
             | Request::DeleteConversation { .. }

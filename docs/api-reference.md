@@ -63,7 +63,7 @@ als Beschreibung der MCP-Tools lesen.
 | [`workflows`](#workflows) | [`workflows.list_templates`](#workflowslist_templates), [`workflows.get_template`](#workflowsget_template), [`workflows.instantiate_template`](#workflowsinstantiate_template), [`workflows.list_workflows`](#workflowslist_workflows), [`workflows.get_workflow`](#workflowsget_workflow), [`workflows.propose_workflow`](#workflowspropose_workflow), [`workflows.create_draft`](#workflowscreate_draft), [`workflows.update_draft`](#workflowsupdate_draft), [`workflows.save_workflow`](#workflowssave_workflow), [`workflows.duplicate_workflow`](#workflowsduplicate_workflow), [`workflows.set_workflow_enabled`](#workflowsset_workflow_enabled), [`workflows.remove_workflow`](#workflowsremove_workflow), [`workflows.preview_run`](#workflowspreview_run), [`workflows.run`](#workflowsrun), [`workflows.list_runs`](#workflowslist_runs), [`workflows.get_run`](#workflowsget_run), [`workflows.cancel_run`](#workflowscancel_run), [`workflows.get_document`](#workflowsget_document), [`workflows.open_document`](#workflowsopen_document), [`workflows.show_document`](#workflowsshow_document), [`workflows.list_rules`](#workflowslist_rules), [`workflows.create_rule`](#workflowscreate_rule), [`workflows.update_rule`](#workflowsupdate_rule), [`workflows.duplicate_rule`](#workflowsduplicate_rule), [`workflows.set_rule_enabled`](#workflowsset_rule_enabled), [`workflows.remove_rule`](#workflowsremove_rule), [`workflows.preview_rule`](#workflowspreview_rule), [`workflows.authorize_workflow`](#workflowsauthorize_workflow), [`workflows.revoke_workflow_authorization`](#workflowsrevoke_workflow_authorization) |
 | [`accounts`](#accounts) | [`accounts.list_accounts`](#accountslist_accounts), [`accounts.sync`](#accountssync), [`accounts.connect_nextcloud`](#accountsconnect_nextcloud), [`accounts.connect_github`](#accountsconnect_github), [`accounts.set_github_token`](#accountsset_github_token), [`accounts.set_search_key`](#accountsset_search_key), [`accounts.discover_services`](#accountsdiscover_services), [`accounts.connect_caldav`](#accountsconnect_caldav), [`accounts.connect_mail`](#accountsconnect_mail), [`accounts.reconfigure_mail`](#accountsreconfigure_mail), [`accounts.update_mail_account`](#accountsupdate_mail_account), [`accounts.list_torromail_accounts`](#accountslist_torromail_accounts), [`accounts.import_torromail_account`](#accountsimport_torromail_account), [`accounts.connect_ai`](#accountsconnect_ai), [`accounts.connect_local_ai`](#accountsconnect_local_ai), [`accounts.start_ai_sign_in`](#accountsstart_ai_sign_in), [`accounts.check_ai_sign_in`](#accountscheck_ai_sign_in), [`accounts.cancel_ai_sign_in`](#accountscancel_ai_sign_in), [`accounts.connect_ntfy`](#accountsconnect_ntfy), [`accounts.set_ntfy_login`](#accountsset_ntfy_login), [`accounts.set_ntfy_topic`](#accountsset_ntfy_topic), [`accounts.remove_account`](#accountsremove_account) |
 | [`ai`](#ai) | [`ai.list_models`](#ailist_models), [`ai.set_model_enabled`](#aiset_model_enabled), [`ai.find_local_servers`](#aifind_local_servers), [`ai.list_assignments`](#ailist_assignments), [`ai.set_assignment`](#aiset_assignment), [`ai.set_slot`](#aiset_slot), [`ai.recommend`](#airecommend), [`ai.pull_model`](#aipull_model), [`ai.list_pulls`](#ailist_pulls), [`ai.cancel_pull`](#aicancel_pull) |
-| [`assistant`](#assistant) | [`assistant.dictate`](#assistantdictate), [`assistant.stop_dictation`](#assistantstop_dictation), [`assistant.speak`](#assistantspeak), [`assistant.stop_speaking`](#assistantstop_speaking), [`assistant.start_talk`](#assistantstart_talk), [`assistant.end_talk`](#assistantend_talk), [`assistant.talk_status`](#assistanttalk_status), [`assistant.speak_answer`](#assistantspeak_answer), [`assistant.list_engines`](#assistantlist_engines), [`assistant.list_conversations`](#assistantlist_conversations), [`assistant.search_conversations`](#assistantsearch_conversations), [`assistant.get_conversation`](#assistantget_conversation), [`assistant.get_cards`](#assistantget_cards), [`assistant.show_items`](#assistantshow_items), [`assistant.show_card`](#assistantshow_card), [`assistant.get_card_picture`](#assistantget_card_picture), [`assistant.send_message`](#assistantsend_message), [`assistant.check_about`](#assistantcheck_about), [`assistant.cancel`](#assistantcancel), [`assistant.interrupt`](#assistantinterrupt), [`assistant.rename_conversation`](#assistantrename_conversation), [`assistant.choose_model`](#assistantchoose_model), [`assistant.delete_conversation`](#assistantdelete_conversation), [`assistant.pin_conversation`](#assistantpin_conversation), [`assistant.archive_conversations`](#assistantarchive_conversations), [`assistant.delete_conversations`](#assistantdelete_conversations), [`assistant.open_window`](#assistantopen_window), [`assistant.get_profile`](#assistantget_profile), [`assistant.update_profile`](#assistantupdate_profile), [`assistant.list_memories`](#assistantlist_memories), [`assistant.my_access`](#assistantmy_access), [`assistant.remember`](#assistantremember), [`assistant.forget`](#assistantforget), [`assistant.list_skills`](#assistantlist_skills), [`assistant.get_skill`](#assistantget_skill), [`assistant.save_skill`](#assistantsave_skill), [`assistant.delete_skill`](#assistantdelete_skill), [`assistant.confirm_bot`](#assistantconfirm_bot) |
+| [`assistant`](#assistant) | [`assistant.dictate`](#assistantdictate), [`assistant.stop_dictation`](#assistantstop_dictation), [`assistant.speak`](#assistantspeak), [`assistant.stop_speaking`](#assistantstop_speaking), [`assistant.start_talk`](#assistantstart_talk), [`assistant.end_talk`](#assistantend_talk), [`assistant.talk_status`](#assistanttalk_status), [`assistant.speak_answer`](#assistantspeak_answer), [`assistant.list_engines`](#assistantlist_engines), [`assistant.list_conversations`](#assistantlist_conversations), [`assistant.search_conversations`](#assistantsearch_conversations), [`assistant.get_conversation`](#assistantget_conversation), [`assistant.get_cards`](#assistantget_cards), [`assistant.show_items`](#assistantshow_items), [`assistant.show_card`](#assistantshow_card), [`assistant.get_card_picture`](#assistantget_card_picture), [`assistant.send_message`](#assistantsend_message), [`assistant.check_about`](#assistantcheck_about), [`assistant.cancel`](#assistantcancel), [`assistant.start_job`](#assistantstart_job), [`assistant.list_jobs`](#assistantlist_jobs), [`assistant.get_job`](#assistantget_job), [`assistant.pause_job`](#assistantpause_job), [`assistant.resume_job`](#assistantresume_job), [`assistant.cancel_job`](#assistantcancel_job), [`assistant.resolve_job_step`](#assistantresolve_job_step), [`assistant.interrupt`](#assistantinterrupt), [`assistant.rename_conversation`](#assistantrename_conversation), [`assistant.choose_model`](#assistantchoose_model), [`assistant.delete_conversation`](#assistantdelete_conversation), [`assistant.pin_conversation`](#assistantpin_conversation), [`assistant.archive_conversations`](#assistantarchive_conversations), [`assistant.delete_conversations`](#assistantdelete_conversations), [`assistant.open_window`](#assistantopen_window), [`assistant.get_profile`](#assistantget_profile), [`assistant.update_profile`](#assistantupdate_profile), [`assistant.list_memories`](#assistantlist_memories), [`assistant.my_access`](#assistantmy_access), [`assistant.remember`](#assistantremember), [`assistant.forget`](#assistantforget), [`assistant.list_skills`](#assistantlist_skills), [`assistant.get_skill`](#assistantget_skill), [`assistant.save_skill`](#assistantsave_skill), [`assistant.delete_skill`](#assistantdelete_skill), [`assistant.confirm_bot`](#assistantconfirm_bot) |
 | [`bots`](#bots) | [`bots.list_bots`](#botslist_bots), [`bots.get_bot`](#botsget_bot), [`bots.save_bot`](#botssave_bot), [`bots.delete_bot`](#botsdelete_bot), [`bots.ask_bot`](#botsask_bot) |
 | [`tools`](#tools) | [`tools.list_tools`](#toolslist_tools), [`tools.create_pdf`](#toolscreate_pdf), [`tools.open_file`](#toolsopen_file), [`tools.save_file_as`](#toolssave_file_as), [`tools.web_search`](#toolsweb_search), [`tools.fetch_page`](#toolsfetch_page), [`tools.list_search_providers`](#toolslist_search_providers), [`tools.list_folder`](#toolslist_folder), [`tools.find_files`](#toolsfind_files), [`tools.create_folder`](#toolscreate_folder), [`tools.copy_file`](#toolscopy_file), [`tools.move_file`](#toolsmove_file), [`tools.trash_file`](#toolstrash_file), [`tools.read_file`](#toolsread_file), [`tools.search_in_files`](#toolssearch_in_files), [`tools.write_file`](#toolswrite_file), [`tools.edit_file`](#toolsedit_file), [`tools.run_command`](#toolsrun_command), [`tools.start_command`](#toolsstart_command), [`tools.read_command_output`](#toolsread_command_output), [`tools.stop_command`](#toolsstop_command) |
 | [`extensions`](#extensions) | [`extensions.list_extensions`](#extensionslist_extensions), [`extensions.get_extension`](#extensionsget_extension), [`extensions.list_catalog`](#extensionslist_catalog), [`extensions.list_tools`](#extensionslist_tools), [`extensions.call_tool`](#extensionscall_tool), [`extensions.set_enabled`](#extensionsset_enabled), [`extensions.install_extension`](#extensionsinstall_extension), [`extensions.confirm_tools`](#extensionsconfirm_tools), [`extensions.update_extension`](#extensionsupdate_extension), [`extensions.set_secret`](#extensionsset_secret), [`extensions.set_folder`](#extensionsset_folder), [`extensions.read_logs`](#extensionsread_logs), [`extensions.remove_extension`](#extensionsremove_extension) |
@@ -1209,7 +1209,7 @@ Asks the person's AI what event an inbox entry names: answers a title, `start` a
 
 Zugriff `read` · MCP-Tool `inbox_list_sources`
 
-Lists the inbox sources this key may see (`agent:<name>`, `script:<name>`, `mail:<address>`, `github:<login>`, `nextcloud:<login>@<host>`, `talk:<login>@<host>`, `ntfy:<host>`; never the person's own `suite`) with their number of open entries (of a GitHub source only those of repositories this key may see) and whether the person muted them. `health` says why a remote source brings nothing now: `missing_app` (the server lacks the app), `missing_scope` (the sign-in may not read notifications), `signed_out`, `offline`; left out while it works.
+Lists the inbox sources this key may see (`agent:<name>`, `script:<name>`, `mail:<address>`, `github:<login>`, `nextcloud:<login>@<host>`, `talk:<login>@<host>`, `ntfy:<host>`; never the person's own `suite`) with their number of open entries (of a GitHub source only those of repositories this key may see) and whether the person muted them. `health` says why a remote source brings nothing now: `missing_app` (the server lacks the app), `missing_scope` (the sign-in may not read notifications), `signed_out`, `offline`; left out while it works. `notice` says what a source that works still leaves out: `public_only` (a classic GitHub token without the `repo` scope, so notifications of private repositories never come); left out when there is nothing to say.
 
 Keine Felder.
 
@@ -3631,6 +3631,84 @@ Stops the answer running in a conversation of the assistant. What it did until t
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `conversation` | string | ja | The conversation's id. |
+
+### `assistant.start_job`
+
+Zugriff `write` · MCP-Tool `assistant_start_job`
+
+Starts a long-running job of the assistant: `goal` becomes the first message of a new conversation (or of `conversation`), and the core keeps a journal of every tool call so the job goes on safely after a restart; a step that changes something is never repeated by itself. Only with an AI account; the model is fixed when it starts and never changes by itself. Returns the job.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `conversation` | string | nein | The conversation to run in; left out, a new one. |
+| `engine` | string | ja | An engine's id from `assistant.list_engines` (an AI account). |
+| `goal` | string | ja | What the job is to do, as the person would write it. |
+| `model` | string | nein | The model of the AI account; left out, the engine picks one when the job starts. |
+| `without` | array<`"calendar"` \| `"tasks"` \| `"system"` \| `"workspaces"` \| `"contacts"` \| `"github"` \| `"inbox"` \| `"mail"` \| `"chat"` \| `"presence"` \| `"workflows"` \| `"accounts"` \| `"ai"` \| `"assistant"` \| `"bots"` \| `"tools"` \| `"extensions"` \| `"settings"` \| `"apps"` \| `"clients"` \| `"approvals"`> | nein | Areas switched off for the job's answers, as for `assistant.send_message`; kept for every resume. |
+
+### `assistant.list_jobs`
+
+Zugriff `read` · MCP-Tool `assistant_list_jobs`
+
+Lists the assistant's long-running jobs with their state (queued, running, awaiting_approval, paused, completed, failed, cancelled) and why one is paused; with `conversation` only its jobs.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `conversation` | string | nein | Only the jobs of this conversation; left out, every job. |
+
+### `assistant.get_job`
+
+Zugriff `read` · MCP-Tool `assistant_get_job`
+
+Reads one job of the assistant with its steps: each tool call's command, state (planned, dispatched, confirmed, failed, uncertain), approval and the number of its tool line in the conversation. Inputs and results are not kept here; read the conversation for them.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `id` | string | ja | The job's id. |
+
+### `assistant.pause_job`
+
+Zugriff `write` · MCP-Tool `assistant_pause_job`
+
+Pauses a job of the assistant: its answer stops at once and no further step starts. A step that changes something and was running becomes uncertain. Resume it with resume_job.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `id` | string | ja | The job's id. |
+
+### `assistant.resume_job`
+
+Zugriff `write` · MCP-Tool `assistant_resume_job`
+
+Resumes a paused job of the assistant. Rights, approvals and the model are checked anew; `conflict` while a step is uncertain or its approval still waits. Give `engine` and `model` to go on with another model on purpose; without them the job keeps its own and fails over to none.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `engine` | string | nein | Another engine (an AI account) to go on with; left out, the job's own. |
+| `id` | string | ja | The job's id. |
+| `model` | string | nein | Another model to go on with, only with `engine` (`error` without); left out with `engine` set, that engine picks one. |
+
+### `assistant.cancel_job`
+
+Zugriff `write` · MCP-Tool `assistant_cancel_job`
+
+Cancels a job of the assistant for good: its answer stops and nothing of it runs again. What it did stays in its conversation.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `id` | string | ja | The job's id. |
+
+### `assistant.resolve_job_step`
+
+Zugriff `admin` · MCP-Tool `assistant_resolve_job_step`
+
+Decides the outcome of an uncertain step of a job: `done` true when it did happen (the mail went out), false when it did not, and then the job may run that step again when it resumes. Waits for a person's approval, since only a person can know; check the outcome yourself before you ask.
+
+| Feld | Typ | Pflicht | Beschreibung |
+|---|---|---|---|
+| `done` | boolean | ja | Whether the step happened. |
+| `id` | string | ja | The job's id. |
+| `step` | integer | ja | The step's number ([`assistant::StepInfo::seq`]). |
 
 ### `assistant.interrupt`
 

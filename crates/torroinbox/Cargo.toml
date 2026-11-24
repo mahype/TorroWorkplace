@@ -16,6 +16,11 @@ workspace = true
 [package.metadata.dist.dependencies.homebrew]
 "mahype/torro/torroworkplace" = { stage = ["run"] }
 
+# The compose window (issue #969) is a webview window; WebKitGTK's headers must be on the release runner on Linux.
+[package.metadata.dist.dependencies.apt]
+libgtk-3-dev = "*"
+libwebkit2gtk-4.1-dev = "*"
+
 [dependencies]
 # The conversation of a Talk entry in the hub's panel (issue #643): its model and the demo's chats.
 torro-chat.workspace = true
@@ -41,10 +46,15 @@ iced = { workspace = true, features = ["image-without-codecs"] }
 image.workspace = true
 rfd.workspace = true
 # The value of `settings.set_setting`: "Display" (issue #456) and the compose paper (issue #460).
+serde.workspace = true
 serde_json.workspace = true
 # `cid:` pictures are asked of the core on the picture fetcher's worker thread, which blocks on it.
 tokio.workspace = true
 webbrowser.workspace = true
+# The compose window: a window with the system's webview (issue #969, compose/web.rs): WKWebView on macOS, WebView2 on
+# Windows; Linux turns the GTK web view on below.
+tao.workspace = true
+wry.workspace = true
 
 [dev-dependencies]
 iced_test.workspace = true
@@ -55,5 +65,13 @@ tempfile.workspace = true
 [build-dependencies]
 winresource.workspace = true
 
+# The menu bar of the compose window on macOS (⌘C and ⌘V reach a web view only through it), as torrochat's player.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
+# WebKitGTK (`webkit2gtk-4.1`) for the compose window: GTK 3 and WebKitGTK dev packages to build, `libwebkit2gtk-4.1` to
+# run (`[package.metadata.dist.dependencies.apt]` above, docs/mail.md). Wayland goes through GTK; `x11` for X11.
+tao = { workspace = true, features = ["x11"] }
+wry = { workspace = true, features = ["os-webview", "x11"] }
 arboard = { workspace = true, features = ["wayland-data-control"] }

@@ -14,13 +14,17 @@
 //! Fixed rules · go before the AI                         [+ Rule ▾]
 //!   Domain is telekom.de                                  (●)  ›
 //!   [Search] from:shop.example has:attachment             (●)  ›
+//! Always for this sender
+//!   Mail from billing@shop.example                       Remove
 //! ┌ Show in the sidebar (●) ┐ ┌ AI may not file mail here ( ) ┐   (narrow: one below the other)
 //! Use the suite's name, description and icon             Remove…
 //! ```
 //!
 //! The symbol and the group open as popovers ([`overlay`]). The fixed rules are the sorting rules
 //! and the mail filters that set this category, and for Personal the built-in rule "From someone in
-//! your address books"; "+ Rule" offers a rule or a filter from a search. A filter's dialog belongs
+//! your address books"; "+ Rule" offers a rule or a filter from a search. Under them "Always for this
+//! sender" lists the senders and domains kept for this category in the inbox, each with "Remove"
+//! (issue #577); they are not listed twice. A filter's dialog belongs
 //! to [`super::filters`]: its messages go out as [`Message::Filter`]. A rule's page: "File as", the
 //! conditions and the exceptions (field and words each), on/off and "Delete rule"; it goes back to
 //! the category's page it came from. "Save" stands in the header bar.
@@ -201,6 +205,10 @@ pub enum Message {
     /// "Remove" beside a trusted sender on the pages of Spam and Phishing (issue #506): the rule
     /// with this id goes (`inbox.remove_rule`), and the sender's mail may be caught again.
     Untrust(String),
+    /// "Remove" beside a rule "Always for this sender" on a category's page (issue #577): the rule
+    /// with this id goes (`inbox.remove_rule`), and the sender's new mail is sorted the normal way
+    /// again.
+    Forget(String),
     /// "Move up" (`up: true`) or "Move down" on a category's page: one place in its group, sent at
     /// once.
     Shift {
@@ -443,7 +451,7 @@ pub fn update<A>(state: &mut State, message: Message, data: &Data) -> Action<A> 
         Message::ContactsPersonal(on) => {
             Action::send(Request::SetSetting { key: SettingKey::MailContactsPersonal, value: serde_json::json!(on) })
         }
-        Message::Untrust(id) => Action::send(Request::RemoveRule { id }),
+        Message::Untrust(id) | Message::Forget(id) => Action::send(Request::RemoveRule { id }),
         Message::Shift { category, up } => match shifted(data, category, up) {
             Some(request) => Action::send(request),
             None => Action::None,
@@ -1195,6 +1203,8 @@ fn category_page<'a>(state: &'a State, form: &'a CategoryForm, data: &'a Data) -
     // A new category has no rules yet: they name it by its key, which it gets when it is saved.
     if let Some(category) = form.category {
         page = page.push(fixed_rules(state, data, category));
+        // "Always for this sender" (issue #577): the senders kept for this category in the inbox.
+        page = page.push(kept_senders(data, category));
     }
     // The senders "Not fraud" trusted (issue #506): what is never caught as fraud or spam.
     if matches!(form.category, Some(Category::Spam | Category::Phishing)) {
@@ -1286,7 +1296,7 @@ fn fixed_rules<'a>(state: &'a State, data: &'a Data, category: Category) -> Elem
         ),
     );
     let mut rows: Vec<Element<'a, Message>> = Vec::new();
-    for rule in data.sort_rules.iter().filter(|rule| rule.category == category) {
+    for rule in fixed_sort_rules(data, category) {
         let mut when = conditions_line(&rule.conditions);
         if !rule.exceptions.is_empty() {
             when = trf(
@@ -1334,6 +1344,50 @@ fn trusted_senders(data: &Data) -> Element<'_, Message> {
         rows.push(container(none).width(Fill).center_y(size::row()).padding([0.0, space::l()]).into());
     }
     widgets::group_with(Some(widgets::group_title(tr("Trusted senders · never caught"), vec![])), rows, None)
+}
+
+/// The sorting rules that file mail as `category` and stand under the fixed rules: all but the
+/// rules "Always for this sender", which have their own list ([`kept_senders`], issue #577).
+fn fixed_sort_rules(data: &Data, category: Category) -> Vec<&SortRule> {
+    let kept = kept_in(data, category);
+    data.sort_rules
+        .iter()
+        .filter(|rule| rule.category == category && !kept.iter().any(|held| held.id == rule.id))
+        .collect()
+}
+
+/// The rules "Always for this sender" that file mail as `category` (issue #577): the sorting rules
+/// the inbox kept for one sender or one domain, as `inbox.list_rules` lists them (a rule of kind
+/// `category`). Changed in a rule's page into more, the core lists it no more, and it is a fixed
+/// rule like any other.
+fn kept_in(data: &Data, category: Category) -> Vec<&torro_inbox::Rule> {
+    data.rules
+        .iter()
+        .filter(|rule| rule.effect == torro_inbox::RuleEffect::Category { category })
+        .filter(|rule| rule.sender.is_some() || rule.domain.is_some())
+        .collect()
+}
+
+/// "Always for this sender" (issue #577): the senders and domains whose mail the inbox files as
+/// `category` for good, each with "Remove", as the trusted senders on Spam and Phishing; one quiet
+/// line without any. They work only on mail, so they stand here and not in the Notification Hub.
+fn kept_senders(data: &Data, category: Category) -> Element<'_, Message> {
+    let mut rows: Vec<Element<'_, Message>> = Vec::new();
+    for rule in kept_in(data, category) {
+        let who = match (&rule.sender, &rule.domain) {
+            (Some(sender), _) => trf("Mail from {sender}", &[("sender", sender)]),
+            (None, Some(domain)) => trf("Everything from {domain}", &[("domain", domain)]),
+            (None, None) => continue,
+        };
+        let remove =
+            widgets::text_button(None, tr("Remove"), style::button::ghost, Some(Message::Forget(rule.id.clone())));
+        rows.push(fixed_line(None, who, true, remove, None));
+    }
+    if rows.is_empty() {
+        let none = typo::text(typo::body(), tr("No senders kept here yet.")).style(torro_gui::theme::text_2);
+        rows.push(container(none).width(Fill).center_y(size::row()).padding([0.0, space::l()]).into());
+    }
+    widgets::group_with(Some(widgets::group_title(tr("Always for this sender"), vec![])), rows, None)
 }
 
 /// A row of the fixed rules: `lead` (the chip of a filter), what it looks at – quieter and with
@@ -2363,6 +2417,47 @@ mod tests {
         let data = Data::default();
         let action: Action<()> = update(&mut state, Message::Untrust("r5".into()), &data);
         assert_eq!(action, Action::send(Request::RemoveRule { id: "r5".into() }));
+    }
+
+    /// Issue #577: a category's page lists its rules "Always for this sender" with "Remove" and not
+    /// again under the fixed rules; "Remove" removes the rule; a page without any says so.
+    #[test]
+    fn kept_senders_stand_on_their_categorys_page() {
+        let kept = |id: &str, sender: Option<&str>, domain: Option<&str>, category| torro_inbox::Rule {
+            id: id.into(),
+            source: torro_inbox::SourceRef::mail("anna@example.org"),
+            sender: sender.map(Into::into),
+            domain: domain.map(Into::into),
+            effect: torro_inbox::RuleEffect::Category { category },
+            created: chrono::DateTime::from_timestamp(1_760_000_000, 0).unwrap_or_default(),
+            facet: None,
+            until: None,
+        };
+        let mut data = data();
+        data.rules = vec![
+            kept("r1", Some("billing@one.example"), None, Category::Invoice),
+            kept("k2", None, Some("two.example"), Category::Invoice),
+            kept("k3", Some("news@shop.example"), None, Category::Promotion),
+            torro_inbox::Rule {
+                effect: torro_inbox::RuleEffect::Trusted,
+                ..kept("t", Some("max@x.example"), None, Category::Invoice)
+            },
+        ];
+        let ids = |category| kept_in(&data, category).iter().map(|rule| rule.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(Category::Invoice), ["r1", "k2"]);
+        assert_eq!(ids(Category::Promotion), ["k3"]);
+        assert!(ids(Category::Receipt).is_empty());
+        let fixed: Vec<&str> = fixed_sort_rules(&data, Category::Invoice).iter().map(|rule| rule.id.as_str()).collect();
+        assert_eq!(fixed, ["r2"], "the kept sender r1 is not a fixed rule twice");
+        let mut state = State::default();
+        let action: Action<()> = update(&mut state, Message::Forget("k2".into()), &data);
+        assert_eq!(action, Action::send(Request::RemoveRule { id: "k2".into() }));
+        for category in [Category::Invoice, Category::Receipt] {
+            let _ = update::<()>(&mut state, Message::EditCategory(category), &data);
+            assert!(page(&state, &data).is_some());
+            let _: Element<'_, Message> = kept_senders(&data, category);
+            let _: Element<'_, Message> = fixed_rules(&state, &data, category);
+        }
     }
 
     /// Issue #554: a condition's field opens as a dropdown with the focus on its search, Escape

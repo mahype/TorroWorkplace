@@ -2,6 +2,8 @@
 //! within a group; the test in `mod.rs` checks for duplicates and matching placeholders.
 
 pub(super) static TABLE: &[(&str, &str)] = &[
+    // A second core for tests marks its notifications (#877).
+    ("[Test] {title}", "[Test] {title}"),
     // Sign in with ChatGPT, signing in to AI accounts with a browser (#324).
     ("Cancel sign-in", "Anmeldung abbrechen"),
     (
@@ -1813,6 +1815,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     (
         "Notifications need a classic token with repo (notifications alone may leave out private repositories), or the GitHub CLI sign-in.",
         "Benachrichtigungen brauchen ein klassisches Token mit repo (mit notifications allein fehlen eventuell private Repos) oder die Anmeldung der GitHub CLI.",
+    ),
+    (
+        "Only public repositories: the token has no repo scope. See Permissions on the account's page under Accounts.",
+        "Nur öffentliche Repos: Dem Token fehlt der Scope repo. Siehe „Rechte“ auf der Seite des Kontos unter „Konten“.",
     ),
     ("This sign-in may not read notifications.", "Diese Anmeldung darf keine Benachrichtigungen lesen."),
     ("This Nextcloud has no Talk.", "Diese Nextcloud hat kein Talk."),
@@ -4273,6 +4279,82 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{file} exists and was not written by Torro Workplace, so it was left as it is.",
         "{file} ist vorhanden und wurde nicht von Torro Workplace geschrieben, daher wurde es nicht verändert.",
     ),
+    // Assistant: long-running jobs (issue #961)
+    (
+        "A command of this job still waits for approval. Nothing runs until it is decided and the job is resumed.",
+        "Ein Befehl dieses Auftrags wartet noch auf Freigabe. Nichts läuft, bis sie entschieden und der Auftrag fortgesetzt ist.",
+    ),
+    (
+        "A step of this job changes something, and it is not known whether it happened. It does not run again by itself: check it, mark it as done or not done, then resume the job.",
+        "Ein Schritt dieses Auftrags ändert etwas, und es ist nicht bekannt, ob er passiert ist. Er läuft nicht von selbst noch einmal: Prüf ihn, markier ihn als erledigt oder nicht erledigt und setz den Auftrag dann fort.",
+    ),
+    ("Already done in this job; not run again", "In diesem Auftrag schon erledigt; nicht noch einmal ausgeführt"),
+    (
+        "Go on with this job where it stopped, and do not repeat what is already done.\n\nGoal: {goal}\nDone so far: {done}",
+        "Mach mit diesem Auftrag dort weiter, wo er stehen geblieben ist, und wiederhole nichts, was schon erledigt ist.\n\nZiel: {goal}\nBisher erledigt: {done}",
+    ),
+    (
+        "The answer was stopped, so the job is paused. Resume it to go on.",
+        "Die Antwort wurde gestoppt, darum ist der Auftrag pausiert. Setz ihn fort, um weiterzumachen.",
+    ),
+    (
+        "The assistant has no access set up any more. The job is paused; nothing ran.",
+        "Für den Assistenten ist kein Zugriff mehr eingerichtet. Der Auftrag ist pausiert; nichts wurde ausgeführt.",
+    ),
+    (
+        "The assistant may no longer run {tool}. The job is paused; change its access, then resume it.",
+        "Der Assistent darf {tool} nicht mehr ausführen. Der Auftrag ist pausiert; ändere seinen Zugriff und setz ihn dann fort.",
+    ),
+    ("The conversation of this job is gone.", "Die Unterhaltung dieses Auftrags gibt es nicht mehr."),
+    (
+        "The job could not go on. Resume it to try again.",
+        "Der Auftrag konnte nicht weitermachen. Setz ihn fort, um es noch einmal zu versuchen.",
+    ),
+    ("The job is paused. Resume it to go on.", "Der Auftrag ist pausiert. Setz ihn fort, um weiterzumachen."),
+    ("The job was cancelled.", "Der Auftrag wurde abgebrochen."),
+    ("The job's first message could not be stored.", "Die erste Nachricht des Auftrags ließ sich nicht speichern."),
+    (
+        "The job's journal cannot be used. The job is paused; nothing ran.",
+        "Das Journal des Auftrags lässt sich nicht nutzen. Der Auftrag ist pausiert; nichts wurde ausgeführt.",
+    ),
+    (
+        "The model {model} chosen for this job is not available. The job does not go on with another model by itself.",
+        "Das für diesen Auftrag gewählte Modell {model} ist nicht verfügbar. Der Auftrag macht nicht von selbst mit einem anderen Modell weiter.",
+    ),
+    (
+        "The model {model} is not available ({code}). The job is paused: resume it once the model is back, or resume it with another model.",
+        "Das Modell {model} ist nicht erreichbar ({code}). Der Auftrag ist pausiert: Setz ihn fort, sobald das Modell wieder da ist, oder setz ihn mit einem anderen Modell fort.",
+    ),
+    (
+        "The unclear step was decided. Resume the job to go on.",
+        "Der unklare Schritt ist entschieden. Setz den Auftrag fort, um weiterzumachen.",
+    ),
+    ("nothing yet", "noch nichts"),
+    ("Cancel the assistant's job for good: {job}", "Den Auftrag des Assistenten endgültig abbrechen: {job}"),
+    (
+        "Mark step {step} ({tool}) as done, so it does not run again; the assistant's job: {job}",
+        "Schritt {step} ({tool}) als erledigt markieren, damit er nicht noch einmal läuft; Auftrag des Assistenten: {job}",
+    ),
+    (
+        "Mark step {step} ({tool}) as not done, so it may run again when the job resumes; the assistant's job: {job}",
+        "Schritt {step} ({tool}) als nicht erledigt markieren, damit er beim Fortsetzen noch einmal laufen darf; Auftrag des Assistenten: {job}",
+    ),
+    ("Pause the assistant's job: {job}", "Den Auftrag des Assistenten pausieren: {job}"),
+    ("Resume the assistant's job: {job}", "Den Auftrag des Assistenten fortsetzen: {job}"),
+    (
+        "Resume the assistant's job with another model, answered by \"{engine}\": {job}",
+        "Den Auftrag des Assistenten mit einem anderen Modell fortsetzen, beantwortet von „{engine}“: {job}",
+    ),
+    (
+        "Start a long-running job of the assistant, answered by \"{engine}\"",
+        "Einen langlebigen Auftrag des Assistenten starten, beantwortet von „{engine}“",
+    ),
+    (
+        "The job stopped unexpectedly. Resume it to go on.",
+        "Der Auftrag hat unerwartet aufgehört. Setz ihn fort, um weiterzumachen.",
+    ),
+    ("an unknown command", "einen unbekannten Befehl"),
+    ("an unknown job", "ein unbekannter Auftrag"),
     // Assistant page in the control centre (C.6)
     ("1 year", "1 Jahr"),
     (
@@ -5623,6 +5705,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Never caught as fraud or spam", "Nie als Betrug oder Spam abgefangen"),
     ("Trusted senders · never caught", "Vertraute Absender · werden nie abgefangen"),
     ("No trusted senders yet.", "Noch keine vertrauten Absender."),
+    ("Always for this sender", "Immer für diesen Absender"),
+    ("No senders kept here yet.", "Noch keine Absender hierfür gemerkt."),
     ("Bring {messages} back into the inbox as no fraud", "{messages} als kein Betrug in den Eingang holen"),
     (
         "Bring {messages} back into the inbox and never catch mail from {senders} again, in every mail account",

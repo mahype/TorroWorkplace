@@ -1,7 +1,8 @@
 # editor-webview (Versuch #917)
 
 Ein tao/wry-Fenster mit dem Editor Squire (lokal in `assets/`, kein Netz). Ergebnis und Zahlen:
-`docs/research.md`, Abschnitt 9. Kein Produktcode.
+`docs/research.md`, Abschnitt 9. Kein Produktcode. **Umgesetzt in #969:** `crates/torroinbox/src/compose/` und
+`crates/torroinbox/assets/compose/`; der Versuch bleibt als Beleg.
 
 ```bash
 cargo run --release                       # Fenster; jedes Ereignis als JSON-Zeile auf stdout

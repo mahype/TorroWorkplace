@@ -58,7 +58,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
-use torro_inbox::item::{Facet, FacetKey, SourceHealth};
+use torro_inbox::item::{Facet, FacetKey, SourceHealth, SourceNotice};
 use torro_inbox::{Item, Kind, Link, SourceKind, SourceRef, State, StateFilter, rules};
 use torro_ipc::{Request, Response};
 use torro_pim::model::{GitHubKind, GitHubState};
@@ -214,14 +214,25 @@ impl Poller {
         let Some(checks) = sources.github.account_checks().await else { return };
         let active: Vec<String> = checks.iter().map(|check| check.account.clone()).collect();
         self.retire(sources, &active, now);
+        let public_only = sources.github.public_only_accounts().await;
         for check in checks {
             let Ok(source) = check.account.parse::<SourceRef>() else { continue };
             let pace = self.paces.entry(check.account.clone()).or_default();
             if matches!(check.health, Health::Problem { .. }) {
                 pace.signed_out = true;
                 sources.inbox.set_source_health(&source, Some(SourceHealth::SignedOut));
+                // A refused token says nothing about what it would reach.
+                sources.inbox.set_source_notice(&source, None);
                 continue;
             }
+            // Checked every round, not only when the account is due: the scopes change with a new
+            // sign-in or a new check of the token, and the note should follow at once (issue #947).
+            // Not while GitHub's refusal stands (health `signed_out`, kept until a listing works again):
+            // if the check after it failed otherwise (offline), the account still holds the scopes of
+            // the token as it was, and they say nothing about the token GitHub refused.
+            let refused = sources.inbox.source_health(&source) == Some(SourceHealth::SignedOut);
+            let notice = (!refused && public_only.contains(&check.account)).then_some(SourceNotice::PublicOnly);
+            sources.inbox.set_source_notice(&source, notice);
             // Signed in again: read now, whatever the pace said.
             if std::mem::take(&mut pace.signed_out) {
                 pace.next = None;
@@ -258,6 +269,7 @@ impl Poller {
             }
             if let Ok(source) = id.parse::<SourceRef>() {
                 sources.inbox.set_source_health(&source, None);
+                sources.inbox.set_source_notice(&source, None);
             }
             self.paces.remove(&id);
         }
@@ -436,6 +448,8 @@ async fn refused(sources: &Sources, source: &SourceRef, err: NotificationsError,
     match err {
         NotificationsError::Refused => {
             health(SourceHealth::SignedOut);
+            // A refused token says nothing about what it would reach.
+            sources.inbox.set_source_notice(source, None);
             if let Err(err) = sources.github.check_all().await {
                 eprintln!("torroworkplace: inbox: the GitHub accounts were checked again: {}", err.code());
             }
@@ -578,6 +592,8 @@ mod tests {
 
     const LOGIN: &str = "anna-berg";
     const TOKEN: &str = "ghp_classicSECRET";
+    /// A fine-grained token: GitHub reports no scopes for it.
+    const FINE_GRAINED: &str = "github_pat_11ABCDEFG_fineSECRET";
 
     /// A fixed clock: Tuesday 13 October 2026, 10:00 UTC, and minutes after it.
     fn at(minutes: i64) -> DateTime<Utc> {
@@ -595,16 +611,29 @@ mod tests {
         server: MockServer,
         sources: Sources,
         poller: tokio::sync::Mutex<Poller>,
+        /// The token of the account, as GitHub sees it in `Authorization`.
+        token: &'static str,
     }
 
     impl World {
         async fn new() -> World {
+            World::with_scopes("notifications, repo").await
+        }
+
+        /// A world whose classic token GitHub reports with the scopes `scopes` (`X-OAuth-Scopes`).
+        async fn with_scopes(scopes: &str) -> World {
+            World::with_token(TOKEN, Some(scopes)).await
+        }
+
+        /// A world with the account's `token`; GitHub reports `scopes` for it, or none (`None`), as
+        /// it does for a fine-grained token.
+        async fn with_token(token: &'static str, scopes: Option<&str>) -> World {
             let dir = tempfile::tempdir().expect("temp dir");
             let server = MockServer::start_async().await;
-            signs_in(&server, 200).await;
+            signs_in_with(&server, 200, scopes).await;
             let tokens = MemoryTokens::default();
             let github = Arc::new(service(dir.path(), &tokens, &server.url("/graphql"), NO_CLI));
-            github.connect_token(Secret::new(TOKEN)).await.expect("connected");
+            github.connect_token(Secret::new(token)).await.expect("connected");
             github.start();
             for _ in 0..200 {
                 if github.account_checks().await.is_some() {
@@ -619,7 +648,7 @@ mod tests {
             let pim = Arc::new(pim);
             let chat = Arc::new(crate::chat::ChatService::system(Arc::clone(&pim)));
             let sources = Sources { inbox, github, pim, ntfy, settings, chat };
-            World { _dir: dir, server, sources, poller: tokio::sync::Mutex::new(Poller::default()) }
+            World { _dir: dir, server, sources, poller: tokio::sync::Mutex::new(Poller::default()), token }
         }
 
         /// GitHub lists `threads` with `X-Poll-Interval: poll` and `Last-Modified: stamp`, to
@@ -627,8 +656,10 @@ mod tests {
         async fn lists(&self, modified: Option<&str>, threads: Value, poll: u64, stamp: &str) -> Mock<'_> {
             self.server
                 .mock_async(|when, then| {
-                    let when =
-                        when.method(GET).path("/notifications").header("authorization", format!("Bearer {TOKEN}"));
+                    let when = when
+                        .method(GET)
+                        .path("/notifications")
+                        .header("authorization", format!("Bearer {}", self.token));
                     if let Some(value) = modified {
                         when.header("if-modified-since", value);
                     } else {
@@ -725,6 +756,16 @@ mod tests {
             self.items().into_iter().find(|item| item.thread_key == thread).expect("an entry of the thread")
         }
 
+        /// What the list of sources notes about the source (issue #947).
+        fn notice(&self) -> Option<SourceNotice> {
+            match self.inbox().handle(Request::ListSources, None, at(600)) {
+                Response::Sources { sources } => {
+                    sources.into_iter().find(|info| info.source == source()).and_then(|info| info.notice)
+                }
+                other => panic!("expected sources, got {other:?}"),
+            }
+        }
+
         fn health(&self) -> Option<SourceHealth> {
             match self.inbox().handle(Request::ListSources, None, at(600)) {
                 Response::Sources { sources } => {
@@ -738,10 +779,20 @@ mod tests {
     /// GitHub's GraphQL endpoint answers the check of a token with `status`: 200 takes it. Not
     /// the check of the open entries ([`World::stands`]).
     async fn signs_in(server: &MockServer, status: u16) {
+        signs_in_with(server, status, Some("notifications, repo")).await;
+    }
+
+    /// [`signs_in`], with GitHub reporting the scopes `scopes` for the token (`None`: no
+    /// `X-OAuth-Scopes` header, as for a fine-grained token).
+    async fn signs_in_with(server: &MockServer, status: u16, scopes: Option<&str>) {
         server
             .mock_async(|when, then| {
                 when.method(POST).path("/graphql").body_excludes("issueOrPullRequest");
-                then.status(status).header("X-OAuth-Scopes", "notifications, repo").body(viewer(LOGIN));
+                let mut then = then.status(status);
+                if let Some(scopes) = scopes {
+                    then = then.header("X-OAuth-Scopes", scopes);
+                }
+                then.body(viewer(LOGIN));
             })
             .await;
     }
@@ -1114,19 +1165,116 @@ mod tests {
         assert_eq!(world.health(), None);
     }
 
+    /// Issue #947: a classic token without `repo` works, so the source is healthy, but it says that
+    /// only public repositories come; the note goes once the token has `repo`.
+    #[tokio::test]
+    async fn a_classic_token_without_repo_says_only_public_repositories_and_stays_healthy() {
+        let world = World::with_scopes("notifications, read:org").await;
+        world.lists(None, on(&world.server, json!([review(-5)])), 60, STAMP).await;
+        world.round(0).await;
+        assert_eq!(world.notice(), Some(SourceNotice::PublicOnly));
+        assert_eq!(world.health(), None, "the source works");
+        assert_eq!(world.items().len(), 1, "and brings what GitHub lists");
+
+        // A new check finds the token with `repo` now: the note goes at once, before the next listing is due.
+        world.server.reset_async().await;
+        signs_in_with(&world.server, 200, Some("notifications, repo")).await;
+        world.sources.github.check_all().await.expect("checked");
+        world.round(1).await;
+        assert_eq!(world.notice(), None);
+    }
+
+    #[tokio::test]
+    async fn a_token_with_repo_has_no_note() {
+        let world = World::new().await;
+        world.lists(None, json!([]), 60, STAMP).await;
+        world.round(0).await;
+        assert_eq!(world.notice(), None, "repo reaches private repositories");
+    }
+
+    /// A token GitHub refuses (and whose check agrees) says nothing about what it would reach.
+    #[tokio::test]
+    async fn a_refused_token_loses_the_note() {
+        let world = World::with_scopes("notifications").await;
+        world.lists(None, json!([]), 60, STAMP).await;
+        world.round(0).await;
+        assert_eq!(world.notice(), Some(SourceNotice::PublicOnly));
+        world.server.reset_async().await;
+        signs_in(&world.server, 401).await;
+        world.refuses(401).await;
+        world.round(20).await;
+        assert_eq!((world.health(), world.notice()), (Some(SourceHealth::SignedOut), None));
+        world.round(21).await;
+        assert_eq!((world.health(), world.notice()), (Some(SourceHealth::SignedOut), None), "and stays so");
+    }
+
+    /// GitHub refuses the token on `/notifications`, but the check that follows fails otherwise
+    /// (here a 502, as an outage or a timeout would): the account keeps the scopes of the token as
+    /// it was and is not signed out by the check. The note must not come back from those old scopes
+    /// while the refusal stands (`signed_out`), not even in the rounds before the next listing; it
+    /// may once a listing works again, which proves the token.
+    #[tokio::test]
+    async fn a_refusal_whose_check_fails_otherwise_does_not_bring_the_note_back() {
+        let world = World::with_scopes("notifications").await;
+        world.lists(None, json!([]), 60, STAMP).await;
+        world.round(0).await;
+        assert_eq!(world.notice(), Some(SourceNotice::PublicOnly));
+
+        world.server.reset_async().await;
+        signs_in(&world.server, 502).await;
+        let refused = world.refuses(401).await;
+        world.round(20).await;
+        assert_eq!(world.health(), Some(SourceHealth::SignedOut));
+        assert_eq!(world.notice(), None, "cleared with the refusal");
+        let checks = world.sources.github.account_checks().await.expect("loaded");
+        assert!(
+            !matches!(checks[0].health, Health::Problem { .. }),
+            "the failed check does not sign the account out: the old scopes stay in it"
+        );
+        assert_eq!(
+            world.sources.github.public_only_accounts().await,
+            [source().key()],
+            "so the account still holds scopes without repo"
+        );
+        for minutes in [21, 22, 30] {
+            world.round(minutes).await;
+            assert_eq!(world.health(), Some(SourceHealth::SignedOut), "round at {minutes} minutes");
+            assert_eq!(world.notice(), None, "no note from old scopes at {minutes} minutes");
+        }
+        assert_eq!(refused.calls_async().await, 1, "GitHub was not asked again before the retry");
+
+        // Once GitHub takes the token again, the listing clears the refusal and the note is the token's.
+        refused.delete_async().await;
+        world.server.reset_async().await;
+        signs_in(&world.server, 200).await;
+        world.lists(Some(STAMP), json!([]), 60, STAMP).await;
+        world.sources.github.check_all().await.expect("checked");
+        world.round(40).await;
+        assert_eq!((world.health(), world.notice()), (None, None), "the token has repo now");
+    }
+
+    /// A fine-grained token (`github_pat_…`) reports no scopes: GitHub refuses its notifications
+    /// (`missing_scope`) and the source says nothing about repositories. Not a note, whatever the
+    /// header would say.
     #[tokio::test]
     async fn a_fine_grained_token_says_missing_scope_and_files_nothing() {
-        let world = World::new().await;
+        let world = World::with_token(FINE_GRAINED, None).await;
+        let info = world.sources.github.infos().await;
+        assert_eq!(info[0].scopes, None, "GitHub reports none for it");
+        assert!(world.sources.github.public_only_accounts().await.is_empty());
         let refused = world.refuses(403).await;
         world.round(0).await;
         assert_eq!(world.health(), Some(SourceHealth::MissingScope));
+        assert_eq!(world.notice(), None, "missing_scope, not a note");
         assert!(world.items().is_empty());
         world.round(1).await;
+        assert_eq!(world.notice(), None);
         assert_eq!(refused.calls_async().await, 1, "not every minute");
         refused.delete_async().await;
         world.lists(None, json!([]), 60, STAMP).await;
         world.round(16).await;
         assert_eq!(world.health(), None, "cleared once it works");
+        assert_eq!(world.notice(), None, "and still no note");
     }
 
     #[test]

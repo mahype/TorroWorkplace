@@ -15,6 +15,7 @@ pub mod app;
 pub mod category;
 pub mod design;
 pub mod i18n;
+pub mod instance;
 pub mod maps;
 pub mod paths;
 pub mod privacy;

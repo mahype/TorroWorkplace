@@ -37,13 +37,12 @@ use crate::settings::SearchProviderId;
 
 pub mod vault;
 
-/// Keychain service name all suite secrets are filed under.
-const KEYCHAIN_SERVICE: &str = "torroworkplace";
-
 /// The account secrets of this process ([`vault`]): bundled in one keychain entry on macOS, one
-/// entry per account elsewhere; read once per process either way.
+/// entry per account elsewhere; read once per process either way. Filed under the keychain service
+/// of this core: a second core for tests has one of its own ([`crate::instance`], issue #877).
 static SECRETS: LazyLock<Mutex<vault::Vault<vault::SystemKeychain>>> = LazyLock::new(|| {
-    Mutex::new(vault::Vault::new(vault::SystemKeychain { service: KEYCHAIN_SERVICE }, cfg!(target_os = "macos")))
+    let keychain = vault::SystemKeychain { service: crate::instance::keychain_service() };
+    Mutex::new(vault::Vault::new(keychain, cfg!(target_os = "macos")))
 });
 
 /// Runs `f` on [`SECRETS`]; a keychain error becomes [`AccountError::Keychain`].

@@ -16,8 +16,13 @@
 //! the system takes it from an identity of the app, so `platform` sets that up before the
 //! first notification. Where that is not possible, the notification still appears and carries
 //! the name in its subtitle instead.
+//!
+//! A second core for tests (`torro_core::instance`, issue #877) puts "[Test]" in front of every
+//! title, or shows nothing with `TORRO_NOTIFICATIONS=off`: [`title`] decides, once for every kind of
+//! notification (here and in `inbox_notify`).
 
 use torro_core::i18n::{tr, trf};
+use torro_core::instance::Notifications;
 use torro_ipc::{ApprovalInfo, Response};
 
 /// The app name shown with each notification (also the inbox popups, `inbox_notify`).
@@ -75,6 +80,7 @@ pub fn message(what: &str, response: &Response) -> Option<(String, String)> {
 /// daemon must not wait for it. A failure (no notification service, a thread that cannot
 /// start) is only printed to stderr and never ends the daemon.
 pub fn show(summary: String, body: String) {
+    let Some(summary) = title(summary) else { return };
     let spawned = std::thread::Builder::new().name("notify".into()).spawn(move || {
         if let Err(err) = send(&summary, &body) {
             eprintln!("torroworkplace: cannot show notification: {err}");
@@ -117,6 +123,8 @@ pub fn ask(
     decide: impl FnOnce(bool) + Send + 'static,
 ) {
     let (summary, body) = question(approval);
+    // Shown nowhere else: the approval waits in the control centre, as when the person closes it.
+    let Some(summary) = title(summary) else { return };
     let lasts = (approval.expires - chrono::Utc::now()).to_std().unwrap_or_default();
     let Ok(runtime) = tokio::runtime::Handle::try_current() else {
         eprintln!("torroworkplace: cannot show notification: no runtime to wait for the answer on");
@@ -127,6 +135,21 @@ pub fn ask(
             eprintln!("torroworkplace: cannot show notification: {err}");
         }
     });
+}
+
+/// The title of a notification of this core: as it is for the person's own core, with "[Test]" in
+/// front for a second core, `None` when this core shows no notifications (issue #877). Every
+/// notification goes through here exactly once.
+pub(crate) fn title(summary: String) -> Option<String> {
+    titled(summary, torro_core::instance::notifications())
+}
+
+fn titled(summary: String, mode: Notifications) -> Option<String> {
+    match mode {
+        Notifications::On => Some(summary),
+        Notifications::Test => Some(trf("[Test] {title}", &[("title", &summary)])),
+        Notifications::Off => None,
+    }
 }
 
 /// Shows the question and waits for the first of: an answer, `settled`, or `lasts` running out.
@@ -546,6 +569,15 @@ mod tests {
         assert_eq!(APP_ID, "io.github.mahype.torro-workplace");
         // The AppUserModelID limit and allowed characters.
         assert!(APP_ID.len() <= 129 && !APP_ID.contains(char::is_whitespace));
+    }
+
+    #[test]
+    fn a_test_core_marks_or_hides_its_notifications() {
+        assert_eq!(titled("Account removed".into(), Notifications::On).as_deref(), Some("Account removed"));
+        let marked = titled("Account removed".into(), Notifications::Test).expect("shown");
+        assert_eq!(marked, trf("[Test] {title}", &[("title", &"Account removed")]));
+        assert!(marked.contains("Account removed") && marked != "Account removed", "{marked}");
+        assert_eq!(titled("Account removed".into(), Notifications::Off), None);
     }
 
     #[test]

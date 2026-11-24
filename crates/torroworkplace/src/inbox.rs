@@ -150,7 +150,7 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::paths::AppPaths;
-use torro_inbox::item::{Facet, FacetKey, ItemTask, MuteEffect, MuteScope, Muted, SourceHealth, TaskDue};
+use torro_inbox::item::{Facet, FacetKey, ItemTask, MuteEffect, MuteScope, Muted, SourceHealth, SourceNotice, TaskDue};
 use torro_inbox::rules::{self, KEEP_DONE_DAYS, MutedEntry, Poster};
 use torro_inbox::{
     Action, AgentInfo, AgentKind, Item, ItemFilter, Kind, Lane, LaneReason, Link, Rule, RuleEffect, Sender, SourceInfo,
@@ -700,6 +700,9 @@ pub struct Inbox {
     /// Why remote sources are quiet now ([`Inbox::set_source_health`], task E5.2): in memory only,
     /// since it is the state of a connection, which a restart finds out anew.
     health: Mutex<BTreeMap<SourceRef, SourceHealth>>,
+    /// What working remote sources leave out ([`Inbox::set_source_notice`], issue #947): in memory
+    /// only, like `health`, since the token's scopes are read again with every check.
+    notices: Mutex<BTreeMap<SourceRef, SourceNotice>>,
 }
 
 /// The open entries "for me" as the tray shows them (task E3.3b, [`Inbox::for_me`]).
@@ -731,6 +734,7 @@ impl Inbox {
             db: Mutex::new(None),
             changed: tokio::sync::watch::channel(()).0,
             health: Mutex::new(BTreeMap::new()),
+            notices: Mutex::new(BTreeMap::new()),
         }
     }
 
@@ -784,19 +788,50 @@ impl Inbox {
         }
     }
 
-    /// `sources` with the health the remote sources have now ([`Inbox::set_source_health`]); a
-    /// source `client` sees that is quiet for a reason is listed even without entries, so the
-    /// control centre can say why it brings nothing.
+    /// `sources` with the health and the notice the remote sources have now
+    /// ([`Inbox::set_source_health`], [`Inbox::set_source_notice`]); a source `client` sees that is
+    /// quiet for a reason or has a notice is listed even without entries, so the control centre can
+    /// say why it brings nothing or less than it could.
     fn with_health(&self, sources: Vec<SourceInfo>, client: Option<&ClientInfo>) -> Vec<SourceInfo> {
         let health = self.health.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let notices = self.notices.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         let scope = Scope::of(client);
         let mut listed: BTreeMap<SourceRef, SourceInfo> =
             sources.into_iter().map(|info| (info.source.clone(), info)).collect();
+        let empty = |source: &SourceRef| SourceInfo {
+            source: source.clone(),
+            open: 0,
+            muted: false,
+            health: None,
+            notice: None,
+        };
         for (source, health) in health.into_iter().filter(|(source, _)| scope.sees(source)) {
-            let info = SourceInfo { source: source.clone(), open: 0, muted: false, health: None };
+            let info = empty(&source);
             listed.entry(source).or_insert(info).health = Some(health);
         }
+        for (source, notice) in notices.into_iter().filter(|(source, _)| scope.sees(source)) {
+            let info = empty(&source);
+            listed.entry(source).or_insert(info).notice = Some(notice);
+        }
         listed.into_values().collect()
+    }
+
+    /// Why the remote source `source` brings nothing now, as noted by [`Inbox::set_source_health`];
+    /// `None` while it works. The GitHub source reads it to leave its notice out for a token GitHub
+    /// refused (issue #947).
+    pub fn source_health(&self, source: &SourceRef) -> Option<SourceHealth> {
+        self.health.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).get(source).copied()
+    }
+
+    /// Notes what the working remote source `source` leaves out (issue #947): `Some` while it is
+    /// so, `None` once it is not. Shown in `inbox.list_sources` ([`SourceInfo::notice`]); kept in
+    /// memory only, and it changes nothing the tray or the popups show.
+    pub fn set_source_notice(&self, source: &SourceRef, notice: Option<SourceNotice>) {
+        let mut known = self.notices.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match notice {
+            Some(notice) => known.insert(source.clone(), notice),
+            None => known.remove(source),
+        };
     }
 
     /// Notes why the remote source `source` brings nothing now (task E5.2), as its module in
@@ -1488,6 +1523,7 @@ impl Inbox {
     pub fn forget_source(&self, source: &str) -> Result<(), String> {
         if let Ok(source) = source.parse::<SourceRef>() {
             self.set_source_health(&source, None);
+            self.set_source_notice(&source, None);
         }
         self.work(false, |db| {
             db.execute("DELETE FROM stats WHERE source = ?1", params![source])?;
@@ -3179,15 +3215,17 @@ fn list_sources(db: &Connection, client: Option<&ClientInfo>) -> Result<Vec<Sour
         let (key, open): (String, u32) = row?;
         // A key no version of the core writes is skipped, not shown half.
         if let Ok(source) = key.parse::<SourceRef>() {
-            sources.insert(source.clone(), SourceInfo { source, open, muted: false, health: None });
+            sources.insert(source.clone(), SourceInfo { source, open, muted: false, health: None, notice: None });
         }
     }
     // A hidden sender or domain (task E3.10) or a muted trait (task E8.6a) mutes only some of its
     // reports, not the source.
     for rule in read_rules(db, &scope, "effect = 'muted' AND sender = '' AND facet = ''", Vec::new())? {
         let source = rule.source.clone();
-        sources.entry(source.clone()).or_insert(SourceInfo { source, open: 0, muted: false, health: None }).muted =
-            true;
+        sources
+            .entry(source.clone())
+            .or_insert(SourceInfo { source, open: 0, muted: false, health: None, notice: None })
+            .muted = true;
     }
     Ok(sources.into_values().collect())
 }
@@ -6417,7 +6455,7 @@ pub(crate) mod tests {
         let Response::Sources { sources } = inbox.handle(Request::ListSources, Some(&reader), at(8, 3)) else {
             panic!("sources answer with Sources");
         };
-        assert_eq!(sources, [SourceInfo { source, open: 1, muted: false, health: None }]);
+        assert_eq!(sources, [SourceInfo { source, open: 1, muted: false, health: None, notice: None }]);
     }
 
     #[test]
@@ -6744,7 +6782,7 @@ pub(crate) mod tests {
         let Response::Sources { sources } = inbox.handle(Request::ListSources, None, at(8, 4)) else {
             panic!("sources answer with Sources");
         };
-        assert_eq!(sources, [SourceInfo { source: source.clone(), open: 1, muted: true, health: None }]);
+        assert_eq!(sources, [SourceInfo { source: source.clone(), open: 1, muted: true, health: None, notice: None }]);
 
         assert_eq!(inbox.handle(Request::MuteSource { source, muted: false }, Some(&script), at(8, 5)), Response::Ok);
         assert_eq!(posted(inbox.handle(notice("After", Some("t")), Some(&script), at(8, 6))), id);
@@ -9644,7 +9682,13 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let inbox = inbox_in(dir.path());
         inbox.set_source_health(&github(), Some(SourceHealth::MissingScope));
-        let quiet = SourceInfo { source: github(), open: 0, muted: false, health: Some(SourceHealth::MissingScope) };
+        let quiet = SourceInfo {
+            source: github(),
+            open: 0,
+            muted: false,
+            health: Some(SourceHealth::MissingScope),
+            notice: None,
+        };
         assert_eq!(sources_of(&inbox, None), [quiet], "listed without entries");
         filed_remote(&inbox, &shared("1", &["1"], at(8, 0)), at(8, 0));
         let cloud = SourceRef::nextcloud(CLOUD);
@@ -9667,6 +9711,34 @@ pub(crate) mod tests {
         assert_eq!(sources_of(&inbox, None).len(), 1, "it works again");
         inbox.forget_source(&cloud.key()).expect("forgotten");
         assert_eq!(sources_of(&inbox, None)[0].health, None, "a removed account takes its health along");
+    }
+
+    /// Issue #947: a working source with a note is listed with it, even without entries, only to
+    /// the clients that see the source, and the note goes with the account.
+    #[test]
+    fn a_source_with_a_notice_says_it_in_the_list_of_sources_but_stays_healthy() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        inbox.set_source_notice(&github(), Some(SourceNotice::PublicOnly));
+        let noted = |info: &SourceInfo| (info.health, info.notice);
+        let listed = sources_of(&inbox, None);
+        assert_eq!(listed.len(), 1, "listed without entries");
+        assert_eq!(noted(&listed[0]), (None, Some(SourceNotice::PublicOnly)), "not quiet, only noted");
+
+        inbox.set_source_health(&github(), Some(SourceHealth::Offline));
+        assert_eq!(noted(&sources_of(&inbox, None)[0]), (Some(SourceHealth::Offline), Some(SourceNotice::PublicOnly)));
+
+        let no_github = with_rights(|rights| {
+            rights.areas.remove(&Area::Github);
+        });
+        assert!(sources_of(&inbox, Some(&no_github)).is_empty(), "a client without GitHub does not see it");
+        assert!(sources_of(&inbox, Some(&hook())).is_empty());
+
+        inbox.set_source_notice(&github(), None);
+        assert_eq!(noted(&sources_of(&inbox, None)[0]), (Some(SourceHealth::Offline), None), "cleared");
+        inbox.set_source_notice(&github(), Some(SourceNotice::PublicOnly));
+        inbox.forget_source(GITHUB).expect("forgotten");
+        assert!(sources_of(&inbox, None).is_empty(), "a removed account takes its note and health along");
     }
 
     #[test]

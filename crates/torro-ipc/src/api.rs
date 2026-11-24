@@ -2058,6 +2058,13 @@ impl Request {
             Request::SendMessage { .. } => &SEND_MESSAGE,
             Request::CheckAbout { .. } => &CHECK_ABOUT,
             Request::CancelAnswer { .. } => &CANCEL,
+            Request::StartJob { .. } => &START_JOB,
+            Request::ListJobs { .. } => &LIST_JOBS,
+            Request::GetJob { .. } => &GET_JOB,
+            Request::PauseJob { .. } => &PAUSE_JOB,
+            Request::ResumeJob { .. } => &RESUME_JOB,
+            Request::CancelJob { .. } => &CANCEL_JOB,
+            Request::ResolveJobStep { .. } => &RESOLVE_JOB_STEP,
             Request::InterruptAnswer { .. } => &INTERRUPT,
             Request::RenameConversation { .. } => &RENAME_CONVERSATION,
             Request::ChooseModel { .. } => &CHOOSE_MODEL,
@@ -2537,6 +2544,13 @@ pub static CATALOGUE: &[&Command] = &[
     &SEND_MESSAGE,
     &CHECK_ABOUT,
     &CANCEL,
+    &START_JOB,
+    &LIST_JOBS,
+    &GET_JOB,
+    &PAUSE_JOB,
+    &RESUME_JOB,
+    &CANCEL_JOB,
+    &RESOLVE_JOB_STEP,
     &INTERRUPT,
     &RENAME_CONVERSATION,
     &CHOOSE_MODEL,
@@ -5114,7 +5128,9 @@ static LIST_SOURCES: Command = Command {
                   person's own `suite`) with their number of open entries (of a GitHub source only those of \
                   repositories this key may see) and whether the person muted them. `health` says why a remote \
                   source brings nothing now: `missing_app` (the server lacks the app), `missing_scope` (the sign-in \
-                  may not read notifications), `signed_out`, `offline`; left out while it works.",
+                  may not read notifications), `signed_out`, `offline`; left out while it works. `notice` says what a source \
+                  that works still leaves out: `public_only` (a classic GitHub token without the `repo` scope, so \
+                  notifications of private repositories never come); left out when there is nothing to say.",
 };
 
 static POST_ITEM: Command = Command {
@@ -6426,6 +6442,74 @@ static CANCEL: Command = Command {
     mcp: Mcp::Tool,
     description: "Stops the answer running in a conversation of the assistant. What it did until then stays, and a \
                   `stopped` entry is added; nothing happens when no answer runs.",
+};
+
+static START_JOB: Command = Command {
+    name: "assistant.start_job",
+    area: Area::Assistant,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Starts a long-running job of the assistant: `goal` becomes the first message of a new conversation \
+                  (or of `conversation`), and the core keeps a journal of every tool call so the job goes on safely \
+                  after a restart; a step that changes something is never repeated by itself. Only with an AI \
+                  account; the model is fixed when it starts and never changes by itself. Returns the job.",
+};
+
+static LIST_JOBS: Command = Command {
+    name: "assistant.list_jobs",
+    area: Area::Assistant,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Lists the assistant's long-running jobs with their state (queued, running, awaiting_approval, \
+                  paused, completed, failed, cancelled) and why one is paused; with `conversation` only its jobs.",
+};
+
+static GET_JOB: Command = Command {
+    name: "assistant.get_job",
+    area: Area::Assistant,
+    access: Access::Read,
+    mcp: Mcp::Tool,
+    description: "Reads one job of the assistant with its steps: each tool call's command, state (planned, \
+                  dispatched, confirmed, failed, uncertain), approval and the number of its tool line in the \
+                  conversation. Inputs and results are not kept here; read the conversation for them.",
+};
+
+static PAUSE_JOB: Command = Command {
+    name: "assistant.pause_job",
+    area: Area::Assistant,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Pauses a job of the assistant: its answer stops at once and no further step starts. A step that \
+                  changes something and was running becomes uncertain. Resume it with resume_job.",
+};
+
+static RESUME_JOB: Command = Command {
+    name: "assistant.resume_job",
+    area: Area::Assistant,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Resumes a paused job of the assistant. Rights, approvals and the model are checked anew; `conflict` \
+                  while a step is uncertain or its approval still waits. Give `engine` and `model` to go on with \
+                  another model on purpose; without them the job keeps its own and fails over to none.",
+};
+
+static CANCEL_JOB: Command = Command {
+    name: "assistant.cancel_job",
+    area: Area::Assistant,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Cancels a job of the assistant for good: its answer stops and nothing of it runs again. What it did \
+                  stays in its conversation.",
+};
+
+static RESOLVE_JOB_STEP: Command = Command {
+    name: "assistant.resolve_job_step",
+    area: Area::Assistant,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Decides the outcome of an uncertain step of a job: `done` true when it did happen (the mail went \
+                  out), false when it did not, and then the job may run that step again when it resumes. Waits for \
+                  a person's approval, since only a person can know; check the outcome yourself before you ask.",
 };
 
 static INTERRUPT: Command = Command {
@@ -7818,6 +7902,19 @@ mod tests {
                 about: crate::assistant::MailRef { account: "mail:anna@example.org".into(), id: "m:4".into() },
             },
             Request::CancelAnswer { conversation: "0123456789abcdef".into() },
+            Request::StartJob {
+                goal: "Sort the invoices of this month".into(),
+                engine: "ai:ollama@localhost:11434".into(),
+                model: None,
+                conversation: None,
+                without: Vec::new(),
+            },
+            Request::ListJobs { conversation: None },
+            Request::GetJob { id: "0123456789abcdef".into() },
+            Request::PauseJob { id: "0123456789abcdef".into() },
+            Request::ResumeJob { id: "0123456789abcdef".into(), engine: None, model: None },
+            Request::CancelJob { id: "0123456789abcdef".into() },
+            Request::ResolveJobStep { id: "0123456789abcdef".into(), step: 2, done: true },
             Request::InterruptAnswer { conversation: "0123456789abcdef".into() },
             Request::RenameConversation { id: "0123456789abcdef".into(), title: "Tomorrow".into() },
             Request::ChooseModel {
@@ -10615,8 +10712,8 @@ mod tests {
             agent: None,
         };
         let listed = [
-            SourceInfo { source: SourceRef::script("nightly"), open: 1, muted: false, health: None },
-            SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None },
+            SourceInfo { source: SourceRef::script("nightly"), open: 1, muted: false, health: None, notice: None },
+            SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None, notice: None },
         ];
         let accounts = [
             account("mail:anna@mailbox.org", "mail"),

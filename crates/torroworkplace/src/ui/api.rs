@@ -852,7 +852,13 @@ pub(super) mod tests {
                 collection("acc/todo", "Todo", CollectionKind::Todos, &[]),
                 collection("github:anna/1", "Bugs", CollectionKind::Todos, &["is:open repo:anna/torro label:bug"]),
             ],
-            sources: vec![SourceInfo { source: SourceRef::script("nightly"), open: 1, muted: false, health: None }],
+            sources: vec![SourceInfo {
+                source: SourceRef::script("nightly"),
+                open: 1,
+                muted: false,
+                health: None,
+                notice: None,
+            }],
             accounts: vec![
                 account("nextcloud:anna@cloud.example.org", "nextcloud", "anna@cloud.example.org"),
                 account("mail:anna@mailbox.org", "mail", "anna@mailbox.org"),
