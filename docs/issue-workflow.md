@@ -13,7 +13,7 @@ Plugins lesen `CLAUDE.md` und die dort verlinkte Doku, also diese Datei. `<cli>`
 |---|---|---|
 | Anlegen | `issue-create` | `docs/tasks/` mit durchsuchen, drei Wege bei Funktionen |
 | Planen | `issue-plan` (Opus oder Fable) | `torro-api`/`torro-design`, Block „Oberfläche, API, MCP“, `Oberfläche: ja\|nein`, keine Einträge in `docs/tasks/` |
-| Freigeben | `issue-approve` (nur durch Menschen) | keine lokale Instanz |
+| Freigeben | `issue-plan-accept` (nur durch Menschen) | keine lokale Instanz |
 | Umsetzen | `issue-implement` | Regeln aus `CLAUDE.md`, `de.rs`, `torro-design-review` und `torro-api-review` |
 | Klein | `issue-small` | wie Umsetzen, Grenzen im Abschnitt „Kleine Änderungen“ |
 | Direkt | `quick-fix` | Kriterium im Abschnitt „Direkt-PR ohne Issue“ |
@@ -22,7 +22,7 @@ Plugins lesen `CLAUDE.md` und die dort verlinkte Doku, also diese Datei. `<cli>`
 | Triagieren | `pr-triage` (optional) | – |
 | Aufräumen | `worktree-cleanup` | – |
 
-KI-Agenten setzen nie `approved`, approven und mergen nie.
+KI-Agenten setzen nie `plan-accepted`, approven und mergen nie.
 
 ## Skills im Repo
 
@@ -175,7 +175,7 @@ Harte Ausschlüsse (dann `/issue-plan`):
 - nichts an Schlüsseln, Rechten, Freigaben oder Protokoll
 - kein Format gespeicherter Daten, keine Migration
 - kein nativer Plattformcode (`torro-appkit`), keine neue Abhängigkeit
-- keine Änderung an den Gates der Skill-Kette (`approved`, `awaiting-approval`, Freigabe-Skills)
+- keine Änderung an den Gates der Skill-Kette (`plan-accepted`, `plan-ready`, Freigabe-Skills)
 
 Richtwert bis zu 5 Dateien oder etwa 50 geänderte Zeilen; mehr ist nur eine Warnung mit dem Vorschlag
 `/issue-plan`, kein Abbruch.
@@ -185,14 +185,14 @@ Richtwert bis zu 5 Dateien oder etwa 50 geänderte Zeilen; mehr ist nur eine War
 Kriterium „Direkt-PR“ (alle Punkte): höchstens 2–3 Dateien und wenige Zeilen; erlaubt sind Text, Doku, Kommentare,
 Übersetzungen in `crates/torro-core/src/i18n/de.rs` und kleine Korrekturen in `scripts/` und `.claude/skills/`;
 nicht erlaubt sind Programmlogik, Schnittstellen, Konfiguration, Abhängigkeiten und Änderungen an den Gates der
-Skill-Kette (`approved`, Merge-Regeln). Bei Zweifeln hält der Agent an und schlägt `/issue-small` vor. Den Worktree
+Skill-Kette (`plan-accepted`, Merge-Regeln). Bei Zweifeln hält der Agent an und schlägt `/issue-small` vor. Den Worktree
 legt `/quick-fix` selbst an. Verifizieren mit `scripts/ci-local.sh --changed origin/main...HEAD` (Stufe 1 oder 2 aus „Prüfen“: bei Doku, Skills
 und Skripten nur fmt und Design, bei einer Übersetzung zusätzlich die i18n-Tests in beiden Sprachen).
 
 ## Lokale Instanz
 
 TorroWorkplace hat keine lokale Instanz (kein `.enon-tools/hooks/start.mjs`): Pläne schreiben immer `Instanz: nein`,
-`issue-approve` startet nichts. Die Apps startet man zum Ansehen mit `--demo` (Skill `torro-design`).
+`issue-plan-accept` startet nichts. Die Apps startet man zum Ansehen mit `--demo` (Skill `torro-design`).
 
 ## Worktrees und Herdr
 
@@ -208,4 +208,5 @@ TorroWorkplace hat keine lokale Instanz (kein `.enon-tools/hooks/start.mjs`): Pl
 ## Verwandte Dokumentation
 
 - `docs/git-workflow.md` – Branches, Issues, Commits, PRs
+- `docs/workflow-architektur.md` – Bestandsaufnahme der Workflow-Regeln und offene Frage, wo sie hingehören
 - `CLAUDE.md` – Regeln für Code, Prüfen und die drei Wege Oberfläche, API, MCP
