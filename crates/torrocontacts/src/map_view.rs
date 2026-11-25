@@ -18,7 +18,8 @@
 //!
 //! - **A pin by hand** (issue #854): "Set location on map" in the contact and "Move pin" on the pin card
 //!   show the map with the contact's pin fixed in the middle; the person drags the map under it, "Save"
-//!   writes the point as the vCard's `GEO` (`contacts.set_location`, with `replace` when it has one).
+//!   writes the point as the vCard's `GEO` (`contacts.set_location`, with `replace`: the person chose
+//!   the new point, the contact's version guards against a change elsewhere).
 //!   The map of all contacts and its view come back as they were.
 //!
 //! Nothing here reads or writes data itself: every answer comes through [`Backend`].
@@ -107,8 +108,11 @@ pub enum MapMsg {
     PlaceCancel,
     /// "Save": the point in the middle of the map goes to the core.
     PlaceSave,
-    /// `contacts.set_location` answered.
-    Placed(String, Result<Box<Contact>, ContactsError>),
+    /// `contacts.set_location` number `asked` answered ([`Placing::asked`]).
+    Placed(u64, Result<Box<Contact>, ContactsError>),
+    /// The contact again after "Save" was refused because it changed, for save number `asked`: the
+    /// next "Save" goes with its new version.
+    PlaceFresh(u64, Result<Box<Contact>, ContactsError>),
 }
 
 /// A pin set by hand (issue #854): whose, and what comes back when it ends.
@@ -120,12 +124,13 @@ pub struct Placing {
     pub name: String,
     /// The first address as one line; empty for a contact without one.
     pub address: String,
-    /// The contact has a `GEO`: saving replaces it.
-    pub replace: bool,
     /// "Save" is out.
     pub saving: bool,
     /// Why the last "Save" failed.
     pub error: Option<String>,
+    /// The number of the last "Save" sent ([`MapState::place_asked`]); 0 before the first. An answer
+    /// of another number belongs to a pin that ended meanwhile.
+    pub asked: u64,
     /// The view of the map before, and whether the person had moved it.
     back: (Camera, bool),
 }
@@ -188,6 +193,8 @@ pub struct MapState {
     pub frozen: bool,
     /// A pin set by hand: the map shows only it, in the middle.
     pub placing: Option<Placing>,
+    /// How many "Save" of a pin by hand were sent while the window runs: the number of each.
+    pub place_asked: u64,
 }
 
 impl Default for MapState {
@@ -216,6 +223,7 @@ impl Default for MapState {
             lookup: Lookup::default(),
             frozen: false,
             placing: None,
+            place_asked: 0,
         }
     }
 }
@@ -560,9 +568,17 @@ impl App {
                 return Task::perform(async move { backend.open_in_maps(id, address).await }, Message::OpenedInMaps);
             }
             MapMsg::Place(id) => self.start_placing(&id),
+            MapMsg::PlaceCancel if self.map.placing.as_ref().is_some_and(|p| p.saving) => {}
             MapMsg::PlaceCancel => self.end_placing(),
             MapMsg::PlaceSave => return self.save_placing(),
-            MapMsg::Placed(id, result) => return self.placed(&id, result),
+            MapMsg::Placed(asked, result) => return self.placed(asked, result),
+            MapMsg::PlaceFresh(asked, Ok(contact)) => {
+                if let Some(placing) = self.map.placing.as_mut().filter(|p| p.asked == asked && p.id == contact.id) {
+                    placing.etag = contact.etag.clone().unwrap_or_default();
+                }
+            }
+            // The contact cannot be had: the reason of the refused "Save" stays on the bar.
+            MapMsg::PlaceFresh(_, Err(_)) => {}
         }
         Task::none()
     }
@@ -596,9 +612,9 @@ impl App {
             etag: contact.etag.clone().unwrap_or_default(),
             name: contact.shown_name(),
             address: contact.addresses.first().map(|a| a.value.one_line()).unwrap_or_default(),
-            replace: contact.geo.is_some(),
             saving: false,
             error: None,
+            asked: 0,
             back: (self.map.camera, self.map.moved),
         };
         self.map.placing = Some(placing);
@@ -617,42 +633,55 @@ impl App {
         }
     }
 
-    /// "Save": the point in the middle, `replace` when the contact has a `GEO`.
+    /// "Save": the point in the middle, always with `replace`. The person moved the pin to say where the
+    /// contact is, also over a `GEO` the app cannot read (which a save without `replace` would refuse
+    /// for ever); `etag` keeps a change made elsewhere meanwhile from being overwritten.
     fn save_placing(&mut self) -> Task<Message> {
         let camera = self.map.camera;
         let Some(placing) = self.map.placing.as_mut().filter(|placing| !placing.saving) else { return Task::none() };
+        self.map.place_asked += 1;
+        let asked = self.map.place_asked;
         placing.saving = true;
         placing.error = None;
-        let (id, etag, replace) = (placing.id.clone(), placing.etag.clone(), placing.replace);
+        placing.asked = asked;
+        let (id, etag) = (placing.id.clone(), placing.etag.clone());
         let geo = torro_ipc::contacts::Geo { lat: camera.lat, lon: camera.lon };
         let backend = self.backend.clone();
-        Task::perform(
-            async move { (id.clone(), backend.set_location(id, etag, geo, replace).await) },
-            |(id, result)| Message::Map(MapMsg::Placed(id, result.map(Box::new))),
-        )
+        Task::perform(async move { backend.set_location(id, etag, geo, true).await }, move |result| {
+            Message::Map(MapMsg::Placed(asked, result.map(Box::new)))
+        })
     }
 
-    /// The answer of "Save": written, the contact shows its new version and the map comes back; else
-    /// the reason stays on the bar and the pin where it is.
-    fn placed(&mut self, id: &str, result: Result<Box<Contact>, ContactsError>) -> Task<Message> {
-        if self.map.placing.as_ref().is_none_or(|placing| placing.id != id) {
-            return Task::none();
-        }
+    /// The answer of "Save" number `asked`: written, the contact shows its new version and the map
+    /// comes back; refused, the reason stays on the bar and the pin where it is (after a change elsewhere
+    /// the contact is fetched again, so the next "Save" goes with its new version). The answer of a pin
+    /// that ended meanwhile (another view, maps turned off) closes nothing, but a point written is shown.
+    fn placed(&mut self, asked: u64, result: Result<Box<Contact>, ContactsError>) -> Task<Message> {
+        let current = self.map.placing.as_ref().is_some_and(|placing| placing.asked == asked);
         match result {
             Ok(contact) => {
-                self.end_placing();
+                if current {
+                    self.end_placing();
+                }
                 if self.map.card.as_ref().is_some_and(|card| card.id == contact.id) {
                     self.map.card = Some(contact.clone());
                 }
                 self.notify(tr("Pin saved."));
                 self.took(*contact)
             }
+            Err(_) if !current => Task::none(),
             Err(err) => {
-                if let Some(placing) = &mut self.map.placing {
-                    placing.saving = false;
-                    placing.error = Some(failed(&err));
+                let Some(placing) = &mut self.map.placing else { return Task::none() };
+                placing.saving = false;
+                placing.error = Some(failed(&err));
+                if !matches!(err, ContactsError::Conflict { .. }) {
+                    return Task::none();
                 }
-                Task::none()
+                let id = placing.id.clone();
+                let backend = self.backend.clone();
+                Task::perform(async move { backend.get_contact(id).await }, move |result| {
+                    Message::Map(MapMsg::PlaceFresh(asked, result.map(Box::new)))
+                })
             }
         }
     }
@@ -1011,8 +1040,13 @@ impl App {
         let hint = tr("Drag the map until the pin sits on the right spot.");
         words = words.push(typo::text(typo::meta(), hint).style(theme::text_3).wrapping(Wrapping::WordOrGlyph));
         let busy = placing.saving;
-        let cancel =
-            widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Map(MapMsg::PlaceCancel)));
+        // While "Save" is out, "Cancel" waits: the point may be written already.
+        let cancel = widgets::text_button(
+            None,
+            tr("Cancel"),
+            style::button::secondary,
+            (!busy).then_some(Message::Map(MapMsg::PlaceCancel)),
+        );
         let save = widgets::text_button(
             Some(Icon::Check),
             if busy { tr("Saving…") } else { tr("Save") },

@@ -988,7 +988,6 @@ async fn move_pin_starts_at_the_pin_and_save_comes_back_to_the_map() {
     let pin = app.map.pins.iter().find(|p| p.id == anna && p.address == 0).expect("pin").geo;
     let _ = app.update(Message::Map(MapMsg::Place(anna.clone())));
     let placing = app.map.placing.clone().expect("placing");
-    assert_eq!(placing.replace, app.map.card.as_ref().is_some_and(|c| c.geo.is_some()), "replace only over a GEO");
     let camera = app.map.camera;
     assert!((camera.lat - pin.lat).abs() < 1e-9 && (camera.lon - pin.lon).abs() < 1e-9, "at her pin: {camera:?}");
     assert_eq!(camera.zoom, PLACE_ZOOM);
@@ -1001,9 +1000,15 @@ async fn move_pin_starts_at_the_pin_and_save_comes_back_to_the_map() {
     let _ = app.update(Message::Map(MapMsg::PlaceSave));
     assert!(app.map.placing.as_ref().is_some_and(|p| p.saving), "saving shows at once");
     let _ = app.update(Message::Map(MapMsg::PlaceSave));
+    let asked = app.map.placing.as_ref().map(|p| p.asked).expect("placing");
+    assert_eq!(asked, app.map.place_asked, "a second click sends nothing more");
+    // "Cancel" and Escape wait while it is out: the point may be written already.
+    let _ = app.update(Message::Map(MapMsg::PlaceCancel));
+    let _ = app.update(Message::Escape);
+    assert!(app.map.placing.is_some());
     let geo = torro_ipc::contacts::Geo { lat: moved.lat, lon: moved.lon };
-    let written = app.backend.set_location(anna.clone(), placing.etag.clone(), geo, placing.replace).await;
-    let _ = app.update(Message::Map(MapMsg::Placed(anna.clone(), written.map(Box::new))));
+    let written = app.backend.set_location(anna.clone(), placing.etag.clone(), geo, true).await;
+    let _ = app.update(Message::Map(MapMsg::Placed(asked, written.map(Box::new))));
     assert!(app.map.placing.is_none());
     assert_eq!(app.map.camera, before, "the map of all contacts as it was");
     assert_eq!(app.map.card.as_ref().and_then(|c| c.geo).map(|g| g.lat), Some(moved.lat));
@@ -1022,14 +1027,34 @@ async fn cancel_and_a_refused_save_keep_nothing_written() {
     // The contact changed meanwhile: the bar says so and the pin stays where it is.
     let _ = app.update(Message::Map(MapMsg::Place(anna.clone())));
     let _ = app.update(Message::Map(MapMsg::PlaceSave));
+    let asked = app.map.placing.as_ref().map(|p| p.asked).expect("placing");
     let refused = Err(ContactsError::Conflict { server_vcard: None, etag: None });
-    let _ = app.update(Message::Map(MapMsg::Placed(anna.clone(), refused)));
+    let _ = app.update(Message::Map(MapMsg::Placed(asked, refused)));
     let placing = app.map.placing.clone().expect("still placing");
     assert!(!placing.saving);
     assert_eq!(placing.error.as_deref(), Some(tr("This contact changed meanwhile. Check and save again.")));
+    // The contact is fetched again: the next "Save" goes with its new version.
+    let mut fresh = app.backend.get_contact(anna.clone()).await.expect("contact");
+    fresh.etag = Some("\"fresh\"".into());
+    fresh.geo = torro_contacts::model::Geo::new(52.5, 13.4);
+    let _ = app.update(Message::Map(MapMsg::PlaceFresh(asked, Ok(Box::new(fresh)))));
+    let placing = app.map.placing.clone().expect("still placing");
+    assert_eq!(placing.etag, "\"fresh\"");
 
-    // The switch "List | Map" ends it too; an answer for another contact changes nothing.
-    let _ = app.update(Message::Map(MapMsg::Placed("other".into(), Err(ContactsError::Offline))));
+    // A late answer of a pin that ended does not close a new one of the same contact.
+    let _ = app.update(Message::Map(MapMsg::PlaceSave));
+    let old = app.map.place_asked;
+    let _ = app.update(Message::Show(View::Favorites));
+    assert!(app.map.placing.is_none(), "another view ends it");
+    let _ = app.update(Message::Show(View::All));
+    let _ = app.update(Message::Map(MapMsg::Place(anna.clone())));
+    let late = app.backend.get_contact(anna.clone()).await.map(Box::new);
+    let _ = app.update(Message::Map(MapMsg::Placed(old, late)));
+    let placing = app.map.placing.clone().expect("the new pin stays open");
+    assert_eq!(placing.asked, 0);
+
+    // An answer of an older "Save" changes nothing here; the switch "List | Map" ends it.
+    let _ = app.update(Message::Map(MapMsg::Placed(asked + 7, Err(ContactsError::Offline))));
     assert!(app.map.placing.as_ref().is_some_and(|p| p.error == placing.error));
     let _ = app.update(Message::Map(MapMsg::Look(Look::List)));
     assert!(app.map.placing.is_none());
@@ -1076,7 +1101,11 @@ async fn escape_another_view_and_the_panel_follow_a_pin_by_hand() {
     // Enter is "Save".
     let _ = app.update(Message::Key(Press::Enter));
     assert!(app.map.placing.as_ref().is_some_and(|p| p.saving));
-    // Escape is "Cancel"; the contact stays open.
+    // Escape waits while "Save" is out, then is "Cancel"; the contact stays open.
+    let _ = app.update(Message::Escape);
+    assert!(app.map.placing.is_some());
+    let asked = app.map.place_asked;
+    let _ = app.update(Message::Map(MapMsg::Placed(asked, Err(ContactsError::Offline))));
     let _ = app.update(Message::Escape);
     assert!(app.map.placing.is_none() && app.is_open(&anna));
     // Another view ends it too.

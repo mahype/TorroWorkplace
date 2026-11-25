@@ -1579,8 +1579,8 @@ impl App {
         } else if self.drawer {
             self.drawer = false;
         } else if self.map.placing.is_some() {
-            // A pin set by hand (issue #854): Escape is "Cancel".
-            self.end_placing();
+            // A pin set by hand (issue #854): Escape is "Cancel", which waits while "Save" is out.
+            return self.update(Message::Map(MapMsg::PlaceCancel));
         } else if self.editing() {
             return self.update(Message::Cancel);
         } else if self.detail.is_some() {
@@ -2280,7 +2280,8 @@ impl App {
                     self.map.selected = Some(pin_key(&id, 0));
                     let place = Message::Map(MapMsg::Place(id.clone()));
                     let refused = Err(ContactsError::Conflict { server_vcard: None, etag: None });
-                    let refused = Message::Map(MapMsg::Placed(id.clone(), refused));
+                    // Number 0: the pin's first "Save", as if it had been sent.
+                    let refused = Message::Map(MapMsg::Placed(0, refused));
                     let backend = self.backend.clone();
                     let fetched = Task::perform(
                         async move { backend.get_contact(id.clone()).await.map(|contact| (id, contact)) },
