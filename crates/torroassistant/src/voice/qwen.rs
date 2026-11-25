@@ -11,7 +11,7 @@
 //! [`Qwen`], and with it the program, when another provider reads.
 
 use std::collections::HashSet;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -145,15 +145,32 @@ pub fn program() -> PathBuf {
 #[cfg_attr(all(not(feature = "qwen-cuda"), test), expect(dead_code, reason = "it asks a real program"))]
 pub fn graphics_card() -> Option<String> {
     let program = program();
-    let output = Command::new(&program)
+    let mut child = Command::new(&program)
         .arg("--card")
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .output()
+        .spawn()
         .map_err(|err| eprintln!("torroassistant: {NAME}: {} did not start: {err}", program.display()))
         .ok()?;
-    card_of(&String::from_utf8_lossy(&output.stdout))
+    // The status waits for this answer: a program that hangs (a driver that does not answer) counts as
+    // no card after a while instead of holding the settings. Its one short line fits in the pipe.
+    let started = std::time::Instant::now();
+    while child.try_wait().ok()?.is_none() {
+        if started.elapsed() > CARD_WAIT {
+            eprintln!("torroassistant: {NAME}: {} --card did not answer", program.display());
+            end(&mut child);
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let mut answer = String::new();
+    child.stdout.take()?.read_to_string(&mut answer).ok()?;
+    card_of(&answer)
 }
+
+/// How long `torro-qwen-tts --card` may take: starting CUDA takes a second or two.
+const CARD_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The card in the answer of `torro-qwen-tts --card`.
 pub fn card_of(answer: &str) -> Option<String> {
@@ -176,6 +193,10 @@ pub struct Qwen {
     language: &'static str,
     /// The voices whose templates the program has.
     voices: HashSet<&'static str>,
+    /// The voice folder and language it was started with, to start it again; `None` in the tests.
+    again: Option<(PathBuf, String)>,
+    /// The program ended or no longer reads or writes lines: the next job starts it again.
+    broken: bool,
 }
 
 impl Qwen {
@@ -200,6 +221,7 @@ impl Qwen {
         match started {
             Ok(mut qwen) => {
                 qwen.child = Some(child);
+                qwen.again = Some((folder.to_path_buf(), code.to_string()));
                 Ok(qwen)
             }
             Err(err) => {
@@ -237,18 +259,37 @@ impl Qwen {
             speaker_rate: rate_of("speaker_rate")?,
             language: language(code),
             voices: HashSet::new(),
+            again: None,
+            broken: false,
         })
     }
 
     /// Writes `request` to the program and reads its answer; one that says what failed is an error.
     fn ask(&mut self, request: &Value) -> Result<Value, VoiceError> {
         let gone = |err: std::io::Error| VoiceError::program(NAME, format!("its program does not read: {err}"));
-        writeln!(self.input, "{request}").and_then(|()| self.input.flush()).map_err(gone)?;
-        let answer = read_line(self.output.as_mut())?;
+        let answer = writeln!(self.input, "{request}")
+            .and_then(|()| self.input.flush())
+            .map_err(gone)
+            .and_then(|()| read_line(self.output.as_mut()))
+            .inspect_err(|_| self.broken = true)?;
         match answer.get("error") {
             Some(error) => Err(VoiceError::program(NAME, error.as_str().unwrap_or("failed"))),
             None => Ok(answer),
         }
+    }
+
+    /// Starts the program again after it broke (it crashed, or was ended from outside): the old one is
+    /// ended first, so its graphics memory is free. Without a program to start (the tests) it stays broken.
+    fn start_again(&mut self) -> Result<(), VoiceError> {
+        let Some((folder, code)) = self.again.clone() else {
+            return Err(VoiceError::program(NAME, "its program ended"));
+        };
+        if let Some(child) = self.child.as_mut() {
+            end(child);
+        }
+        self.child = None;
+        *self = Qwen::load(&folder, &code)?;
+        Ok(())
     }
 
     /// The id of `voice` ([`template`]), its template given to the program once.
@@ -301,6 +342,9 @@ impl Synth for Qwen {
 
     // Speed and pause are Pocket's (issue #782): Qwen3-TTS speaks at its own pace.
     fn speak(&mut self, text: &str, voice: &str, _delivery: Delivery, mut chunk: Chunk) -> Result<(), VoiceError> {
+        if self.broken {
+            self.start_again()?;
+        }
         let voice = self.voice(voice)?;
         for piece in pieces(text, PIECE) {
             let most = most_frames(piece.chars().count());
@@ -506,6 +550,27 @@ mod tests {
         let wrong = qwen.expect("ready").speak("Hallo.", "warm_woman", Delivery::default(), Box::new(|_| true));
         assert!(matches!(wrong, Err(VoiceError::Program { .. })));
         assert!(written.lines().is_empty());
+    }
+
+    /// Review of #808: a program that ended is not asked again; the next job starts it anew (here, where
+    /// none can be started, it fails at once without writing).
+    #[test]
+    fn a_program_that_ended_is_started_again() {
+        let rate = super::super::audio::decode_wav(TEMPLATES[0].1).expect("a template").rate;
+        let (qwen, written) = answering(&[json!({ "ready": { "rate": 24_000, "speaker_rate": rate } })]);
+        let mut qwen = qwen.expect("ready");
+        let ended = qwen.speak("Hallo.", "warm_woman", Delivery::default(), Box::new(|_| true));
+        assert!(matches!(ended, Err(VoiceError::Program { message, .. }) if message == "its program ended"));
+        assert!(qwen.broken, "it ended while asked");
+        let again = qwen.speak("Hallo.", "warm_woman", Delivery::default(), Box::new(|_| true));
+        assert!(matches!(again, Err(VoiceError::Program { .. })));
+        assert_eq!(written.lines().len(), 1, "only the first job wrote to it");
+        // An answer with an error is no broken program.
+        let ready = json!({ "ready": { "rate": 24_000, "speaker_rate": rate } });
+        let (qwen, _) = answering(&[ready, json!({ "error": "x" })]);
+        let mut qwen = qwen.expect("ready");
+        assert!(qwen.speak("Hallo.", "warm_woman", Delivery::default(), Box::new(|_| true)).is_err());
+        assert!(!qwen.broken);
     }
 
     #[test]
