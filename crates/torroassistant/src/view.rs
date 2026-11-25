@@ -1026,7 +1026,11 @@ impl App {
         let asked = bots::asked_bot(name, input);
         // A bot the person has not asked for yet is a proposal, no failure: its mark stays quiet.
         let proposed = asked.is_some() && error == Some("forbidden");
+        // A step of the job that may or may not have run (issue #962) is no failure: it waits for the person.
+        let unclear =
+            self.job.as_ref().is_some_and(|view| view.uncertain().iter().any(|step| step.result == Some(seq)));
         let mark: Element<'a, Message> = match error {
+            _ if unclear => tinted(Icon::TriangleAlert, icon::SIZE_SM, |p| p.attention_text),
             Some(_) if !proposed => tinted(Icon::CircleAlert, icon::SIZE_SM, |p| p.error_text),
             _ => tinted(area_icon(area), icon::SIZE_SM, |p| p.text_3),
         };
@@ -1046,6 +1050,9 @@ impl App {
             // The file card right under it names the file and its size: the line only says what
             // was done ("Created PDF"), not the name a second time.
             (None, None) if self.file_card_after(seq) => chat::tool_title(name),
+            (None, _) if unclear => {
+                trf("{tool} · {outcome}", &[("tool", &chat::tool_title(name)), ("outcome", &tr("Unclear"))])
+            }
             (None, _) => chat::tool_line(name, summary, error),
         };
         let line = row![
@@ -1292,9 +1299,14 @@ impl App {
                 left = left.push(widgets::anchored(&anchors.areas, plus));
                 if self.as_job && offers_job {
                     left = left.push(match roomy {
-                        true => {
-                            widgets::dismiss_chip_with(tr("As job"), tr("Send normally instead"), Message::ToggleJob)
-                        }
+                        // The same mark as in the plus menu and the narrow switch, so both read as one thing.
+                        true => widgets::chip_removable(
+                            tinted(Icon::ListChecks, icon::SIZE_SM, |p| p.text_2),
+                            tr("As job"),
+                            None,
+                            tr("Send normally instead"),
+                            Some(Message::ToggleJob),
+                        ),
                         false => widgets::icon_toggle(
                             Icon::ListChecks,
                             tr("Send normally instead"),

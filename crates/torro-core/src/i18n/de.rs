@@ -4443,10 +4443,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Der Auftrag hat sich inzwischen geändert. Sieh dir seinen Stand an und versuch es noch einmal.",
     ),
     ("This conversation already has a job.", "Diese Unterhaltung hat schon einen Auftrag."),
-    (
-        "Unclear whether this ran. It won't run again by itself.",
-        "Unklar, ob er gelaufen ist. Er läuft nicht von selbst noch einmal.",
-    ),
+    ("It won't run again by itself.", "Er läuft nicht von selbst noch einmal."),
+    ("To the team", "An das Team"),
+    ("Unclear", "Unklar"),
     ("Waiting for approval", "Wartet auf Freigabe"),
     ("{model} doesn't answer or is turned off.", "{model} antwortet nicht oder ist ausgeschaltet."),
     // Assistant page in the control centre (C.6)

@@ -12,7 +12,7 @@
 //! A button whose request is on its way shows busy, the others take no click until the core answered.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, responsive, row, rule};
+use iced::widget::{column, container, responsive, row, rule};
 use iced::{Alignment, Element, Fill};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
@@ -140,15 +140,23 @@ impl App {
         let mut card =
             column![head, typo::text(typo::meta(), meta).style(theme::text_3).wrapping(Wrapping::WordOrGlyph)]
                 .spacing(space::s());
-        if let Some(reason) = job.reason.filter(|_| job.state == JobState::Paused) {
+        // Only a reason the person has to act on: the pill says "Paused" and the history's quiet line why; an unclear
+        // step explains itself in its own part below.
+        let shown = job.reason.filter(|reason| {
+            job.state == JobState::Paused && needs_person(Some(*reason)) && *reason != JobReason::Uncertain
+        });
+        if let Some(reason) = shown {
             card = card.push(self.job_reason(reason, &model));
         }
         let unclear = view.uncertain();
-        if !unclear.is_empty() {
+        let any_unclear = !unclear.is_empty();
+        for step in unclear {
+            card = card.push(self.unclear_step(step.seq, &step.tool));
+        }
+        // A line between the step's answers and the job's buttons, so a "Resume" that is off does not read as a
+        // third answer.
+        if any_unclear {
             card = card.push(rule::horizontal(1).style(style::rule));
-            for step in unclear {
-                card = card.push(self.unclear_step(step.seq, &step.tool));
-            }
         }
         card = card.push(self.job_buttons(view, anchors));
         container(card).width(Fill).padding(layout::panel_padding()).style(style::container::group).into()
@@ -183,7 +191,7 @@ impl App {
         ]
         .spacing(space::s())
         .align_y(Alignment::Center);
-        let why = typo::text(typo::meta(), tr("Unclear whether this ran. It won't run again by itself."))
+        let why = typo::text(typo::meta(), tr("It won't run again by itself."))
             .style(theme::text_2)
             .wrapping(Wrapping::WordOrGlyph);
         let buttons = row![
@@ -233,7 +241,7 @@ impl App {
                 self.job_busy.is_none().then_some(Message::Job(JobAction::Cancel)),
             ),
         };
-        row![main, cancel, Space::new().width(Fill)].spacing(space::s()).wrap().vertical_spacing(space::s()).into()
+        row![main, cancel].spacing(space::s()).wrap().vertical_spacing(space::s()).into()
     }
 
     /// A `secondary` button of the card for `action`: busy while its request is on its way, without a press while

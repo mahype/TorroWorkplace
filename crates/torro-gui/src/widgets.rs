@@ -3697,24 +3697,16 @@ pub fn round_busy<'a, M: Clone + 'a>(tooltip: impl IntoFragment<'a>) -> Element<
 /// plus of the composer): [`chip_removable`] without a mark in front; a click on the ✕ sends
 /// `on_remove`, its tooltip is "Allow again".
 pub fn dismiss_chip<'a, M: Clone + 'a>(label: impl IntoFragment<'a>, on_remove: M) -> Element<'a, M> {
-    dismiss_chip_with(label, tr("Allow again"), on_remove)
-}
-
-/// A [`dismiss_chip`] whose ✕ says `tip` (issue #962: "As job ×" in the composer, whose ✕ sends normally again).
-pub fn dismiss_chip_with<'a, M: Clone + 'a>(
-    label: impl IntoFragment<'a>,
-    tip: impl IntoFragment<'a>,
-    on_remove: M,
-) -> Element<'a, M> {
     let remove = button(center(button_icon(Icon::X, icon::SIZE_SM, style::button::icon, true)))
         .width(style::CHIP_HEIGHT)
         .height(style::CHIP_HEIGHT)
         .padding(0)
         .style(style::button::icon)
         .on_press(on_remove);
-    let content = row![typo::text(typo::meta(), label).wrapping(Wrapping::None), with_tooltip(remove, tip)]
-        .spacing(ICON_GAP)
-        .align_y(Alignment::Center);
+    let content =
+        row![typo::text(typo::meta(), label).wrapping(Wrapping::None), with_tooltip(remove, tr("Allow again"))]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center);
     container(content)
         .center_y(style::CHIP_HEIGHT)
         .padding(style::CHIP_PADDING.right(0.0))

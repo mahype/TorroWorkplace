@@ -1081,7 +1081,7 @@ fn job_conversations(now: DateTime<Utc>) -> Vec<Conversation> {
         vec![
             message(tr(UNCERTAIN_GOAL)),
             tool("tools.create_pdf", serde_json::json!({"title": "Report October"}), tr("Report October.pdf"), None),
-            tool("mail.save_draft", serde_json::json!({"to": "team@example.org"}), tr("Draft saved"), None),
+            tool("mail.save_draft", serde_json::json!({"to": "team@example.org"}), tr("To the team"), None),
             tool("mail.send_draft", serde_json::json!({"draft": "d-17"}), String::new().as_str(), Some("interrupted")),
             paused(tr(UNCERTAIN_REASON)),
         ],
