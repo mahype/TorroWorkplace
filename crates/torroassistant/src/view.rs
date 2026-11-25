@@ -1051,7 +1051,7 @@ impl App {
             // was done ("Created PDF"), not the name a second time.
             (None, None) if self.file_card_after(seq) => chat::tool_title(name),
             (None, _) if unclear => {
-                trf("{tool} · {outcome}", &[("tool", &chat::tool_title(name)), ("outcome", &tr("Unclear"))])
+                trf("{tool} · {outcome}", &[("tool", &chat::step_title(name)), ("outcome", &tr("Unclear"))])
             }
             (None, _) => chat::tool_line(name, summary, error),
         };

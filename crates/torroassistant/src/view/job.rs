@@ -184,7 +184,7 @@ impl App {
 
     /// A step whose outcome only the person knows: what it did, why it is unclear, and the two answers.
     fn unclear_step<'a>(&'a self, seq: u32, tool: &str) -> Element<'a, Message> {
-        let what = trf("Step {n} · {tool}", &[("n", &seq), ("tool", &chat::tool_title(tool))]);
+        let what = trf("Step {n} · {tool}", &[("n", &seq), ("tool", &chat::step_title(tool))]);
         let head = row![
             tinted(Icon::TriangleAlert, icon::SIZE_SM, |p| p.attention_text),
             typo::text(typo::body(), what).wrapping(Wrapping::WordOrGlyph)
