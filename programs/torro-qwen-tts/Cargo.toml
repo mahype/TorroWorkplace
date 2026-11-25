@@ -1,0 +1,36 @@
+# Qwen3-TTS as a program of its own (issue #808, before built into torroassistant by #764): Crane computes it on
+# an NVIDIA card, the assistant's reading helper talks to it as a child process over JSON lines
+# (`crates/torroassistant/src/voice/qwen.rs`). A workspace and lock file of its own, excluded from the root
+# workspace (`exclude = ["programs"]`): Crane's tree never sets versions or features of the suite, and the releases
+# do not build it. Build and install: `docs/install.md`, section "Qwen3-TTS selbst bauen".
+[package]
+name = "torro-qwen-tts"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+authors = ["TorroWorkplace contributors"]
+repository = "https://github.com/mahype/TorroWorkplace"
+publish = false
+description = "Qwen3-TTS through Crane on an NVIDIA card, read by the reading helper of torroassistant over JSON lines."
+
+[workspace]
+
+[features]
+# The program exists to compute on the graphics card; without `cuda` it builds anywhere (to check the code on a
+# computer without the CUDA toolkit) and answers that there is no card.
+default = ["cuda"]
+cuda = ["crane-core/cuda"]
+
+[dependencies]
+# Crane runs Qwen3-TTS in Rust on candle (issue #764, `docs/messung-qwen3-tts.md`). MIT.
+crane-core = { version = "26.9.0", default-features = false }
+# The lines to and from the reading helper; Crane brings it anyway.
+serde_json = "1.0.152"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
