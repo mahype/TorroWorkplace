@@ -3,8 +3,9 @@
 //! the listener's microphone goes to it through the core, never to a program of its own.
 //!
 //! [`LiveWire`] is what the session (`crate::core::live`) talks to: what goes out ([`Outgoing`]) and what comes in
-//! ([`Incoming`]), the same for every provider. [`openai`] speaks the protocol of OpenAI Realtime and Grok Voice; the
-//! later engines (Gemini Live, GPT-Live, Nova 2 Sonic) are further adapters beside it.
+//! ([`Incoming`]), the same for every provider. [`openai`] speaks the protocol of OpenAI Realtime and Grok Voice,
+//! [`gemini`] that of Gemini Live (issue #918); the later engines (GPT-Live, Nova 2 Sonic) are further adapters
+//! beside them.
 //!
 //! The model thinks itself, but its tools run through the core like any other answer's: each answer of the voice chat
 //! is a turn of the assistant's loop ([`super::model`]) whose model is a [`LiveTurn`]. It sends the instructions and
@@ -12,6 +13,8 @@
 //!
 //! Neither text nor sound is logged: `Debug` of [`Outgoing`] and [`Incoming`] names only the kind.
 
+pub mod gemini;
+pub mod gpt;
 pub mod openai;
 
 use std::collections::BTreeSet;
@@ -45,6 +48,9 @@ pub enum Outgoing {
     ToolResults(Vec<(String, String)>),
     /// The person spoke into the answer: it stops, and only what was played (`played_ms`) stays in its memory.
     Cancel { played_ms: u32 },
+    /// What the engine is to say for the task it waits for: the assistant's answer, a sentence at a time (GPT-Live,
+    /// issue #919, [`LiveWire::delegates`]); empty to let the task go without a word.
+    Say(String),
 }
 
 /// What comes from the engine.
@@ -54,6 +60,9 @@ pub enum Incoming {
     SpeechStarted,
     /// The person stopped; `audio_end_ms` is where in the sound sent since the connection began, when it says.
     SpeechStopped { audio_end_ms: Option<u64> },
+    /// The person stopped and nothing waits for their words: the engine took care of them itself (GPT-Live, issue
+    /// #919, a word that is no task). Their sentence is over without a [`Incoming::Heard`].
+    SpeechEnded,
     /// What the person said, as text; empty when nothing was understood.
     Heard(String),
     /// The engine begins an answer: what comes from here on is this answer's.
@@ -64,6 +73,9 @@ pub enum Incoming {
     AnswerAudio(Vec<i16>),
     /// The answer is over: its whole text and the tools it calls (none when it is done).
     AnswerDone { text: String, calls: Vec<ToolCall> },
+    /// The provider says it will end the connection soon (Gemini Live's `goAway`, issue #918): the session opens a new
+    /// one in the next pause.
+    GoAway,
     /// The connection closed.
     Closed,
     /// The engine failed with its code (never its words, which could repeat what was said).
@@ -78,6 +90,7 @@ impl std::fmt::Debug for Outgoing {
             Outgoing::Audio(_) => "Audio",
             Outgoing::ToolResults(_) => "ToolResults",
             Outgoing::Cancel { .. } => "Cancel",
+            Outgoing::Say(_) => "Say",
         })
     }
 }
@@ -87,11 +100,13 @@ impl std::fmt::Debug for Incoming {
         match self {
             Incoming::SpeechStarted => f.write_str("SpeechStarted"),
             Incoming::SpeechStopped { .. } => f.write_str("SpeechStopped"),
+            Incoming::SpeechEnded => f.write_str("SpeechEnded"),
             Incoming::Heard(_) => f.write_str("Heard"),
             Incoming::AnswerStarted => f.write_str("AnswerStarted"),
             Incoming::AnswerText(_) => f.write_str("AnswerText"),
             Incoming::AnswerAudio(_) => f.write_str("AnswerAudio"),
             Incoming::AnswerDone { calls, .. } => write!(f, "AnswerDone({} calls)", calls.len()),
+            Incoming::GoAway => f.write_str("GoAway"),
             Incoming::Closed => f.write_str("Closed"),
             Incoming::Failed { code } => write!(f, "Failed({code})"),
         }
@@ -106,7 +121,24 @@ pub trait LiveWire: Send {
 
     /// The next thing the engine says; [`Incoming::Closed`] once the connection is gone, for good.
     fn next(&mut self) -> BoxFuture<'_, Incoming>;
+
+    /// How long the session waits for what the person said once [`Incoming::SpeechStopped`] came, before it counts
+    /// as not understood. An engine whose transcript comes only with its answer (Gemini Live) needs longer.
+    fn heard_wait(&self) -> std::time::Duration {
+        HEARD_WAIT
+    }
+
+    /// The engine only speaks and hears; the assistant of Torro answers behind it, with the chat model, its skills and its
+    /// tools (GPT-Live, issue #919). The session then sends what the person said to the assistant like a typed message
+    /// and gives the answer back with [`Outgoing::Say`].
+    fn delegates(&self) -> bool {
+        false
+    }
 }
+
+/// How long the session waits for what the person said once they stopped, by default: then it counts as not
+/// understood.
+pub const HEARD_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// What the session gives the turn of the answer that runs ([`LiveTurn`]).
 #[derive(Debug, Clone, PartialEq)]

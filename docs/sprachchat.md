@@ -104,8 +104,10 @@ hundert Millisekunden, aber jedes Wort geht in die Cloud und kostet je Minute. D
   Weg A. Echo-Unterdrückung und Unterbrechen gelten auch hier; Verlauf und Anzeige wie bei Weg A.
 - **Entschieden in #838:** Der Ton des Mikrofons läuft nicht über `core.sock`, sondern über die Leitung, die Dienst
   und Hörer schon verbindet (`{"mic": …}` auf der Ausgabe des Hörers); kein Programm erreicht ihn. Erste Module sind
-  OpenAI Realtime (auch mini) und Grok Voice über dasselbe Protokoll; Gemini Live (#918), GPT-Live (#919) und Nova 2
-  Sonic (#920) folgen als weitere Adapter. Das Modul denkt selbst und ruft die Werkzeuge auf; Satzende und
+  OpenAI Realtime (auch mini) und Grok Voice über dasselbe Protokoll; Gemini Live (#918, eigenes Protokoll, eigener
+  Adapter `live/gemini.rs`) ist gefolgt, ebenso GPT-Live (#919, `live/gpt.rs`): dort hört und spricht das Modul nur,
+  und der Torro-Assistent denkt dahinter (Chat-Modell, Skills, Werkzeuge, Rechte wie im Chat). Nova 2 Sonic (#920)
+  folgt als weiterer Adapter. Das Modul denkt selbst und ruft die Werkzeuge auf; Satzende und
   Unterbrechen erkennt der Anbieter, Torro rechnet vorher die eigene Stimme heraus. Einzelheiten:
   [assistent.md](assistent.md), „Gesprächsmodul in der Cloud“.
 

@@ -444,10 +444,33 @@ impl AiProvider {
     }
 }
 
+/// The protocol a conversation engine speaks (issues #838, #918, #919): the session talks to each through the same
+/// interface, an adapter per protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LiveProtocol {
+    /// OpenAI Realtime and Grok Voice (`wss://<host>/v1/realtime`): the model thinks and calls the tools itself.
+    Realtime,
+    /// Google's Gemini Live (`BidiGenerateContent`): the model thinks and calls the tools itself.
+    Gemini,
+    /// OpenAI's GPT-Live (`wss://<host>/v1/live/sessions`) in the mode where the application thinks (issue #919): it
+    /// hears and speaks, and tells the application when a task is pending; the assistant answers it with the chat
+    /// model, its skills and its tools.
+    GptLive,
+}
+
+impl LiveProtocol {
+    /// The assistant answers behind the voice (with the chat model) instead of the engine's own model.
+    pub fn assistant_thinks(self) -> bool {
+        self == LiveProtocol::GptLive
+    }
+}
+
 /// A conversation engine a provider offers (issue #838, way B of `docs/sprachchat.md`): a model that hears
 /// and speaks itself over a live connection, for the voice chat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveModel {
+    /// What it speaks.
+    pub protocol: LiveProtocol,
     /// The model as the provider's API names it.
     pub id: &'static str,
     /// Its name in the settings, not translated.
@@ -457,19 +480,38 @@ pub struct LiveModel {
 }
 
 /// The conversation engines of `provider` (issue #838): OpenAI Realtime (also mini) and xAI's Grok Voice,
-/// both over the same protocol (`wss://<host>/v1/realtime`). Empty for every other provider. Checked
-/// against the providers' documentation on 2026-11-20.
+/// both over the same protocol (`wss://<host>/v1/realtime`), and Google's Gemini Live (issue #918) over its own.
+/// Empty for every other provider. Checked against the providers' documentation on 2026-11-20 (OpenAI, xAI) and
+/// 2026-11-23 (Gemini).
 pub fn live_models(provider: AiProvider) -> &'static [LiveModel] {
+    // GPT-Live (issue #919, documentation of 2026-11-23): no longest connection is named, so it is renewed in a pause
+    // after half an hour; the application thinks, the assistant with the chat model.
     const OPENAI: &[LiveModel] = &[
-        LiveModel { id: "gpt-realtime-2.1", name: "OpenAI Realtime", minutes: 60 },
-        LiveModel { id: "gpt-realtime-2.1-mini", name: "OpenAI Realtime mini", minutes: 60 },
+        LiveModel { protocol: LiveProtocol::Realtime, id: "gpt-realtime-2.1", name: "OpenAI Realtime", minutes: 60 },
+        LiveModel {
+            protocol: LiveProtocol::Realtime,
+            id: "gpt-realtime-2.1-mini",
+            name: "OpenAI Realtime mini",
+            minutes: 60,
+        },
+        LiveModel { protocol: LiveProtocol::GptLive, id: "gpt-live-1.1", name: "GPT-Live", minutes: 30 },
     ];
-    const XAI: &[LiveModel] = &[LiveModel { id: "grok-voice-latest", name: "Grok Voice", minutes: 120 }];
+    const XAI: &[LiveModel] =
+        &[LiveModel { protocol: LiveProtocol::Realtime, id: "grok-voice-latest", name: "Grok Voice", minutes: 120 }];
+    // One connection of Gemini Live lasts about 10 minutes (its provider announces the end with `goAway`).
+    const GEMINI: &[LiveModel] =
+        &[LiveModel { protocol: LiveProtocol::Gemini, id: "gemini-3.8-live", name: "Gemini Live", minutes: 10 }];
     match provider {
         AiProvider::OpenAi => OPENAI,
         AiProvider::Xai => XAI,
+        AiProvider::Gemini => GEMINI,
         _ => &[],
     }
+}
+
+/// The conversation engine `model` of `provider` (issues #838, #919), if it offers one.
+pub fn live_model(provider: AiProvider, model: &str) -> Option<&'static LiveModel> {
+    live_models(provider).iter().find(|live| live.id == model)
 }
 
 /// The id of Jev's one model ([`AiProvider::fixed_models`]), as TypeSafe's API names it.

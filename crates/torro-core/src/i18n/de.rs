@@ -10201,15 +10201,21 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Während du sprichst, geht alles, was das Mikrofon hört, an {provider}, dazu das bisherige Gespräch und was die Werkzeuge des Assistenten lesen, und {provider} berechnet jede Minute. „Hey Torro“ selbst bleibt auf diesem Rechner; Spracherkennung, Stimme und Pausen unten werden nicht benutzt.",
     ),
     (
+        "While you talk, everything the microphone hears goes to {provider}, which only listens and speaks. What you say also goes to the assistant's chat model as text, with the conversation so far and what its tools read, and its answers come back in {provider}'s voice. {provider} bills each minute, the chat model on top. “Hey Torro” itself stays on this computer; speech recognition, the voice and the pauses below are not used.",
+        "Während du sprichst, geht alles, was das Mikrofon hört, an {provider}, das nur zuhört und spricht. Was du sagst, geht außerdem als Text an das Chat-Modell des Assistenten, dazu das bisherige Gespräch und was seine Werkzeuge lesen; seine Antworten kommen mit der Stimme von {provider} zurück. {provider} berechnet jede Minute, das Chat-Modell zusätzlich. „Hey Torro“ selbst bleibt auf diesem Rechner; Spracherkennung, Stimme und Pausen unten werden nicht benutzt.",
+    ),
+    (
         "The account of this engine is gone. Talking falls back to this computer.",
         "Das Konto dieses Moduls gibt es nicht mehr. Gesprochen wird wieder über diesen Rechner.",
     ),
+    ("The address is not valid.", "Die Adresse ist ungültig."),
     (
-        "Connect an OpenAI or xAI account in Settings › AI to talk through a cloud engine.",
-        "Verbinde ein OpenAI- oder xAI-Konto unter Einstellungen › KI, um über ein Modul in der Cloud zu sprechen.",
+        "Connect an OpenAI, xAI or Google Gemini account in Settings › AI to talk through a cloud engine.",
+        "Verbinde ein OpenAI-, xAI- oder Google-Gemini-Konto unter Einstellungen › KI, um über ein Modul in der Cloud zu sprechen.",
     ),
     ("Everything you say stays on this computer.", "Alles, was du sagst, bleibt auf diesem Rechner."),
     ("No API key on this computer", "Kein API-Schlüssel auf diesem Rechner"),
+    ("{provider} + chat model", "{provider} + Chat-Modell"),
     ("No account offers the conversation engine {model}.", "Kein Konto bietet das Gesprächsmodul {model} an."),
     (
         "Add a key to this engine's account in Settings › AI; until then this computer answers.",

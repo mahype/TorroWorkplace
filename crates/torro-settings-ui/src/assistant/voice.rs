@@ -1038,6 +1038,14 @@ fn engine_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         (Some(_), Some(option)) if option.missing.is_some() => {
             tr("Add a key to this engine's account in Settings › AI; until then this computer answers.").to_string()
         }
+        // The assistant answers behind the voice (issue #919): its chat model gets what is said as text.
+        (Some(_), Some(option)) if option.assistant => trf(
+            "While you talk, everything the microphone hears goes to {provider}, which only listens and speaks. What you \
+             say also goes to the assistant's chat model as text, with the conversation so far and what its tools read, \
+             and its answers come back in {provider}'s voice. {provider} bills each minute, the chat model on top. “Hey \
+             Torro” itself stays on this computer; speech recognition, the voice and the pauses below are not used.",
+            &[("provider", &option.provider.name())],
+        ),
         (Some(_), Some(option)) => trf(
             "While you talk, everything the microphone hears goes to {provider}, with the conversation so far and what the \
              assistant's tools read, and {provider} bills each minute. “Hey Torro” itself stays on this computer; speech \
@@ -1046,17 +1054,21 @@ fn engine_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         ),
         (Some(_), None) => tr("The account of this engine is gone. Talking falls back to this computer.").to_string(),
         (None, _) if data.live_engines.is_empty() => {
-            tr("Connect an OpenAI or xAI account in Settings › AI to talk through a cloud engine.").to_string()
+            tr("Connect an OpenAI, xAI or Google Gemini account in Settings › AI to talk through a cloud engine.")
+                .to_string()
         }
         (None, _) => tr("Everything you say stays on this computer.").to_string(),
     };
     widgets::group(tr("Who answers"), vec![row], Some(footer))
 }
 
-/// "OpenAI · Cloud · US" under an engine: its provider and where its servers are, or that its key is missing.
+/// "OpenAI · Cloud · US" under an engine: its provider and where its servers are, or that its key is missing. An engine
+/// with the assistant behind it (issue #919) says so instead of where its servers are: otherwise it reads exactly like
+/// the plain engine of the same provider, and the menu has no room for both.
 fn engine_detail(option: &torro_ipc::LiveEngineOption) -> String {
     match option.missing {
         Some(torro_ipc::LiveMissing::Key) => tr("No API key on this computer").to_string(),
+        None if option.assistant => trf("{provider} + chat model", &[("provider", &option.provider.name())]),
         None => format!("{} · {}", option.provider.name(), option.provider.seat().label()),
     }
 }
@@ -2391,5 +2403,24 @@ mod tests {
             sent(update(&mut state, Message::SpeechVoice(SpeechProvider::Qwen, "calm_man".into()), &with)),
             (SettingKey::QwenVoice, serde_json::json!("calm_man"))
         );
+    }
+
+    /// GPT-Live reads differently from OpenAI Realtime of the same account (issue #919): the menu names the chat model
+    /// behind it instead of where the servers are.
+    #[test]
+    fn an_engine_with_the_assistant_behind_it_names_the_chat_model() {
+        let option = |model: &str, assistant| torro_ipc::LiveEngineOption {
+            account: "ai:openai@api.openai.com".into(),
+            account_name: "OpenAI".into(),
+            provider: torro_core::ai::AiProvider::OpenAi,
+            model: model.into(),
+            name: model.into(),
+            missing: None,
+            assistant,
+        };
+        let plain = engine_detail(&option("gpt-realtime-2.1", false));
+        let live = engine_detail(&option("gpt-live-1.1", true));
+        assert_eq!(live, trf("{provider} + chat model", &[("provider", &"OpenAI")]));
+        assert_ne!(plain, live);
     }
 }

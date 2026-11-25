@@ -1168,7 +1168,8 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
 
 Statt der lokalen Kette kann ein Modell in der Cloud zuhören und sprechen (Weg B in
 [sprachchat.md](sprachchat.md)): **OpenAI Realtime** (`gpt-realtime-2.1`, auch „mini“) und **Grok Voice** von xAI
-(`grok-voice-latest`), je über ein KI-Konto des Anbieters. Gewählt wird es unter Voice › Conversation › „Who
+(`grok-voice-latest`), seit Issue #918 **Gemini Live** von Google (`gemini-3.8-live`) und seit Issue #919 **GPT-Live**
+von OpenAI (`gpt-live-1.1`, mit dem Assistenten dahinter), je über ein KI-Konto des Anbieters. Gewählt wird es unter Voice › Conversation › „Who
 answers“ (`voice.liveEngine`: Konto und Modell, `null` für diesen Rechner, der Standard). Nur ein Mensch wählt ein
 Modul in der Cloud; Agenten dürfen die Liste lesen und auf diesen Rechner zurückstellen.
 
@@ -1186,8 +1187,8 @@ Modul in der Cloud; Agenten dürfen die Liste lesen und auf diesen Rechner zurü
   Rest. Ein Fenster mit „Read aloud“ liest diese Antworten nicht noch einmal vor. Kein Ton auf der Platte.
 - **Ende und Abbrüche:** Schlusswort, „End talk“, 300 Sekunden Stille, ein anderes Modul, „this computer“ oder das
   entfernte Konto beenden das Gespräch sofort. Eine abgebrochene Verbindung und die Zeitgrenze des Anbieters
-  (OpenAI 60, Grok 120 Minuten; fünf Minuten vorher, in einer Pause) überbrückt ein Neuaufbau mit den letzten 40
-  Nachrichten als Text; scheitert er dreimal, steht das in der Unterhaltung.
+  (OpenAI 60, Grok 120, Gemini 10 Minuten; fünf Minuten vorher, in einer Pause, bei Gemini auch sobald der Anbieter
+  das Ende ankündigt) überbrückt ein Neuaufbau mit den letzten 40 Nachrichten als Text; scheitert er dreimal, steht das in der Unterhaltung.
   Fehlt dem Konto der Schlüssel oder antwortet das Modul beim Start nicht, beantwortet die lokale Kette das Gespräch
   (`Talk.live` sagt dem Hörer, welcher Weg gilt). Ein Fehler, der bei jeder neuen Verbindung wiederkommt, beendet das
   Gespräch nach drei Versuchen. Unterbrochen wird nur, solange die Antwort klingt; „Stop“ im Fenster bringt auch das
@@ -1196,6 +1197,90 @@ Modul in der Cloud; Agenten dürfen die Liste lesen und auf diesen Rechner zurü
   darauf wird gestoppt, die Freigabe gibt es nur im Fenster.
 - **Messung:** Jede Runde erscheint unter „Response times“ mit dem Modell (`VoiceRound.engine`), ohne
   Erkennungszeit.
+
+##### Gemini Live (Issue #918)
+
+Gemini Live spricht ein eigenes Protokoll (`live/gemini.rs`, Stand der Doku vom 23.11.2026): ein WebSocket zu
+`wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`,
+erste Nachricht `setup` (Modell `models/gemini-3.8-live`, Antwort als Ton, Stimme „Kore“, Anweisungen, Werkzeuge,
+Mitschrift beider Seiten, Verdichtung des Kontexts), Ton hinein 16 kHz, heraus 24 kHz. Es wird gewählt wie die anderen
+Module, über ein Konto „Google Gemini“ mit Schlüssel.
+
+- **Schlüssel:** Der Dienst schickt ihn als Kopfzeile `x-goog-api-key`, damit er in keiner Adresse steht. Die Doku nennt
+  nur `?key=` in der Adresse; lehnt der Server die Kopfzeile ab (400, 401 oder 403), versucht der Dienst es einmal
+  mit dem dokumentierten Weg. Fehler nennen den Schlüssel nie, auch nicht, wenn er in der Adresse stand
+  (`openai::scrub`, Adresse nie im Fehlertext). Beim Rückfall steht der Schlüssel in der Adresse der Verbindung (über
+  `wss`, aber sichtbar in Protokollen eines Proxys auf dem Weg). **Offen:** Ob die Kopfzeile beim WebSocket angenommen wird, ist ohne
+  Zugang nicht geprüft (siehe unten).
+- **Zeitgrenze:** Eine Verbindung hält etwa 10 Minuten. Der Dienst öffnet nach fünf Minuten in einer Sprechpause
+  eine neue (wie bei den anderen Modulen, mit den letzten 40 Nachrichten als Text), und sobald der Anbieter das Ende
+  ankündigt (`goAway`), in der nächsten Pause. Die Person merkt die Lücke von etwa einer Sekunde in einer Pause nicht;
+  bricht die Verbindung mitten in einer Antwort ab, steht das wie bei den anderen Modulen in der Unterhaltung. Die
+  Wiederaufnahme-Kennung des Anbieters nutzt der Dienst nicht, der Verlauf als Text genügt und gilt für jeden Anbieter
+  gleich.
+- **Satzende und Mitschrift:** Gemini meldet Anfang und Ende der Rede nur über `voiceActivity` (in der Referenz, ohne
+  Anleitung) und liefert die Mitschrift der Person in Stücken neben der Antwort. Der Adapter nutzt `voiceActivity`,
+  wenn es kommt, und erkennt sonst den Anfang an der Mitschrift. Was die Person sagte, gilt als gehört, wenn die
+  Antwort 0,6 Sekunden läuft, die Person 1,5 Sekunden still ist, das Modell ein Werkzeug ruft oder der Zug endet.
+  Darum wartet die Sitzung bei Gemini bis zu 5 Sekunden auf die Mitschrift statt 1,5.
+- **Unterbrechen:** Spricht die Person in die Antwort, meldet Gemini `interrupted` und sendet nichts mehr davon. Es
+  gibt keine Angabe, wie viel gespielt wurde; die Unterhaltung behält das, was der Vorlese-Helfer gespielt hat.
+- **Werkzeuge:** Als Funktionsdeklarationen mit `behavior: BLOCKING` (das Modell schweigt, bis das Ergebnis da ist);
+  das Schema aus dem Katalog wird auf die Teilmenge von OpenAPI gebracht, die Gemini kennt. Das `setup` einer Verbindung ist
+  endgültig: ändern sich Anweisungen oder Werkzeuge mitten in einer Verbindung, gelten sie erst mit der nächsten.
+- **Grenzen, nicht geprüft:** Alles hier folgt der Doku und Tests mit Nachrichten in deren Form
+  (`tests/fixtures/live/gemini_round.jsonl`), nicht aufgenommen vom Dienst: Es stand kein Gemini-Zugang zur
+  Verfügung, ein Gespräch mit dem echten Dienst wurde nicht geführt. Zu prüfen von Hand: Kopfzeile oder `?key=`,
+  Ort von `responseModalities` (unter `generationConfig`, wie die Referenz sagt), `historyConfig`,
+  `voiceActivity`, Wirkung von `BLOCKING`, Deutsch.
+
+##### GPT-Live mit dem Assistenten dahinter (Issue #919)
+
+GPT-Live trennt Stimme und Denken: Das Modell hört und spricht, gedacht und gehandelt wird vom **Torro-Assistenten**.
+Darum ist es ein Modul „mit dem Assistenten dahinter“ (`LiveEngineOption.assistant`): Was die Person sagt, geht als
+Text an das Chat-Modell der Einstellungen (Slot `chat`; ohne Slot das Standardmodell des OpenAI-Kontos; ist die
+Engine des Slots weg, bleibt die Aufgabe still, es springt nie ein anderer Anbieter ein), mit seinen Skills und
+Werkzeugen, und die Antwort spricht GPT-Live. Rechte, Freigaben und Protokoll sind die des Chats, denn es
+ist dieselbe Antwort wie auf eine getippte Nachricht. Es braucht deshalb **keine eigene Einstellung** für das denkende
+Modell: Wer ein anderes will, wählt es wie im Chat.
+
+Stand der Doku vom 23.11.2026 (`developers.openai.com/api/docs/guides/live` und Unterseiten), Adapter `live/gpt.rs`:
+
+- **Verbindung:** `wss://api.openai.com/v1/live/sessions` (keine Query), Schlüssel als `Authorization: Bearer`, Modell
+  `gpt-live-1.1` im ersten Ereignis `session.start`. Das ist nicht das Protokoll der Realtime API. Ton hinein und
+  heraus 24 kHz PCM; Stimme `juni` bei deutscher, `marin` bei englischer Oberfläche.
+- **Modus „client“:** `"delegation": {"type": "client"}`, je Sitzung fest. GPT-Live entscheidet selbst, wann die Person
+  fertig ist, und meldet das als `session.delegation.created` (mit dem Zeitpunkt `offset_ms`, ohne Text). Dann
+  wird die Mitschrift (`session.input_transcript.delta`, in Stücken) als Satz der Person gemeldet, 0,3 Sekunden nach dem
+  letzten Stück, spätestens 1,5 Sekunden nach der Aufgabe; Stücke, die vor `offset_ms` begannen, gehören zum gemeldeten
+  Satz und beginnen keinen neuen. Das erste Stück eines neuen Satzes ist Sprechbeginn, auch mitten in der Antwort
+  (Unterbrechen, #835).
+- **Antwort:** Der Dienst liest die Antwort des Assistenten satzweise, wie das Vorlesen im Fenster
+  (`answer_so_far`), und gibt jeden Satz als `session.commentary.append` mit der Kennung der Aufgabe zurück (GPT-Live
+  spricht ihn, höchstens 500 Token je Satz). Ein Satz über eine Freigabe oder einen Fehler kommt zuletzt. Eine
+  Antwort ohne Worte gibt die Aufgabe still frei (`session.thinking.append` ohne Inhalt). GPT-Live spricht von sich
+  aus kurze Zwischenansagen („Moment …“) während der Assistent arbeitet.
+- **Freigabe:** Wartet die Antwort auf eine Freigabe, sagt GPT-Live den Satz „bitte ins Fenster sehen“ und der Dienst
+  liest weiter, sobald die Person im Fenster entschieden hat (bis zu 10 Minuten).
+- **Unterbrechen und Stopp:** Spricht die Person hinein, hält GPT-Live von selbst an und die Antwort des Assistenten
+  endet mit dem Gehörten (#835). „Stop“ im Fenster erreicht GPT-Live nicht (kein Ereignis dafür bekannt): der Dienst
+  spielt den Rest nicht mehr ab, bis die Person wieder spricht. Ein Satz, aus dem GPT-Live keine Aufgabe macht (ein
+  „Danke“), endet nach 4 Sekunden ohne Worte an den Assistenten; antwortet GPT-Live darauf selbst, spielt der Dienst
+  es ab. Spricht die Person, während der Assistent noch arbeitet, bekommt dieser Satz keine eigene Antwort: GPT-Live
+  spricht für ihn die Antwort, die schon läuft.
+- **Ende:** GPT-Live meldet weder das Ende seines Tons noch die abgespielte Menge. Der Dienst zählt die Antwort als
+  zu Ende, wenn alles übergeben ist und 2 Sekunden kein Ton mehr kommt. Das Gehörte bei einer Unterbrechung ist
+  die Mitschrift dessen, was GPT-Live gesprochen hat (`session.output_transcript.delta`).
+- **Verlauf und Zeitgrenze:** Der Verlauf wird nicht an GPT-Live geschickt; der Assistent hat ihn. Eine Verbindung
+  wird nach 30 Minuten in einer Pause erneuert (eine Höchstdauer nennt die Doku nicht), bei Abbruch wie bei den
+  anderen Modulen.
+- **Kosten und Zugang:** 0,05 $ je aktive Minute, das denkende Modell zusätzlich. Ob normale Konten Zugang haben, nennt
+  die Doku nicht (eine Drittquelle sprach von Early Access); ohne Zugang endet der Verbindungsaufbau mit einem
+  Fehler des Anbieters und die lokale Kette antwortet.
+- **Geprüft:** nur gegen die Doku und Nachrichten in deren Form (`tests/fixtures/live/gpt_live_round.jsonl`, nicht
+  aufgenommen). Es stand kein Zugang zu GPT-Live zur Verfügung. Zu prüfen von Hand: Zugang für normale Konten,
+  Form von `session.start` (`audio.output.voice`), Ereignisse beim Unterbrechen, Wirkung von `commentary.append` ohne
+  Kennung nach einer neuen Verbindung, Zeitpunkt der Mitschrift nach `session.delegation.created`, Deutsch.
 
 ## Langlebige Aufträge (#961)
 

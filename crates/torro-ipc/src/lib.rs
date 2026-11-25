@@ -5472,7 +5472,7 @@ pub enum Request {
     VoiceTimings,
     /// The conversation engines in the cloud the voice chat can talk through (issue #838,
     /// [`Response::LiveEngines`]): one per AI account and model that hears and speaks itself (OpenAI
-    /// Realtime, Grok Voice), with what keeps it from working, and the one chosen. Choosing one is
+    /// Realtime, Grok Voice, Gemini Live, GPT-Live), with what keeps it from working, and the one chosen. Choosing one is
     /// `settings.set_setting live_engine`, for a person only; never a key.
     #[serde(rename = "settings.list_live_engines")]
     ListLiveEngines,
@@ -5916,6 +5916,11 @@ pub struct LiveEngineOption {
     /// What keeps it from working; `None` when it can.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub missing: Option<LiveMissing>,
+    /// The assistant answers behind the engine's voice, with the chat model of the settings, its skills and tools
+    /// (GPT-Live, issue #919); what is said goes to that model as text, and what its tools read goes to its provider.
+    /// Otherwise the engine thinks itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub assistant: bool,
 }
 
 impl LiveEngineOption {

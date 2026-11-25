@@ -79,6 +79,8 @@ impl Dialect {
                 })
                 .chain(std::iter::once(json!({"type": "response.create"})))
                 .collect(),
+            // Only an engine that waits for the assistant's answer says one (GPT-Live, issue #919).
+            Outgoing::Say(_) => Vec::new(),
             Outgoing::Cancel { played_ms } => {
                 let mut events = vec![json!({"type": "response.cancel"})];
                 if let Some(item) = &state.item {

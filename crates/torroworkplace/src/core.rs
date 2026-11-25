@@ -41540,6 +41540,7 @@ done"#,
             [
                 ("gpt-realtime-2.1", None),
                 ("gpt-realtime-2.1-mini", None),
+                ("gpt-live-1.1", None),
                 ("grok-voice-latest", Some(LiveMissing::Key))
             ]
         );
@@ -41570,6 +41571,44 @@ done"#,
         assert_eq!(core.settings.current().voice.live_engine, None, "back to this computer");
     }
 
+    /// Issue #918: a Google Gemini account with a key offers Gemini Live, and a person can choose it; without a key it
+    /// is listed as missing it, and the choice is refused for an engine the account does not offer.
+    #[tokio::test]
+    async fn gemini_live_is_an_engine_of_a_gemini_account() {
+        use torro_ipc::{LiveEngine, LiveMissing};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let with =
+            torro_core::Account::ai(AiProvider::Gemini, "https://generativelanguage.googleapis.com/v1beta/openai");
+        let mut without =
+            torro_core::Account::ai(AiProvider::Gemini, "https://generativelanguage.googleapis.com/v1beta/openai");
+        without.id.push_str("-two");
+        let file = crate::account::github::tests::accounts_file(dir.path());
+        std::fs::create_dir_all(file.parent().expect("a folder")).expect("folder");
+        torro_core::account::save_to(&file, &[with.clone(), without.clone()]).expect("accounts");
+        keys.put(&with.id, AI_KEY);
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        core.ai.load().await.expect("loaded");
+        let Response::LiveEngines { engines, .. } = core.handle(Request::ListLiveEngines).await else {
+            panic!("the engines")
+        };
+        let listed: Vec<_> =
+            engines.iter().map(|option| (option.model.as_str(), option.name.as_str(), option.missing)).collect();
+        assert_eq!(
+            listed,
+            [("gemini-3.8-live", "Gemini Live", None), ("gemini-3.8-live", "Gemini Live", Some(LiveMissing::Key))]
+        );
+        assert!(!serde_json::to_string(&engines).expect("json").contains(AI_KEY), "never the key");
+        // Its connections are short: the session renews them every few minutes.
+        let engine = LiveEngine { account: with.id.clone(), model: "gemini-3.8-live".into() };
+        assert_eq!(core.ai.live_minutes(&engine).await, 10);
+        let set = |value: serde_json::Value| Request::SetSetting { key: SettingKey::LiveEngine, value };
+        assert_eq!(core.handle(set(serde_json::to_value(&engine).expect("json"))).await, Response::Ok);
+        assert_eq!(core.settings.current().voice.live_engine, Some(engine));
+        let other = set(serde_json::json!({"account": with.id, "model": "gpt-realtime-2.1"}));
+        assert_eq!(code(&core.handle(other).await), "not-found");
+    }
+
     /// A core whose conversation by voice talks to a fake engine (issue #838): OpenAI Realtime chosen, a listener that
     /// converses, the assistant attached. Answers the core, what the engine was sent and the engine's voices, one per
     /// connection.
@@ -41581,17 +41620,39 @@ done"#,
         Arc<live::tests::Script>,
         tokio::sync::mpsc::UnboundedReceiver<tokio::sync::mpsc::UnboundedSender<crate::assistant::live::Incoming>>,
     ) {
+        live_core_with(dir, "gpt-realtime-2.1", false, std::time::Duration::ZERO).await
+    }
+
+    /// [`live_core`] for the engine `model`; `delegates` for one that only speaks and hears (GPT-Live, issue #919: the
+    /// chat slot is the test engine, which answers after `step`).
+    #[cfg(unix)]
+    async fn live_core_with(
+        dir: &std::path::Path,
+        model: &str,
+        delegates: bool,
+        step: std::time::Duration,
+    ) -> (
+        Arc<Core>,
+        Arc<live::tests::Script>,
+        tokio::sync::mpsc::UnboundedReceiver<tokio::sync::mpsc::UnboundedSender<crate::assistant::live::Incoming>>,
+    ) {
         let (core, openai, _) = core_with_live_accounts(dir).await;
         let script = Arc::new(live::tests::Script::default());
+        script.delegates.store(delegates, std::sync::atomic::Ordering::SeqCst);
         let (connect, voices) = live::tests::fake_engine(&script);
         let program = crate::apps::tests::fake_program(dir, r#"echo '"conversing"'; sleep 30"#);
-        let assistant = crate::assistant::tests::assistant_in(dir, std::time::Duration::ZERO);
+        let assistant = crate::assistant::tests::assistant_in(dir, step);
         let core = core.with_assistant(assistant).with_listener(crate::apps::Listener::at(program));
         let core = Arc::new(Core { live_connect: Some(connect), ..core });
         core.attach_assistant();
-        let engine = serde_json::json!({"account": openai, "model": "gpt-realtime-2.1"});
+        let engine = serde_json::json!({"account": openai, "model": model});
         let chosen = Request::SetSetting { key: SettingKey::LiveEngine, value: engine };
         assert_eq!(core.handle(chosen).await, Response::Ok);
+        if delegates {
+            let mut settings = core.settings.current();
+            settings.ai_slots.chat = serde_json::from_value(serde_json::json!({"engine": "test"})).ok();
+            assert_eq!(core.settings.update(settings), Ok(()));
+        }
         (core, script, voices)
     }
 
@@ -41755,6 +41816,135 @@ done"#,
         live_until("ended", || core.lock_talk().is_none()).await;
         let Response::Conversation { entries: after, .. } = core.assistant.get(&id, None).await else { panic!("kept") };
         assert_eq!(after.len(), before, "the closing word is no message");
+    }
+
+    /// Issue #918: when the provider announces the end of the connection (`goAway`), a new one takes over in the next
+    /// pause, with the instructions and the conversation again, and the talk goes on.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_goaway_opens_a_new_connection_in_the_next_pause() {
+        use crate::assistant::live::Incoming;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, script, mut voices) = live_core(dir.path()).await;
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        let say = voices.recv().await.expect("connected");
+        say.send(Incoming::GoAway).expect("listens");
+        let _again = voices.recv().await.expect("connected again");
+        live_until("configured again", || live_sent(&script).iter().filter(|kind| *kind == "Configure").count() == 2)
+            .await;
+        assert_eq!(script.connections.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(core.lock_talk().is_some(), "the talk goes on");
+    }
+
+    /// What the fake engine was told to say, in order.
+    fn live_said(script: &live::tests::Script) -> Vec<String> {
+        script
+            .sent
+            .lock()
+            .expect("lock")
+            .iter()
+            .filter_map(|out| match out {
+                crate::assistant::live::Outgoing::Say(text) => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Issue #919: an engine that only speaks (GPT-Live) gets the instructions of a voice and no tools or history; what
+    /// the person says is their message, answered by the chat model like a typed one (its answer names it, not the
+    /// engine), and the answer goes to the engine sentence by sentence to be spoken. Nothing the engine says in words is
+    /// stored as the answer, and neither the store nor the log hold the key.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_engine_that_only_speaks_says_the_assistants_answer() {
+        use crate::assistant::live::Incoming;
+        use torro_ipc::assistant::EntryContent;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, script, mut voices) =
+            live_core_with(dir.path(), "gpt-live-1.1", true, std::time::Duration::ZERO).await;
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        let say = voices.recv().await.expect("connected");
+        live_until("configured", || live_sent(&script).first().is_some_and(|kind| kind == "Configure")).await;
+        assert!(
+            !live_sent(&script).iter().any(|kind| kind == "History"),
+            "the assistant has the conversation, the voice only says what it is told"
+        );
+        for incoming in [
+            Incoming::SpeechStarted,
+            Incoming::SpeechStopped { audio_end_ms: None },
+            Incoming::Heard("What is on today?".into()),
+            // What the voice says of its own (a word of waiting) is no answer.
+            Incoming::AnswerText("One moment.".into()),
+        ] {
+            say.send(incoming).expect("the session listens");
+        }
+        let id = live_conversation(&core).await;
+        let entries = conversation_until(&core, &id, |running, entries| {
+            !running && entries.iter().any(|entry| matches!(entry.content, EntryContent::Answer { .. }))
+        })
+        .await;
+        let answer = entries.iter().find_map(|entry| match &entry.content {
+            EntryContent::Answer { text, engine, .. } => Some((text.clone(), engine.clone())),
+            _ => None,
+        });
+        let (text, engine) = answer.expect("answered");
+        assert_eq!(engine, torro_ipc::assistant::TEST_ENGINE, "the chat model answers, not the voice");
+        live_until("said", || !live_said(&script).is_empty()).await;
+        // The whole answer went to the voice, a sentence at a time, and was told as it is: nothing else.
+        live_until("all said", || live_said(&script).join(" ") == text).await;
+        assert!(live_said(&script).len() > 1, "sentence by sentence");
+        assert!(!live_sent(&script).iter().any(|kind| kind == "ToolResults"), "no tools of the voice's own");
+        let stored: String = walkdir_text(dir.path());
+        assert!(!stored.contains(AI_KEY), "the key never leaves the keychain");
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| matches!(&entry.content, EntryContent::Answer { text, .. } if text == "One moment.")),
+            "the voice's own words are not the answer"
+        );
+        assert_eq!(core.handle(Request::EndTalk).await, Response::Ok);
+    }
+
+    /// Issue #919: a sentence that gets no answer (the chat model's engine is gone) lets the engine's task go without a
+    /// word, so it does not wait for an answer that never comes; and nothing of it is stored as a message.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_task_without_an_answer_is_let_go_silently() {
+        use crate::assistant::live::Incoming;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, script, mut voices) =
+            live_core_with(dir.path(), "gpt-live-1.1", true, std::time::Duration::ZERO).await;
+        let mut settings = core.settings.current();
+        settings.ai_slots.chat = serde_json::from_value(serde_json::json!({"engine": "nowhere"})).ok();
+        assert_eq!(core.settings.update(settings), Ok(()));
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        let say = voices.recv().await.expect("connected");
+        live_until("configured", || live_sent(&script).first().is_some_and(|kind| kind == "Configure")).await;
+        say.send(Incoming::Heard("What is on today?".into())).expect("listens");
+        live_until("let go", || live_said(&script).iter().any(String::is_empty)).await;
+        assert_eq!(core.handle(Request::EndTalk).await, Response::Ok);
+    }
+
+    /// Issue #919: what is said while an answer is on its way gets no answer of its own: the engine speaks the answer that
+    /// runs for its newest task, and nothing is let go.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sentence_during_an_answer_shares_it() {
+        use crate::assistant::live::Incoming;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, script, mut voices) =
+            live_core_with(dir.path(), "gpt-live-1.1", true, std::time::Duration::from_millis(400)).await;
+        assert!(matches!(core.handle(Request::StartTalk { conversation: None }).await, Response::Talk { .. }));
+        let say = voices.recv().await.expect("connected");
+        live_until("configured", || live_sent(&script).first().is_some_and(|kind| kind == "Configure")).await;
+        say.send(Incoming::Heard("First".into())).expect("listens");
+        let id = live_conversation(&core).await;
+        conversation_until(&core, &id, |running, _| running).await;
+        say.send(Incoming::Heard("Second".into())).expect("listens");
+        // The one answer is spoken, whole, and nothing was let go.
+        live_until("said", || live_said(&script).len() > 1).await;
+        assert!(live_said(&script).iter().all(|text| !text.is_empty()), "{:?}", live_said(&script));
+        assert_eq!(core.handle(Request::EndTalk).await, Response::Ok);
     }
 
     /// Issue #838: a transcript that comes too late was stood in for by "(not understood)", which the answer went to:

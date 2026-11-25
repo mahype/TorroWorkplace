@@ -11,7 +11,8 @@
 //! - The engine's sound goes to the speech helper as a job of sound only; it counts as reading aloud, so the
 //!   listener, the tray and the windows see it like Weg A. Speaking into it stops it: the answer keeps what was
 //!   heard ([`Assistant::interrupt`]), and the engine forgets what was not played.
-//! - A connection that closes, fails or comes near its provider's limit (OpenAI 60 minutes, Grok 120) is opened
+//! - A connection that closes, fails, comes near its provider's limit (OpenAI 60 minutes, Grok 120, Gemini 10) or
+//!   that the provider announces to end ([`Incoming::GoAway`]) is opened
 //!   again in a pause, with the conversation so far as text. When that fails three times, the conversation says so
 //!   and ends.
 //! - Each round is timed like Weg A's (`settings.voice_timings`), with the engine's model.
@@ -24,11 +25,11 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use tokio::sync::mpsc;
-use torro_core::ai::{AiError, BoxFuture};
+use torro_core::ai::{AiError, BoxFuture, LiveProtocol};
 use torro_core::i18n::tr;
 use torro_ipc::LiveEngine;
 
-use super::{Core, Reading, Speaking, said_so_far, speech_settings, voice_args};
+use super::{Core, READ_EVERY, Reading, Speaking, Stamps, said_so_far, speech_settings, voice_args};
 use crate::apps::{MicFrame, SpeechJob, SpeechLine};
 use crate::assistant::live::{
     self, ANSWER_RATE, Configured, Incoming, LiveTurn, LiveWire, MIC_RATE, Outgoing, TurnEvent,
@@ -57,9 +58,6 @@ static SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 /// How long a frame the echo cancellation did not clean stays dropped after something was read aloud: the echo of
 /// the room fades.
 const QUIET_AFTER: Duration = Duration::from_millis(300);
-
-/// How long the session waits for what the person said once they stopped: then it counts as not understood.
-const HEARD_WAIT: Duration = Duration::from_millis(1500);
 
 /// How long the conversation waits in silence before it ends, as Weg A (`TALK_WAIT_SECONDS` of the listener).
 const SILENCE: Duration = Duration::from_secs(300);
@@ -161,7 +159,13 @@ impl Core {
         }
         let (provider, _) = self.ai.server(&engine.account).await.ok_or(AiError::NoKey)?;
         let socket = self.ai.live_socket(&engine.account, &engine.model).await?;
-        Ok(Box::new(live::openai::OpenAiWire::new(socket, provider)))
+        // The protocol belongs to the engine: OpenAI Realtime and Grok Voice speak one, Gemini Live and GPT-Live their own.
+        let protocol = torro_core::ai::live_model(provider, &engine.model).map(|model| model.protocol);
+        Ok(match protocol {
+            Some(LiveProtocol::Gemini) => Box::new(live::gemini::GeminiWire::new(socket, &engine.model)),
+            Some(LiveProtocol::GptLive) => Box::new(live::gpt::GptLiveWire::new(socket, &engine.model)),
+            _ => Box::new(live::openai::OpenAiWire::new(socket, provider)),
+        })
     }
 
     /// The session (see the module) until the conversation by voice ends.
@@ -204,6 +208,10 @@ impl Core {
             late_heard: None,
             awaiting_results: false,
             item_sounds: None,
+            renew: false,
+            relay: None,
+            quiet_since: None,
+            mute_audio: false,
         };
         session.run(frames, stops).await;
     }
@@ -328,6 +336,72 @@ struct Session<'a> {
     awaiting_results: bool,
     /// When the sound of the answer's current item began, for where the engine cuts it ([`Outgoing::Cancel`]).
     item_sounds: Option<Instant>,
+    /// The provider announced the end of this connection ([`Incoming::GoAway`]): a new one opens in the next pause.
+    renew: bool,
+    /// The assistant's answer that is given to the engine as it is written (an engine that [`LiveWire::delegates`]).
+    relay: Option<Relay>,
+    /// Since when nothing was said to the engine and no sound came back, once the relay is over: the answer's sound is
+    /// then over too, as such an engine does not say so.
+    quiet_since: Option<Instant>,
+    /// What an engine that only speaks still says after a stop is not played, until the next sentence.
+    mute_audio: bool,
+}
+
+/// The answer of the assistant behind a voice-only engine (issue #919) on its way to the engine: read as it is written,
+/// by sentences, like the answer read aloud in the window ([`Core::answer_so_far`]).
+struct Relay {
+    conversation: String,
+    /// The entry after which the answer begins.
+    after: u64,
+    /// When the answer is looked at next: every [`READ_EVERY`], however many events come between (a timer made anew
+    /// for each would never run out while sound and microphone arrive more often).
+    next_look: tokio::time::Instant,
+    /// When the relay gives up waiting for the person to decide an approval.
+    until: tokio::time::Instant,
+    sentences: Sentences,
+    /// Something went to the engine already.
+    said: bool,
+    stamps: std::sync::Mutex<Stamps>,
+}
+
+/// What the relay found in the answer since it looked last.
+struct RelayStep {
+    pieces: Vec<String>,
+    over: bool,
+    last_word: Option<&'static str>,
+}
+
+/// How long the engine's sound must be quiet, with the answer given to it all, before it counts as over.
+const ANSWER_QUIET: Duration = Duration::from_millis(2000);
+
+/// How long the relay waits for an approval to be decided in the window before it lets the answer go.
+const APPROVAL_WAIT: Duration = Duration::from_secs(600);
+
+/// What the voice-only engine is told about its part (issue #919): it speaks what the assistant behind it says.
+const VOICE_ONLY: &str = "You are the voice of Torro, a personal assistant. You do not think or decide anything \
+yourself: Torro's assistant does, behind you. When the person has said something, you are told that a task is pending, \
+and the assistant's answer reaches you in pieces. Say each piece in the person's own language, naturally and \
+faithfully, without adding anything of your own: no facts, no advice, no questions. While you wait for the answer, say \
+at most one very short word of waiting and never guess the answer. If a piece asks the person to look at a window, say \
+so.";
+
+/// The conversation the relay follows; empty without one.
+fn relay_conversation(relay: &Option<Relay>) -> String {
+    relay.as_ref().map(|relay| relay.conversation.clone()).unwrap_or_default()
+}
+
+/// The next look at the answer the relay follows; never while there is none.
+async fn next_relay(core: &Core, relay: &mut Option<Relay>) -> RelayStep {
+    let Some(relay) = relay else { return std::future::pending().await };
+    loop {
+        tokio::time::sleep_until(relay.next_look).await;
+        relay.next_look = tokio::time::Instant::now() + READ_EVERY;
+        let (pieces, over, last_word) =
+            core.answer_so_far(&relay.conversation, relay.after, &mut relay.sentences, &relay.stamps).await;
+        if !pieces.is_empty() || over {
+            return RelayStep { pieces, over, last_word };
+        }
+    }
 }
 
 /// How long a transcript that came too late is still taken for the sentence "(not understood)" stood in for.
@@ -370,6 +444,7 @@ impl<'a> Session<'a> {
                     self.on_line(line);
                     true
                 }
+                step = next_relay(self.core, &mut self.relay) => self.on_relay(step).await,
                 _ = tick.tick() => self.on_tick().await,
             };
             if !go_on {
@@ -380,6 +455,13 @@ impl<'a> Session<'a> {
 
     /// The instructions and tools of the assistant, and the conversation so far, for a new connection.
     async fn configure(&mut self) {
+        // An engine that only speaks (issue #919) gets the instructions of a voice; the assistant behind it has the tools
+        // and the conversation.
+        if self.wire.delegates() {
+            let instructions = VOICE_ONLY.to_string();
+            let _ = self.wire.send(Outgoing::Configure { instructions, tools: Vec::new() }).await;
+            return;
+        }
         let given = self.configured.lock().unwrap_or_else(PoisonError::into_inner).clone();
         let setup = match given {
             Some(setup) => Some(setup),
@@ -415,12 +497,17 @@ impl<'a> Session<'a> {
             Incoming::SpeechStarted => {
                 self.last_speech = Instant::now();
                 self.person_speaks = true;
+                self.mute_audio = false;
+                // They went on after a pause: their sentence is not over, nothing waits for its words yet.
+                self.stopped = None;
                 // Only into an answer that sounds now (#835): a word while a tool runs or an approval waits stops
                 // nothing.
                 if self.reader.as_ref().is_some_and(|reader| reader.speaking.is_some()) {
                     self.stop_answer(true).await;
                 }
             }
+            // Nothing waits for what they said: the sentence is over.
+            Incoming::SpeechEnded => (self.person_speaks, self.stopped) = (false, None),
             Incoming::SpeechStopped { audio_end_ms } => {
                 let now = Instant::now();
                 self.last_speech = now;
@@ -451,8 +538,11 @@ impl<'a> Session<'a> {
             }
             // The rest of an answer that was stopped.
             Incoming::AnswerText(_) | Incoming::AnswerAudio(_) | Incoming::AnswerDone { .. } if self.discarding => {}
+            // Of an engine that only speaks: what it says is not an answer, only the sound is read and the words keep what
+            // was heard; after a stop its rest is dropped until the next sentence.
+            Incoming::AnswerText(_) | Incoming::AnswerAudio(_) if self.wire.delegates() && self.mute_audio => {}
             Incoming::AnswerText(piece) => {
-                self.answering = true;
+                self.answering |= !self.wire.delegates();
                 if let Some(round) = self.round.as_mut() {
                     round.first_word.get_or_insert_with(Instant::now);
                 }
@@ -462,6 +552,10 @@ impl<'a> Session<'a> {
             Incoming::AnswerAudio(samples) => {
                 self.answering = true;
                 self.item_sounds.get_or_insert_with(Instant::now);
+                // Sound with no answer to wait for (the voice's own word) is over when it is quiet.
+                if self.wire.delegates() && self.relay.is_none() {
+                    self.quiet_since = Some(Instant::now());
+                }
                 self.play(&samples).await;
             }
             Incoming::AnswerDone { text, calls } => {
@@ -486,6 +580,9 @@ impl<'a> Session<'a> {
                     (self.turn, self.awaiting_results) = (None, false);
                 }
             }
+            // The provider ends the connection soon (issue #918): in the next pause a new one takes over, with the
+            // conversation so far as text, before the provider closes this one in the middle of a sentence.
+            Incoming::GoAway => self.renew = true,
             Incoming::Closed => return self.reconnect(false).await,
         }
         true
@@ -493,6 +590,10 @@ impl<'a> Session<'a> {
 
     /// Gives `event` to the turn of the answer, or keeps it until the person's message is stored.
     fn tell(&mut self, event: TurnEvent) {
+        // The words an engine that only speaks says are not the answer's: the assistant's are.
+        if self.wire.delegates() {
+            return;
+        }
         match &self.turn {
             Some(turn) => {
                 let _ = turn.send(event);
@@ -513,6 +614,10 @@ impl<'a> Session<'a> {
             let _ = self.wire.send(Outgoing::Cancel { played_ms: 0 }).await;
             self.core.close_live(self.id, None, None).await;
             return false;
+        }
+        if self.wire.delegates() {
+            self.on_heard_delegated(text).await;
+            return true;
         }
         let (events, heard) = mpsc::unbounded_channel();
         let turn =
@@ -547,11 +652,114 @@ impl<'a> Session<'a> {
         true
     }
 
+    /// What the person said to an engine that only speaks (issue #919): their message in the conversation, answered by
+    /// the assistant like a typed one, with the chat model, its skills and tools, rights, approvals and log. The answer
+    /// goes to the engine as it is written ([`Session::on_relay`]). Without an answer (one runs there still, or the
+    /// message could not be stored) the engine's task is let go without a word.
+    async fn on_heard_delegated(&mut self, text: String) {
+        self.mute_audio = false;
+        let chat = self.core.settings.current().ai_slots.chat;
+        let named = match chat {
+            Some(slot) => (slot.engine, slot.model),
+            None => (self.engine.account.clone(), None),
+        };
+        // A chat model whose engine is gone is not replaced by the engine's account: the text would go to a provider the
+        // person did not choose for it. The task goes silently, as the chat window would show the error.
+        let sent = self.core.assistant.send_think(&self.core.ai, self.conversation.clone(), text, named).await;
+        match sent {
+            torro_ipc::Response::Conversation { conversation, .. } => {
+                if self.conversation.as_deref() != Some(conversation.id.as_str()) {
+                    if let Some(talk) = self.core.lock_talk().as_mut() {
+                        talk.conversation = Some(conversation.id.clone());
+                    }
+                    self.core.voice.notify();
+                    self.conversation = Some(conversation.id.clone());
+                }
+                let after = match self.core.assistant.get(&conversation.id, None).await {
+                    torro_ipc::Response::Conversation { entries, .. } => torro_ipc::assistant::answer_start(&entries),
+                    _ => None,
+                };
+                self.relay = Some(Relay {
+                    conversation: conversation.id,
+                    after: after.unwrap_or(conversation.last),
+                    next_look: tokio::time::Instant::now(),
+                    until: tokio::time::Instant::now() + APPROVAL_WAIT,
+                    sentences: Sentences::with_most(torro_ipc::assistant::SPOKEN_MOST),
+                    said: false,
+                    stamps: std::sync::Mutex::default(),
+                });
+                (self.answering, self.quiet_since) = (true, None);
+            }
+            torro_ipc::Response::Error { code, .. } => {
+                eprintln!("torroworkplace: what was said to the conversation engine is dropped: {code}");
+                self.let_go().await;
+            }
+            _ => self.let_go().await,
+        }
+    }
+
+    /// The engine's newest task gets no answer of its own: with the answer of an earlier sentence on its way, that
+    /// answer is its (the engine speaks it for the newest task); without one the task goes silently.
+    async fn let_go(&mut self) {
+        if self.relay.is_none() {
+            let _ = self.wire.send(Outgoing::Say(String::new())).await;
+        }
+    }
+
+    /// The assistant's answer, as far as it is written (issue #919): each sentence goes to the engine, which says it;
+    /// the sentence about an approval or a failure after them. Over, the engine gets nothing more, and once its sound
+    /// is quiet the answer is over too ([`Session::on_tick`]). `false` once the session is over.
+    async fn on_relay(&mut self, step: RelayStep) -> bool {
+        let RelayStep { pieces, over, last_word } = step;
+        let said = pieces.len() + usize::from(over && last_word.is_some());
+        let mut texts = pieces;
+        if over && let Some(word) = last_word {
+            texts.push(word.to_string());
+        }
+        for text in texts {
+            if let Some(round) = self.round.as_mut() {
+                round.first_word.get_or_insert_with(Instant::now);
+            }
+            if self.wire.send(Outgoing::Say(text)).await.is_err() {
+                return self.reconnect(false).await;
+            }
+        }
+        if let Some(relay) = self.relay.as_mut() {
+            relay.said |= said > 0;
+        }
+        // The answer waits for an approval the person decides in the window: it goes on after it, from here.
+        let approval =
+            last_word.is_some_and(|word| word == tr("The assistant needs your approval. Please look at the window."));
+        if over && approval {
+            let last = match self.core.assistant.get(&relay_conversation(&self.relay), None).await {
+                torro_ipc::Response::Conversation { conversation, .. } => Some(conversation.last),
+                _ => None,
+            };
+            if let (Some(last), Some(relay)) = (last, self.relay.as_mut())
+                && tokio::time::Instant::now() < relay.until
+            {
+                (relay.after, relay.sentences, relay.said) =
+                    (last, Sentences::with_most(torro_ipc::assistant::SPOKEN_MOST), true);
+                return true;
+            }
+        }
+        if over {
+            // An answer without a word lets the task go silently, so the engine does not wait for it.
+            if self.relay.as_ref().is_some_and(|relay| !relay.said)
+                && self.wire.send(Outgoing::Say(String::new())).await.is_err()
+            {
+                return self.reconnect(false).await;
+            }
+            (self.relay, self.quiet_since) = (None, Some(Instant::now()));
+        }
+        true
+    }
+
     /// The person spoke into the answer, or stopped it in the window: it stops where they began, the engine forgets
     /// what was not played, and what still comes of it is dropped. With `keep` the conversation keeps what was heard
     /// as an interruption ([`crate::assistant::Assistant::interrupt`]); without, the answer was cancelled already.
     async fn stop_answer(&mut self, keep: bool) {
-        if !self.answering && self.reader.is_none() && self.turn.is_none() {
+        if !self.answering && self.reader.is_none() && self.turn.is_none() && self.relay.is_none() {
             return;
         }
         // Of the item that sounds now: an answer with tools has one item before them and one after.
@@ -561,7 +769,7 @@ impl<'a> Session<'a> {
         self.stop_reading().await;
         if let Some(id) = self.conversation.clone()
             && keep
-            && (self.turn.is_some() || heard.is_some())
+            && (self.turn.is_some() || heard.is_some() || self.relay.is_some())
         {
             let heard = heard.as_deref().and_then(said_so_far);
             let answer = self.core.assistant.interrupt(&id, heard, Utc::now()).await;
@@ -575,9 +783,20 @@ impl<'a> Session<'a> {
         let running = self.answering;
         (self.turn, self.answering, self.response) = (None, false, Spoken::default());
         (self.awaiting_results, self.item_sounds) = (false, None);
+        // An engine that only speaks cannot be told to stop: what it says of the answer after this is not played, until the
+        // next sentence; the task it waits for goes silently.
+        if self.wire.delegates() {
+            // The person's own voice stops the engine by itself; the window's stop does not reach it.
+            self.mute_audio = !keep;
+            if self.relay.is_some() {
+                let _ = self.wire.send(Outgoing::Say(String::new())).await;
+            }
+        }
+        (self.relay, self.quiet_since) = (None, None);
         self.pending.clear();
-        // Only an answer that still comes has more to drop; one that was over sends nothing more.
-        self.discarding = running;
+        // Only an answer that still comes has more to drop; one that was over sends nothing more. An engine that only
+        // speaks stops its own sound when the person speaks, and its next one is not marked by a start.
+        self.discarding = running && !self.wire.delegates();
         let _ = self.wire.send(Outgoing::Cancel { played_ms }).await;
     }
 
@@ -769,12 +988,20 @@ impl<'a> Session<'a> {
     /// The session's clocks: what the person said comes late, a long silence, the provider's limit. `false` once the
     /// session is over.
     async fn on_tick(&mut self) -> bool {
-        if self.stopped.is_some_and(|at| at.elapsed() >= HEARD_WAIT) {
+        if self.stopped.is_some_and(|at| at.elapsed() >= self.wire.heard_wait()) {
             self.late_heard = Some(Instant::now());
             return self.on_heard("").await;
         }
+        // An engine that only speaks does not say when its sound is over: with the whole answer given to it, quiet is.
+        if self.relay.is_none() && self.quiet_since.is_some_and(|since| since.elapsed() >= ANSWER_QUIET) {
+            self.quiet_since = None;
+            self.response.finish();
+            self.end_reading().await;
+            (self.answering, self.response) = (false, Spoken::default());
+        }
         let busy = self.answering
             || self.reader.is_some()
+            || self.relay.is_some()
             || self.stopped.is_some()
             || self.turn.is_some()
             || self.person_speaks;
@@ -782,7 +1009,7 @@ impl<'a> Session<'a> {
             self.core.close_live(self.id, None, None).await;
             return false;
         }
-        if !busy && self.connected.elapsed() >= self.limit {
+        if !busy && (self.renew || self.connected.elapsed() >= self.limit) {
             return self.reconnect(true).await;
         }
         true
@@ -809,6 +1036,7 @@ impl<'a> Session<'a> {
         (self.turn, self.answering, self.stopped, self.round) = (None, false, None, None);
         (self.discarding, self.person_speaks) = (false, false);
         (self.awaiting_results, self.item_sounds, self.late_heard) = (false, None, None);
+        (self.relay, self.quiet_since) = (None, None);
         self.pending.clear();
         self.response = Spoken::default();
         (self.commands, self.orders) = mpsc::unbounded_channel();
@@ -819,7 +1047,7 @@ impl<'a> Session<'a> {
             match self.core.connect_live(&self.engine).await {
                 Ok(wire) => {
                     self.wire = wire;
-                    self.connected = Instant::now();
+                    (self.connected, self.renew) = (Instant::now(), false);
                     (self.sent_ms, self.sent) = (0, VecDeque::new());
                     self.configure().await;
                     return true;
@@ -848,6 +1076,8 @@ pub(super) mod tests {
     pub(crate) struct Script {
         pub(crate) sent: Mutex<Vec<Outgoing>>,
         pub(crate) connections: std::sync::atomic::AtomicUsize,
+        /// The fake engine only speaks and hears ([`LiveWire::delegates`], GPT-Live).
+        pub(crate) delegates: std::sync::atomic::AtomicBool,
     }
 
     /// An engine that says what the test sends it and keeps what it is sent.
@@ -864,6 +1094,10 @@ pub(super) mod tests {
 
         fn next(&mut self) -> BoxFuture<'_, Incoming> {
             Box::pin(async { self.says.recv().await.unwrap_or(Incoming::Closed) })
+        }
+
+        fn delegates(&self) -> bool {
+            self.script.delegates.load(std::sync::atomic::Ordering::SeqCst)
         }
     }
 
