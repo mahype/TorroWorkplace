@@ -1,6 +1,7 @@
 //! Tests of the window's state: loading, views, search, the panel and editing on the demo.
 
 use super::*;
+use crate::map_view::PLACE_ZOOM;
 
 pub(super) fn started(words: &[&str]) -> App {
     let args: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
@@ -966,4 +967,120 @@ async fn another_selection_stops_the_lookup_and_a_pin_comes_once() {
     assert!(app.map.lookup.running.is_none() && app.map.lookup.waiting, "waiting, not asking");
     let _ = app.update(Message::Map(MapMsg::Retry(generation)));
     assert!(app.map.lookup.running.is_some() && !app.map.lookup.waiting);
+}
+
+// -- A pin set by hand (issue #854) --------------------------------------------------------------
+
+/// The map with the card of Anna Berg's first pin open.
+async fn on_anna_card() -> (App, String) {
+    let mut app = on_map().await;
+    let pin = app.map.pins.iter().find(|p| p.id.ends_with("/demo-01") && p.address == 0).expect("her pin").clone();
+    let _ = app.update(Message::Map(MapMsg::Select(pin_key(&pin.id, 0))));
+    let contact = app.backend.get_contact(pin.id.clone()).await.expect("contact");
+    let _ = app.update(Message::Map(MapMsg::Card(pin.id.clone(), Ok(Box::new(contact)))));
+    (app, pin.id)
+}
+
+#[tokio::test]
+async fn move_pin_starts_at_the_pin_and_save_comes_back_to_the_map() {
+    let (mut app, anna) = on_anna_card().await;
+    let before = app.map.camera;
+    let pin = app.map.pins.iter().find(|p| p.id == anna && p.address == 0).expect("pin").geo;
+    let _ = app.update(Message::Map(MapMsg::Place(anna.clone())));
+    let placing = app.map.placing.clone().expect("placing");
+    assert_eq!(placing.replace, app.map.card.as_ref().is_some_and(|c| c.geo.is_some()), "replace only over a GEO");
+    let camera = app.map.camera;
+    assert!((camera.lat - pin.lat).abs() < 1e-9 && (camera.lon - pin.lon).abs() < 1e-9, "at her pin: {camera:?}");
+    assert_eq!(camera.zoom, PLACE_ZOOM);
+    assert!(app.place_view().is_some(), "the map with the pin takes the place of the list");
+
+    // Dragging moves the map under the pin; "Save" sends the point in the middle.
+    let size = iced::Size::new(800.0, 600.0);
+    let moved = app.map.camera.moved(40.0, -25.0);
+    let _ = app.update(Message::Map(MapMsg::Event(torro_gui::tile_map::MapEvent::Viewport(moved, size))));
+    let _ = app.update(Message::Map(MapMsg::PlaceSave));
+    assert!(app.map.placing.as_ref().is_some_and(|p| p.saving), "saving shows at once");
+    let _ = app.update(Message::Map(MapMsg::PlaceSave));
+    let geo = torro_ipc::contacts::Geo { lat: moved.lat, lon: moved.lon };
+    let written = app.backend.set_location(anna.clone(), placing.etag.clone(), geo, placing.replace).await;
+    let _ = app.update(Message::Map(MapMsg::Placed(anna.clone(), written.map(Box::new))));
+    assert!(app.map.placing.is_none());
+    assert_eq!(app.map.camera, before, "the map of all contacts as it was");
+    assert_eq!(app.map.card.as_ref().and_then(|c| c.geo).map(|g| g.lat), Some(moved.lat));
+    assert_eq!(app.notice.as_ref().map(|n| n.text.as_str()), Some(tr("Pin saved.")));
+}
+
+#[tokio::test]
+async fn cancel_and_a_refused_save_keep_nothing_written() {
+    let (mut app, anna) = on_anna_card().await;
+    let before = app.map.camera;
+    let _ = app.update(Message::Map(MapMsg::Place(anna.clone())));
+    let _ = app.update(Message::Map(MapMsg::PlaceCancel));
+    assert!(app.map.placing.is_none());
+    assert_eq!(app.map.camera, before);
+
+    // The contact changed meanwhile: the bar says so and the pin stays where it is.
+    let _ = app.update(Message::Map(MapMsg::Place(anna.clone())));
+    let _ = app.update(Message::Map(MapMsg::PlaceSave));
+    let refused = Err(ContactsError::Conflict { server_vcard: None, etag: None });
+    let _ = app.update(Message::Map(MapMsg::Placed(anna.clone(), refused)));
+    let placing = app.map.placing.clone().expect("still placing");
+    assert!(!placing.saving);
+    assert_eq!(placing.error.as_deref(), Some(tr("This contact changed meanwhile. Check and save again.")));
+
+    // The switch "List | Map" ends it too; an answer for another contact changes nothing.
+    let _ = app.update(Message::Map(MapMsg::Placed("other".into(), Err(ContactsError::Offline))));
+    assert!(app.map.placing.as_ref().is_some_and(|p| p.error == placing.error));
+    let _ = app.update(Message::Map(MapMsg::Look(Look::List)));
+    assert!(app.map.placing.is_none());
+}
+
+#[tokio::test]
+async fn set_location_shows_for_writable_contacts_with_maps_on() {
+    let mut app = loaded(&["--demo"]).await;
+    let anna = opened(&mut app, "demo-01").await;
+    let detail = app.detail.as_ref().expect("open");
+    assert!(app.look(detail, None, torro_gui::theme::palette(&app.theme())).place.is_some());
+    let _ = app.update(Message::Map(MapMsg::Place(anna.clone())));
+    assert!(app.map.placing.as_ref().is_some_and(|p| p.id == anna), "the open contact is placed");
+    let _ = app.update(Message::Map(MapMsg::PlaceCancel));
+
+    // Maps off: no button, and a pin begun ends.
+    app.map.shown.maps = false;
+    let detail = app.detail.as_ref().expect("open");
+    assert!(app.look(detail, None, torro_gui::theme::palette(&app.theme())).place.is_none());
+    app.map.shown.maps = true;
+    let _ = app.update(Message::Map(MapMsg::Place(anna)));
+    app.map.shown.maps = false;
+    let _ = app.update(Message::Map(MapMsg::Zoom(1)));
+    assert!(app.map.placing.is_none(), "maps turned off end it unsaved");
+
+    // A read-only book: nothing to place.
+    app.map.shown.maps = true;
+    let team = app.contacts.iter().find(|c| c.readonly).expect("a read-only demo contact").id.clone();
+    let uid = team.rsplit('/').next().expect("uid").to_owned();
+    let team = opened(&mut app, &uid).await;
+    let detail = app.detail.as_ref().expect("open");
+    assert!(app.look(detail, None, torro_gui::theme::palette(&app.theme())).place.is_none());
+    let _ = app.update(Message::Map(MapMsg::Place(team)));
+    assert!(app.map.placing.is_none());
+}
+
+#[tokio::test]
+async fn escape_another_view_and_the_panel_follow_a_pin_by_hand() {
+    let mut app = loaded(&["--demo"]).await;
+    let anna = opened(&mut app, "demo-01").await;
+    let _ = app.update(Message::Map(MapMsg::Place(anna.clone())));
+    assert!(app.placing_over_panel(SizeClass::Medium) && app.placing_over_panel(SizeClass::Narrow));
+    assert!(!app.placing_over_panel(SizeClass::Wide), "wide the panel stays beside the map");
+    // Enter is "Save".
+    let _ = app.update(Message::Key(Press::Enter));
+    assert!(app.map.placing.as_ref().is_some_and(|p| p.saving));
+    // Escape is "Cancel"; the contact stays open.
+    let _ = app.update(Message::Escape);
+    assert!(app.map.placing.is_none() && app.is_open(&anna));
+    // Another view ends it too.
+    let _ = app.update(Message::Map(MapMsg::Place(anna)));
+    let _ = app.update(Message::Show(View::Favorites));
+    assert!(app.map.placing.is_none());
 }

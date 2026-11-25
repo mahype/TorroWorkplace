@@ -16,6 +16,11 @@
 //!   to one a second. `busy` waits a second, `offline` and `error` pause it, leaving the map, closing
 //!   the window or turning the lookup off stop it. The status card says how far it is.
 //!
+//! - **A pin by hand** (issue #854): "Set location on map" in the contact and "Move pin" on the pin card
+//!   show the map with the contact's pin fixed in the middle; the person drags the map under it, "Save"
+//!   writes the point as the vCard's `GEO` (`contacts.set_location`, with `replace` when it has one).
+//!   The map of all contacts and its view come back as they were.
+//!
 //! Nothing here reads or writes data itself: every answer comes through [`Backend`].
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -33,10 +38,10 @@ use torro_gui::tile_map::{self, Camera, MapEvent, MapPin, TileKey};
 use torro_gui::{style, typo, widgets};
 use torro_ipc::contacts::{AddressRef, ContactLocation, ContactPin, LocationsQuery, LocationsStatus};
 
-use crate::app::{App, Message, View};
+use crate::app::{App, Message, View, failed};
 use crate::backend::Shown;
 use crate::contact;
-use crate::list::{face, hue, initials};
+use crate::list::{face, hue, initials, tinted};
 
 /// How many tiles the window keeps while the map is open; the oldest go first.
 pub const MAX_TILES: usize = 256;
@@ -50,6 +55,12 @@ pub const TILE_RETRY: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// How many `busy` in a row the lookup takes before it pauses (about a minute).
 pub const BUSY_LIMIT: u32 = 60;
+
+/// How close the map starts when a pin is set by hand at a known point: a street with its houses.
+pub const PLACE_ZOOM: u8 = 17;
+
+/// The id of the one pin while a pin is set by hand ([`Placing`]).
+pub const PLACE_PIN: &str = "place";
 
 /// The width of "In view" beside the map (wide).
 pub fn in_view_width() -> f32 {
@@ -89,6 +100,34 @@ pub enum MapMsg {
     CloseCard,
     /// "Open in Maps" of the pin card: contact and address.
     OpenInMaps(String, usize),
+    /// "Set location on map" of the contact and "Move pin" of the pin card: the pin of the first
+    /// address of this contact by hand (issue #854).
+    Place(String),
+    /// "Cancel" while a pin is set by hand: back as it was, nothing written.
+    PlaceCancel,
+    /// "Save": the point in the middle of the map goes to the core.
+    PlaceSave,
+    /// `contacts.set_location` answered.
+    Placed(String, Result<Box<Contact>, ContactsError>),
+}
+
+/// A pin set by hand (issue #854): whose, and what comes back when it ends.
+#[derive(Debug, Clone)]
+pub struct Placing {
+    pub id: String,
+    /// The version shown, which the core checks.
+    pub etag: String,
+    pub name: String,
+    /// The first address as one line; empty for a contact without one.
+    pub address: String,
+    /// The contact has a `GEO`: saving replaces it.
+    pub replace: bool,
+    /// "Save" is out.
+    pub saving: bool,
+    /// Why the last "Save" failed.
+    pub error: Option<String>,
+    /// The view of the map before, and whether the person had moved it.
+    back: (Camera, bool),
 }
 
 /// The lookup of addresses while the map is open.
@@ -147,6 +186,8 @@ pub struct MapState {
     pub lookup: Lookup,
     /// `--open map-lookup`: the picture of a lookup under way, nothing is asked.
     pub frozen: bool,
+    /// A pin set by hand: the map shows only it, in the middle.
+    pub placing: Option<Placing>,
 }
 
 impl Default for MapState {
@@ -174,6 +215,7 @@ impl Default for MapState {
             only: None,
             lookup: Lookup::default(),
             frozen: false,
+            placing: None,
         }
     }
 }
@@ -294,6 +336,17 @@ impl App {
     /// After every message: back to the list when the map is no longer offered (the lookup stops),
     /// the pins of a new selection, the tiles the view lacks.
     pub(crate) fn follow_map(&mut self) -> Task<Message> {
+        // A pin by hand needs the map: with maps turned off meanwhile it ends unsaved.
+        if self.map.placing.is_some() && !self.map.shown.maps {
+            self.end_placing();
+        }
+        if self.map.placing.is_some() {
+            return if matches!(self.class(), SizeClass::Mini | SizeClass::Strip) {
+                Task::none()
+            } else {
+                self.want_tiles()
+            };
+        }
         if self.map.look == Look::Map && !self.map_offered() {
             self.map.look = Look::List;
             self.map.stop_lookup();
@@ -382,6 +435,7 @@ impl App {
         if self.map.look != Look::Map
             || glance
             || self.map.frozen
+            || self.map.placing.is_some()
             || lookup.paused
             || lookup.waiting
             || lookup.running.is_some()
@@ -402,6 +456,7 @@ impl App {
     pub(crate) fn map_update(&mut self, message: MapMsg) -> Task<Message> {
         match message {
             MapMsg::Look(look) => {
+                self.end_placing();
                 self.map.look = look;
                 self.menu = None;
                 if look == Look::List {
@@ -504,8 +559,102 @@ impl App {
                 let backend = self.backend.clone();
                 return Task::perform(async move { backend.open_in_maps(id, address).await }, Message::OpenedInMaps);
             }
+            MapMsg::Place(id) => self.start_placing(&id),
+            MapMsg::PlaceCancel => self.end_placing(),
+            MapMsg::PlaceSave => return self.save_placing(),
+            MapMsg::Placed(id, result) => return self.placed(&id, result),
         }
         Task::none()
+    }
+
+    /// The contact `id` as the window holds it whole: the pin card's or the open one's.
+    fn whole(&self, id: &str) -> Option<&Contact> {
+        let card = self.map.card.as_deref().filter(|card| card.id == id);
+        card.or_else(|| self.open_contact().filter(|contact| contact.id == id))
+    }
+
+    /// Where a pin by hand starts: the vCard's `GEO`, the pin of the first address, the point the
+    /// contact's map found; else the map as it is.
+    fn place_start(&self, contact: &Contact) -> Option<Camera> {
+        let point = contact
+            .geo
+            .map(|geo| (geo.lat, geo.lon))
+            .or_else(|| self.map.pin(&pin_key(&contact.id, 0)).map(|pin| (pin.geo.lat, pin.geo.lon)))
+            .or_else(|| self.first_point(&contact.id).map(|geo| (geo.lat, geo.lon)));
+        point.map(|(lat, lon)| Camera::new(lat, lon, PLACE_ZOOM))
+    }
+
+    /// Starts a pin by hand for the first address of `id` (a writable contact the window holds).
+    fn start_placing(&mut self, id: &str) {
+        let Some(contact) = self.whole(id) else { return };
+        if contact.readonly || contact.state == torro_contacts::ContactState::Conflict {
+            return;
+        }
+        let camera = self.place_start(contact);
+        let placing = Placing {
+            id: contact.id.clone(),
+            etag: contact.etag.clone().unwrap_or_default(),
+            name: contact.shown_name(),
+            address: contact.addresses.first().map(|a| a.value.one_line()).unwrap_or_default(),
+            replace: contact.geo.is_some(),
+            saving: false,
+            error: None,
+            back: (self.map.camera, self.map.moved),
+        };
+        self.map.placing = Some(placing);
+        self.menu = None;
+        if let Some(camera) = camera {
+            self.map.camera = camera;
+        }
+        // The person moves the map now; an answer of the pins must not move it under them.
+        self.map.moved = true;
+    }
+
+    /// Ends a pin by hand: the map of all contacts as it was.
+    pub(crate) fn end_placing(&mut self) {
+        if let Some(placing) = self.map.placing.take() {
+            (self.map.camera, self.map.moved) = placing.back;
+        }
+    }
+
+    /// "Save": the point in the middle, `replace` when the contact has a `GEO`.
+    fn save_placing(&mut self) -> Task<Message> {
+        let camera = self.map.camera;
+        let Some(placing) = self.map.placing.as_mut().filter(|placing| !placing.saving) else { return Task::none() };
+        placing.saving = true;
+        placing.error = None;
+        let (id, etag, replace) = (placing.id.clone(), placing.etag.clone(), placing.replace);
+        let geo = torro_ipc::contacts::Geo { lat: camera.lat, lon: camera.lon };
+        let backend = self.backend.clone();
+        Task::perform(
+            async move { (id.clone(), backend.set_location(id, etag, geo, replace).await) },
+            |(id, result)| Message::Map(MapMsg::Placed(id, result.map(Box::new))),
+        )
+    }
+
+    /// The answer of "Save": written, the contact shows its new version and the map comes back; else
+    /// the reason stays on the bar and the pin where it is.
+    fn placed(&mut self, id: &str, result: Result<Box<Contact>, ContactsError>) -> Task<Message> {
+        if self.map.placing.as_ref().is_none_or(|placing| placing.id != id) {
+            return Task::none();
+        }
+        match result {
+            Ok(contact) => {
+                self.end_placing();
+                if self.map.card.as_ref().is_some_and(|card| card.id == contact.id) {
+                    self.map.card = Some(contact.clone());
+                }
+                self.notify(tr("Pin saved."));
+                self.took(*contact)
+            }
+            Err(err) => {
+                if let Some(placing) = &mut self.map.placing {
+                    placing.saving = false;
+                    placing.error = Some(failed(&err));
+                }
+                Task::none()
+            }
+        }
     }
 
     /// Selects the pin `key` and fetches its contact for the card.
@@ -781,30 +930,31 @@ impl App {
         ]
         .spacing(space::s());
         let mut buttons: Vec<Element<'_, Message>> = Vec::new();
+        // Narrow the card keeps one row: the actions as icons with their names as tooltips, "Open" in words.
+        let words = matches!(self.class(), SizeClass::Wide | SizeClass::Medium);
+        let action = |icon: Icon, label: &'static str, message: Message| -> Element<'_, Message> {
+            if words {
+                widgets::text_button(Some(icon), tr(label), style::button::secondary, Some(message))
+            } else {
+                widgets::icon_button(icon, tr(label), Some(message))
+            }
+        };
         let mail = card.and_then(|c| c.emails.first()).and_then(|m| contact::mail_link(&m.value));
         if let Some(link) = mail {
-            buttons.push(widgets::text_button(
-                Some(Icon::Mail),
-                tr("Mail"),
-                style::button::secondary,
-                Some(Message::OpenUri(link)),
-            ));
+            buttons.push(action(Icon::Mail, "Mail", Message::OpenUri(link)));
         }
         let call = card.and_then(|c| c.phones.first()).and_then(|t| contact::tel_link(&t.value));
         if let Some(link) = call {
-            buttons.push(widgets::text_button(
-                Some(Icon::Phone),
-                tr("Call"),
-                style::button::secondary,
-                Some(Message::OpenUri(link)),
-            ));
+            buttons.push(action(Icon::Phone, "Call", Message::OpenUri(link)));
         }
-        buttons.push(widgets::text_button(
-            Some(Icon::ArrowUpRight),
-            tr("Open in Maps"),
-            style::button::secondary,
-            Some(Message::Map(MapMsg::OpenInMaps(pin.id.clone(), pin.address))),
-        ));
+        let open_maps = Message::Map(MapMsg::OpenInMaps(pin.id.clone(), pin.address));
+        buttons.push(action(Icon::ArrowUpRight, "Open in Maps", open_maps));
+        // Issue #854: the vCard's `GEO` is the point of the first address; a book that cannot be
+        // written shows no button at all.
+        let movable = card.is_some_and(|c| !c.readonly && c.state != torro_contacts::ContactState::Conflict);
+        if pin.address == 0 && movable {
+            buttons.push(action(Icon::MapPin, "Move pin", Message::Map(MapMsg::Place(pin.id.clone()))));
+        }
         buttons.push(widgets::text_button(
             Some(Icon::User),
             tr("Open"),
@@ -819,6 +969,104 @@ impl App {
                 .style(style::container::popover)
                 .into(),
         )
+    }
+
+    /// A pin by hand (issue #854): the map with the contact's pin in the middle, which stays there while
+    /// the person drags the map under it; on top a bar with the name, the address, what to do, "Cancel"
+    /// and "Save"; zoom and the attribution as on the map of all contacts.
+    pub fn place_view(&self) -> Option<Element<'_, Message>> {
+        let placing = self.map.placing.as_ref()?;
+        let theme = self.theme();
+        let p = palette(&theme);
+        let camera = self.map.camera;
+        // No initials: a dot in the middle of the pin shows the point that is saved.
+        let pin = MapPin {
+            id: PLACE_PIN.to_owned(),
+            lat: camera.lat,
+            lon: camera.lon,
+            initials: String::new(),
+            color: hue(&p, &placing.name),
+        };
+        let dot =
+            container(iced::widget::Space::new().width(space::s()).height(space::s())).style(|t: &iced::Theme| {
+                container::Style {
+                    background: Some(iced::Background::Color(palette(t).on_accent)),
+                    border: iced::border::rounded(space::s()),
+                    ..container::Style::default()
+                }
+            });
+        let map = tile_map::tile_map(camera, &self.map.tiles, vec![pin], Some(PLACE_PIN.to_owned()), |event| {
+            Message::Map(MapMsg::Event(event))
+        });
+        let wide = self.class() == SizeClass::Wide;
+        let gap = space::m();
+        let mut words = column![typo::text(typo::body_strong(), placing.name.clone()).wrapping(Wrapping::WordOrGlyph)]
+            .spacing(space::xs())
+            .width(Fill);
+        if !placing.address.trim().is_empty() {
+            words = words.push(
+                typo::text(typo::meta(), placing.address.clone()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
+            );
+        }
+        let hint = tr("Drag the map until the pin sits on the right spot.");
+        words = words.push(typo::text(typo::meta(), hint).style(theme::text_3).wrapping(Wrapping::WordOrGlyph));
+        let busy = placing.saving;
+        let cancel =
+            widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Map(MapMsg::PlaceCancel)));
+        let save = widgets::text_button(
+            Some(Icon::Check),
+            if busy { tr("Saving…") } else { tr("Save") },
+            style::button::primary,
+            (!busy).then_some(Message::Map(MapMsg::PlaceSave)),
+        );
+        let actions = row![cancel, save].spacing(space::s()).align_y(iced::Alignment::Center);
+        // Wide the buttons stand beside the words, else under them at the right.
+        let mut bar = if wide {
+            column![row![words, actions].spacing(space::l()).align_y(iced::Alignment::Start)]
+        } else {
+            column![words, container(actions).width(Fill).align_right(Fill)]
+        }
+        .spacing(size::card_gap());
+        if let Some(error) = &placing.error {
+            let line = row![
+                tinted(Icon::CircleAlert, torro_gui::icon::SIZE, |p| p.error),
+                typo::text(typo::meta(), error.clone()).wrapping(Wrapping::WordOrGlyph).width(Fill),
+            ]
+            .spacing(space::s())
+            .align_y(iced::Alignment::Center);
+            bar = bar.push(line);
+        }
+        let bar = container(bar).padding(layout::panel_padding()).style(style::container::popover);
+        // Wide a card of the form's width in the middle, else as wide as the row of tools under it.
+        let bar = if wide { bar.max_width(size::form_max()) } else { bar.width(Fill) };
+        let zoom_in = widgets::icon_button(Icon::Plus, tr("Zoom in"), Some(Message::Map(MapMsg::Zoom(1))));
+        let zoom_out = widgets::icon_button(Icon::Minus, tr("Zoom out"), Some(Message::Map(MapMsg::Zoom(-1))));
+        let credit = widgets::text_button(
+            None,
+            tr("© OpenStreetMap contributors"),
+            style::button::secondary,
+            Some(Message::OpenUri(torro_gui::map::OSM_COPYRIGHT.into())),
+        );
+        let dot: Element<'_, Message> = container(dot).center(Fill).into();
+        let layers: Vec<Element<'_, Message>> = if wide {
+            // As on the map of all contacts: zoom and the attribution at the bottom right.
+            let zoom = container(column![zoom_in, zoom_out]).padding(space::xs()).style(style::container::menu);
+            let foot = column![zoom, credit].spacing(space::s()).align_x(iced::Alignment::End);
+            vec![
+                map,
+                dot,
+                container(bar).padding(gap).width(Fill).center_x(Fill).into(),
+                container(foot).padding(gap).align_right(Fill).align_bottom(Fill).into(),
+            ]
+        } else {
+            // Medium and narrow, as on the map of all contacts: zoom and the attribution in a row at
+            // the top, here under the bar.
+            let zoom = container(row![zoom_in, zoom_out]).padding(space::xs()).style(style::container::menu);
+            let tools = row![zoom, iced::widget::Space::new().width(Fill), credit].align_y(iced::Alignment::Center);
+            let head = column![bar, tools].spacing(space::s());
+            vec![map, dot, container(head).padding(gap).width(Fill).into()]
+        };
+        Some(stack(layers).width(Fill).height(Fill).into())
     }
 
     /// The switch "List | Map" of the header; narrow one button that shows the other look, so "New

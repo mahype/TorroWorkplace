@@ -149,6 +149,8 @@ pub struct Detail {
     pub maps: Vec<AddressMap>,
     /// The contact and version (`id|etag`) `maps` belong to: a new version asks again.
     pub maps_of: Option<String>,
+    /// Where the first address is, once found: a pin by hand starts there (issue #854).
+    pub first_point: Option<Geo>,
 }
 
 impl Detail {
@@ -164,6 +166,7 @@ impl Detail {
             error: None,
             maps: Vec::new(),
             maps_of: None,
+            first_point: None,
         }
     }
 }
@@ -880,6 +883,8 @@ impl App {
             }
 
             Message::Show(view) => {
+                // Another view ends a pin set by hand unsaved (issue #854): its map belongs to no view.
+                self.end_placing();
                 self.view = view;
                 self.menu = None;
                 self.drawer = false;
@@ -1262,6 +1267,7 @@ impl App {
                     error: None,
                     maps: Vec::new(),
                     maps_of: None,
+                    first_point: None,
                 });
             }
             Message::NoteEdit(action) => {
@@ -1572,6 +1578,9 @@ impl App {
             self.close_dialog();
         } else if self.drawer {
             self.drawer = false;
+        } else if self.map.placing.is_some() {
+            // A pin set by hand (issue #854): Escape is "Cancel".
+            self.end_placing();
         } else if self.editing() {
             return self.update(Message::Cancel);
         } else if self.detail.is_some() {
@@ -1585,6 +1594,13 @@ impl App {
     }
 
     fn key(&mut self, press: Press) -> Task<Message> {
+        // A pin set by hand (issue #854): Enter is "Save", no other key reaches the list under it.
+        if self.map.placing.is_some() && self.dialog.is_none() && self.menu.is_none() {
+            return match press {
+                Press::Enter => self.update(Message::Map(MapMsg::PlaceSave)),
+                _ => Task::none(),
+            };
+        }
         if self.view == View::Duplicates {
             // A dialog, a menu or a contact being edited keeps the keys of the cards: they would merge,
             // mark or choose under it (review of #356).
@@ -1786,6 +1802,27 @@ impl App {
         self.detail.as_ref()?.contact.as_ref()
     }
 
+    /// Where the first address of the open contact `id` is, when its map found it (issue #854).
+    pub fn first_point(&self, id: &str) -> Option<Geo> {
+        let detail = self.detail.as_ref().filter(|detail| detail.id.as_deref() == Some(id))?;
+        detail.first_point
+    }
+
+    /// A contact the core wrote (a pin by hand, issue #854): the open one shows the new version,
+    /// the list and the map load again.
+    pub(crate) fn took(&mut self, contact: Contact) -> Task<Message> {
+        if self.is_open(&contact.id)
+            && let Some(detail) = &mut self.detail
+        {
+            detail.error = None;
+            if let Some(draft) = &mut detail.draft {
+                draft.etag = contact.etag.clone();
+            }
+            detail.contact = Some(contact);
+        }
+        self.load()
+    }
+
     fn set_busy(&mut self, busy: bool) {
         if let Some(detail) = &mut self.detail {
             detail.busy = busy;
@@ -1940,6 +1977,9 @@ impl App {
     fn located(&mut self, key: &str, index: usize, result: Result<ContactLocation, String>) -> Task<Message> {
         if self.maps_for(key).is_none() {
             return Task::none();
+        }
+        if let (0, Ok(ContactLocation::Found { geo, .. }), Some(detail)) = (index, &result, &mut self.detail) {
+            detail.first_point = Some(*geo);
         }
         let (map, picture) = match result {
             Ok(ContactLocation::Found { geo, .. }) => (AddressMap::Finding, self.map_picture(key, index, geo)),
@@ -2227,7 +2267,7 @@ impl App {
             }
             Open::List | Open::ByCity | Open::ByBook => {}
             // The map of all contacts (issue #357).
-            Open::Map | Open::MapPin | Open::MapCluster | Open::MapLookup => {
+            Open::Map | Open::MapPin | Open::MapCluster | Open::MapLookup | Open::MapPlace | Open::MapPlaceError => {
                 self.map.look = Look::Map;
                 self.map.frozen = open == Open::MapLookup;
                 if open == Open::MapCluster {
@@ -2236,16 +2276,25 @@ impl App {
                     self.map.moved = true;
                 }
                 let anna = self.contacts.iter().find(|c| c.id.ends_with("/demo-01")).map(|c| c.id.clone());
-                if let (Open::MapPin, Some(id)) = (open, anna) {
+                if let (Open::MapPin | Open::MapPlace | Open::MapPlaceError, Some(id)) = (open, anna) {
                     self.map.selected = Some(pin_key(&id, 0));
+                    let place = Message::Map(MapMsg::Place(id.clone()));
+                    let refused = Err(ContactsError::Conflict { server_vcard: None, etag: None });
+                    let refused = Message::Map(MapMsg::Placed(id.clone(), refused));
                     let backend = self.backend.clone();
-                    tasks.push(Task::perform(
+                    let fetched = Task::perform(
                         async move { backend.get_contact(id.clone()).await.map(|contact| (id, contact)) },
                         |result| match result {
                             Ok((id, contact)) => Message::Map(MapMsg::Card(id, Ok(Box::new(contact)))),
                             Err(err) => Message::Map(MapMsg::Card(String::new(), Err(err))),
                         },
-                    ));
+                    );
+                    // "Move pin" of her card, once the card holds her (issue #854).
+                    tasks.push(match open {
+                        Open::MapPlace => fetched.chain(Task::done(place)),
+                        Open::MapPlaceError => fetched.chain(Task::done(place)).chain(Task::done(refused)),
+                        _ => fetched,
+                    });
                 }
             }
             Open::Contact

@@ -125,7 +125,7 @@ impl App {
     /// What lies over the top of the window, which the top row repeats.
     fn cover(&self, class: SizeClass) -> Cover {
         Cover::dialog(self.dialog.is_some())
-            .or(Cover::panel(class, self.detail.is_some()))
+            .or(Cover::panel(class, self.detail.is_some() && !self.placing_over_panel(class)))
             .or(Cover::drawer(class, self.drawer))
     }
 
@@ -269,10 +269,13 @@ impl App {
         };
         let mut trailing: Vec<Element<'a, Message>> = Vec::new();
         // The map of all contacts (issue #357): only with maps and the lookup of contact addresses on.
-        if self.map_offered() && !self.contacts.is_empty() {
+        // While a pin is set by hand (issue #854) the bar's "Cancel" is the way back, not the switch.
+        if self.map_offered() && !self.contacts.is_empty() && self.map.placing.is_none() {
             trailing.push(self.look_switch(narrow));
         }
-        let grouped = !self.on_map();
+        // While a pin is set by hand its bar holds the only actions: no grouping, no "…", no "New contact".
+        let placing = self.map.placing.is_some();
+        let grouped = !self.on_map() && !placing;
         if grouped
             && !matches!(self.view, View::Recent | View::Birthdays | View::Duplicates)
             && !self.contacts.is_empty()
@@ -285,7 +288,7 @@ impl App {
             }
         }
         // Import and export (issue #725); narrow, they move into the navigation menu like "Group by".
-        if !narrow {
+        if !narrow && !placing {
             trailing.push(widgets::anchored(
                 &anchors.header,
                 widgets::icon_button(Icon::Ellipsis, tr("More"), Some(Message::ToggleMenu(Menu::Header))),
@@ -293,11 +296,13 @@ impl App {
         }
         // Off while a contact is edited: its input is never dropped for a new one.
         let new = self.new_book().filter(|_| !self.editing()).map(|_| Message::NewContact(None, None));
-        trailing.push(if narrow {
-            widgets::compact_button(Icon::Plus, tr("New contact"), style::button::primary, new)
-        } else {
-            widgets::text_button(Some(Icon::Plus), tr("New contact"), style::button::primary, new)
-        });
+        if !placing {
+            trailing.push(if narrow {
+                widgets::compact_button(Icon::Plus, tr("New contact"), style::button::primary, new)
+            } else {
+                widgets::text_button(Some(Icon::Plus), tr("New contact"), style::button::primary, new)
+            });
+        }
         shell::header_bar([], lead, trailing)
     }
 
@@ -342,6 +347,10 @@ impl App {
     }
 
     fn list_view<'a>(&'a self, anchors: &Anchors) -> Element<'a, Message> {
+        // A pin by hand (issue #854) takes the place of the list and of the map until it ends.
+        if let Some(place) = self.place_view() {
+            return place;
+        }
         // The duplicates are cards to decide on, not a list to search.
         if self.view == View::Duplicates {
             return self.duplicates_view();
@@ -474,7 +483,16 @@ impl App {
 
     // -- Panel ----------------------------------------------------------------------------------
 
+    /// A pin set by hand (issue #854) outside the wide window: the panel would lie over its map, so
+    /// it waits until the pin is saved or cancelled.
+    pub(crate) fn placing_over_panel(&self, class: SizeClass) -> bool {
+        self.map.placing.is_some() && class != SizeClass::Wide
+    }
+
     fn panel<'a>(&'a self, class: SizeClass, anchors: &Anchors) -> Option<panel::Panel<'a, Message>> {
+        if self.placing_over_panel(class) {
+            return None;
+        }
         let detail = self.detail.as_ref()?;
         let colours = palette(&self.theme());
         let book_id = match (&detail.contact, &detail.new_in) {
@@ -553,7 +571,7 @@ impl App {
         Some(built.resizable(width, total, self.panel_split.dragging, Message::PanelWidth))
     }
 
-    fn look<'a>(
+    pub(crate) fn look<'a>(
         &'a self,
         detail: &'a Detail,
         picture: Option<&'a iced::widget::image::Handle>,
@@ -579,6 +597,12 @@ impl App {
             busy: detail.busy,
             error: detail.error.as_deref(),
             maps: &detail.maps,
+            // Issue #854: only with maps on (the tiles need them) and a contact that may be written.
+            place: detail
+                .contact
+                .as_ref()
+                .filter(|c| self.map.shown.maps && !c.readonly && c.state != torro_contacts::ContactState::Conflict)
+                .map(|c| Message::Map(crate::map_view::MapMsg::Place(c.id.clone()))),
         }
     }
 
