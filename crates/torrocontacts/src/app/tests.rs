@@ -1034,12 +1034,18 @@ async fn cancel_and_a_refused_save_keep_nothing_written() {
     assert!(!placing.saving);
     assert_eq!(placing.error.as_deref(), Some(tr("This contact changed meanwhile. Check and save again.")));
     // The contact is fetched again: the next "Save" goes with its new version.
+    // The bar shows her new name and address for the person to check; the point chosen stays.
+    let camera = app.map.camera;
     let mut fresh = app.backend.get_contact(anna.clone()).await.expect("contact");
     fresh.etag = Some("\"fresh\"".into());
-    fresh.geo = torro_contacts::model::Geo::new(52.5, 13.4);
+    fresh.display_name = "Anna Berg-Weber".into();
+    fresh.addresses[0].value.street = "Ringstr. 3".into();
+    let line = fresh.addresses[0].value.one_line();
     let _ = app.update(Message::Map(MapMsg::PlaceFresh(asked, Ok(Box::new(fresh)))));
     let placing = app.map.placing.clone().expect("still placing");
     assert_eq!(placing.etag, "\"fresh\"");
+    assert_eq!((placing.name.as_str(), placing.address.as_str()), ("Anna Berg-Weber", line.as_str()));
+    assert_eq!(app.map.camera, camera, "the point chosen stays");
 
     // A late answer of a pin that ended does not close a new one of the same contact.
     let _ = app.update(Message::Map(MapMsg::PlaceSave));

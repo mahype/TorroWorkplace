@@ -572,9 +572,13 @@ impl App {
             MapMsg::PlaceCancel => self.end_placing(),
             MapMsg::PlaceSave => return self.save_placing(),
             MapMsg::Placed(asked, result) => return self.placed(asked, result),
+            // The bar shows the contact as it is now (name, address), so the person checks it before the
+            // next "Save"; the point chosen stays in the middle of the map.
             MapMsg::PlaceFresh(asked, Ok(contact)) => {
                 if let Some(placing) = self.map.placing.as_mut().filter(|p| p.asked == asked && p.id == contact.id) {
                     placing.etag = contact.etag.clone().unwrap_or_default();
+                    placing.name = contact.shown_name();
+                    placing.address = contact.addresses.first().map(|a| a.value.one_line()).unwrap_or_default();
                 }
             }
             // The contact cannot be had: the reason of the refused "Save" stays on the bar.
@@ -1047,12 +1051,17 @@ impl App {
             style::button::secondary,
             (!busy).then_some(Message::Map(MapMsg::PlaceCancel)),
         );
-        let save = widgets::text_button(
-            Some(Icon::Check),
-            if busy { tr("Saving…") } else { tr("Save") },
-            style::button::primary,
-            (!busy).then_some(Message::Map(MapMsg::PlaceSave)),
-        );
+        // While it is out the button says so and spins (`busy_button`), still fully readable.
+        let save = if busy {
+            widgets::busy_button(tr("Saving…"), style::button::primary)
+        } else {
+            widgets::text_button(
+                Some(Icon::Check),
+                tr("Save"),
+                style::button::primary,
+                Some(Message::Map(MapMsg::PlaceSave)),
+            )
+        };
         let actions = row![cancel, save].spacing(space::s()).align_y(iced::Alignment::Center);
         // Wide the buttons stand beside the words, else under them at the right.
         let mut bar = if wide {
