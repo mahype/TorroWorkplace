@@ -85,22 +85,30 @@ und eine selbst aktivierte Nutzereinheit mit `systemctl --user disable --now tor
 ## Qwen3-TTS selbst bauen (nur NVIDIA)
 
 Die Releases lesen lokal mit Pocket TTS. Qwen3-TTS als zweite lokale Stimme (Issue #764,
-[assistent.md](assistent.md), Abschnitt „Vorlesen“) gibt es nur in einem eigenen Build mit der Bau-Option
-`qwen-cuda`. Er braucht eine NVIDIA-Grafikkarte mit etwa 8 GB freiem Speicher, zum Bauen das CUDA-Toolkit
-(`nvcc`, unter Arch `cuda`) und zum Laufen den NVIDIA-Treiber (`libcuda`) und die Bibliotheken des Toolkits
-(`libcublas`, `libcublasLt`, `libcurand`, `libnvrtc`): Ein so gebauter Assistent startet ohne sie gar nicht, auch
-nicht zum Zuhören, für den Chat oder mit Pocket TTS. Kein Python, kein `cmake`.
+[assistent.md](assistent.md), Abschnitt „Vorlesen“) gibt es nur in einem eigenen Build. Es rechnet in einem
+eigenen Programm, `torro-qwen-tts` (Issue #808): Der Lese-Helfer des Assistenten startet es, sobald Qwen liest,
+und beendet es wieder, wenn eine andere Stimme liest. Das Programm hat einen eigenen Cargo-Workspace mit eigenem
+`Cargo.lock` unter `programs/torro-qwen-tts/`; Crane und seine Abhängigkeiten berühren den Workspace der Suite
+und die Releases nicht.
 
-Dienst und Assistent in **zwei** Aufrufen bauen: Der Dienst bekommt nur die Option, Qwen anzubieten
-(`torro-core/qwen-tts`), der Assistent Crane dazu. In einem gemeinsamen Aufruf schaltete Crane in den gemeinsamen
-Abhängigkeiten des Dienstes Features um (`serde_json/preserve_order`) und änderte dort Verhalten.
+Es braucht eine NVIDIA-Grafikkarte mit etwa 8 GB freiem Speicher, zum Bauen von `torro-qwen-tts` das
+CUDA-Toolkit (`nvcc`, unter Arch `cuda`) und zum Laufen den NVIDIA-Treiber (`libcuda`) und die Bibliotheken des
+Toolkits (`libcublas`, `libcublasLt`, `libcurand`, `libnvrtc`). Nur `torro-qwen-tts` hängt an ihnen: Der
+Assistent startet auch ohne sie, zum Zuhören, für den Chat und mit Pocket TTS. Kein Python, kein `cmake`.
+
+Dienst und Assistent bauen in **einem** Aufruf, beide mit der Option, Qwen anzubieten; das Programm in seinem
+eigenen Ordner:
 
 ```sh
-cargo build --release -p torroworkplace --features torro-core/qwen-tts
-cargo build --release -p torroassistant --features qwen-cuda
+cargo build --release -p torroworkplace -p torroassistant --features torroassistant/qwen-cuda
+cargo build --release --manifest-path programs/torro-qwen-tts/Cargo.toml
 ```
 
-Ohne die Option im Dienst bietet er Qwen nicht an, auch wenn der Assistent es kann.
+Danach `programs/torro-qwen-tts/target/release/torro-qwen-tts` neben das Programm `torroassistant` legen (dort
+sucht der Assistent zuerst, sonst auf `PATH`). `torro-qwen-tts --card` zeigt, ob es die Karte findet.
+
+Ohne die Option im Dienst bietet er Qwen nicht an, auch wenn der Assistent es kann. Fehlt `torro-qwen-tts`, zeigen
+die Einstellungen keine Grafikkarte, und der Assistent meldet beim Vorlesen, dass das Programm nicht startet.
 
 Danach in Einstellungen › Assistent › Voice unter „Models“ das Modell „Qwen3-TTS 0.6B“ laden (2,5 GB) und unter
 „Read aloud“ „Local: Qwen3-TTS (graphics card)“ wählen. macOS und Windows sind nicht erprobt
