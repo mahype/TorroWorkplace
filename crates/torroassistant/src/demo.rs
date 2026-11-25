@@ -33,8 +33,8 @@ use torro_core::i18n::{tr, trf};
 use torro_inbox::{SourceInfo, SourceRef};
 use torro_ipc::api::{Access, Area, AreaRights, BOT_CLIENT, Lack, Level, Rights, Selection};
 use torro_ipc::assistant::{
-    Card, CardEntry, CardRef, ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, LETTER_AVATAR,
-    MailRef, Profile,
+    Card, CardEntry, CardRef, ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, JobInfo,
+    JobReason, JobState, LETTER_AVATAR, MailRef, Profile, StepInfo, StepState,
 };
 use torro_ipc::bots::{Bot, Skill};
 use torro_ipc::{AccountInfo, ApprovalInfo, ApprovalState, ClientInfo, Request, Response};
@@ -91,6 +91,15 @@ pub const ARCHIVED: &str = "d00000000000000c";
 /// "What came in today": a content card of every kind (issue #784, `--open cards`).
 pub const CONTENT: &str = "d00000000000000f";
 
+/// "Sort this month's invoices": a job that runs (issue #962), `--open job-running`.
+pub const JOB_RUNNING: &str = "d000000000000011";
+/// "Answer the offers of the week": a job paused because its answer was stopped, `--open job-paused`.
+pub const JOB_PAUSED: &str = "d000000000000012";
+/// "Send the monthly report": a job paused on a step that may or may not have sent a mail, `--open job-uncertain`.
+pub const JOB_UNCERTAIN: &str = "d000000000000013";
+/// "Collect the dates of the trip": a job whose model does not answer, `--open job-model`.
+pub const JOB_MODEL: &str = "d000000000000014";
+
 /// The bot "Travel planner".
 pub const TRAVEL: &str = "b0000001";
 /// The bot "Release helper".
@@ -142,6 +151,8 @@ struct State {
     now: DateTime<Utc>,
     conversations: Vec<Conversation>,
     approvals: Vec<ApprovalInfo>,
+    /// The jobs (issue #962), each with its steps.
+    jobs: Vec<(JobInfo, Vec<StepInfo>)>,
     /// The bots, by name.
     bots: Vec<Bot>,
     /// The clients of the bots, with their rights.
@@ -173,7 +184,8 @@ impl Demo {
         let approvals = if setup.conversations { vec![approval(now), terminal_approval(now)] } else { Vec::new() };
         let bots = if setup.conversations { sample_bots() } else { Vec::new() };
         let clients = if setup.conversations { bot_clients(now) } else { Vec::new() };
-        Demo { state: Mutex::new(State { setup, now, conversations, approvals, bots, clients, next: 100 }) }
+        let jobs = if setup.conversations { sample_jobs(now) } else { Vec::new() };
+        Demo { state: Mutex::new(State { setup, now, conversations, approvals, jobs, bots, clients, next: 100 }) }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -303,12 +315,146 @@ impl Demo {
             // A conversation by voice (issue #747): the demo has no microphone; the state `talk` shows one.
             Request::TalkStatus => Response::Talk { talk: None, speaking: false, readings: 0 },
             Request::EndTalk => Response::Ok,
+            Request::ListJobs { conversation } => Response::Jobs {
+                jobs: state
+                    .jobs
+                    .iter()
+                    .filter(|(job, _)| conversation.as_ref().is_none_or(|id| job.conversation == *id))
+                    .map(|(job, _)| job.clone())
+                    .collect(),
+            },
+            Request::GetJob { id } => state.job(&id, |_, _| Ok(())),
+            Request::StartJob { goal, engine, model, conversation, without } => {
+                state.start_job(goal, (engine, model), conversation, without)
+            }
+            Request::PauseJob { id } => state.job(&id, |job, _| {
+                if !matches!(job.state, JobState::Queued | JobState::Running | JobState::AwaitingApproval) {
+                    return Err("the job is paused or over");
+                }
+                job.state = JobState::Paused;
+                job.reason = Some(JobReason::PausedByRequest);
+                job.message = Some(tr("The job is paused. Resume it to go on.").to_owned());
+                Ok(())
+            }),
+            Request::ResumeJob { id, engine, model } => state.job(&id, |job, steps| {
+                if job.state != JobState::Paused {
+                    return Err("the job is not paused");
+                }
+                if steps.iter().any(|step| step.state == StepState::Uncertain) {
+                    return Err("a step of the job is still unclear");
+                }
+                if let Some(engine) = engine {
+                    job.engine = engine;
+                    job.model = model.unwrap_or_else(|| "auto".into());
+                }
+                job.state = JobState::Running;
+                (job.reason, job.message) = (None, None);
+                Ok(())
+            }),
+            Request::CancelJob { id } => state.job(&id, |job, _| {
+                if job.state.is_final() {
+                    return Err("the job is over");
+                }
+                job.state = JobState::Cancelled;
+                (job.reason, job.message) = (None, None);
+                Ok(())
+            }),
+            Request::ResolveJobStep { id, step, done } => state.job(&id, |job, steps| {
+                let Some(found) = steps.iter_mut().find(|known| known.seq == step) else { return Err("no such step") };
+                if found.state != StepState::Uncertain {
+                    return Err("the step is not uncertain");
+                }
+                found.state = if done { StepState::Confirmed } else { StepState::Failed };
+                if done {
+                    job.last_confirmed = Some(step);
+                }
+                if !steps.iter().any(|step| step.state == StepState::Uncertain) {
+                    job.reason = Some(JobReason::PausedByRequest);
+                    job.message = Some(tr("The unclear step was decided. Resume the job to go on.").to_owned());
+                }
+                Ok(())
+            }),
             other => refused("unsupported", &format!("{} is not in the demo", other.operation().name())),
         }
     }
 }
 
 impl State {
+    /// The job `id` after `change` (which may refuse with `conflict`), as `assistant.get_job` answers.
+    fn job(
+        &mut self,
+        id: &str,
+        change: impl FnOnce(&mut JobInfo, &mut Vec<StepInfo>) -> Result<(), &'static str>,
+    ) -> Response {
+        let now = self.now;
+        let Some((job, steps)) = self.jobs.iter_mut().find(|(job, _)| job.id == id) else {
+            return refused("not-found", "no such job");
+        };
+        let before = job.state;
+        if let Err(why) = change(job, steps) {
+            return refused("conflict", why);
+        }
+        job.updated = now;
+        let (job, steps) = (job.clone(), steps.clone());
+        // A paused or cancelled job stops its answer; a resumed one answers again, as in the core.
+        if before != job.state {
+            let running = matches!(job.state, JobState::Running);
+            if let Some(conversation) = self.find(&job.conversation) {
+                conversation.summary.running = running;
+                if !running {
+                    conversation.growing = None;
+                }
+            }
+        }
+        Response::Job { job, steps }
+    }
+
+    /// `assistant.start_job`: the goal as the first message of a new conversation (or of `conversation`) and a
+    /// job that runs in it.
+    fn start_job(
+        &mut self,
+        goal: String,
+        (engine, model): (String, Option<String>),
+        conversation: Option<String>,
+        without: Vec<Area>,
+    ) -> Response {
+        if goal.trim().is_empty() {
+            return refused("error", "the goal is empty");
+        }
+        if let Some(id) = &conversation
+            && self.jobs.iter().any(|(job, _)| job.conversation == *id && !job.state.is_final())
+        {
+            return refused("conflict", "the conversation has an open job");
+        }
+        let model = model.unwrap_or_else(|| "qwen3:14b".into());
+        let sent = self.send(
+            conversation,
+            (engine.clone(), Some(model.clone()), None),
+            goal.clone(),
+            (without, torro_ipc::assistant::Mode::Default),
+            None,
+        );
+        let Response::Conversation { conversation, .. } = sent else { return sent };
+        self.next += 1;
+        let now = self.now;
+        let job = JobInfo {
+            id: format!("{:016x}", self.next),
+            conversation: conversation.id,
+            goal,
+            owner: None,
+            engine,
+            model,
+            state: JobState::Running,
+            reason: None,
+            message: None,
+            last_confirmed: None,
+            created: now,
+            updated: now,
+        };
+        self.jobs.push((job.clone(), Vec::new()));
+        Response::Job { job, steps: Vec::new() }
+    }
+
     fn engines(&self) -> Vec<Engine> {
         if !self.setup.engines {
             return Vec::new();
@@ -891,8 +1037,157 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
     let content = sample(CONTENT, tr("What came in today"), now, Duration::days(2), content_entries());
     let mut all =
         vec![plan, block, draft, forbidden, trip, release, lisbon, porto, gone, vienna, review, clean, content];
+    all.extend(job_conversations(now));
     all.extend(archived);
     all
+}
+
+/// The conversations of the demo's jobs (issue #962): the goal as the first message, the tool lines so far, and
+/// for a paused job the line in which the core says why.
+fn job_conversations(now: DateTime<Utc>) -> Vec<Conversation> {
+    let paused = |text: &str| EntryContent::Error { code: "paused".into(), message: text.to_owned() };
+    let mut running = sample(
+        JOB_RUNNING,
+        tr("Sort this month's invoices"),
+        now,
+        Duration::days(3),
+        vec![
+            message(tr(RUNNING_GOAL)),
+            tool("mail.search_messages", serde_json::json!({"query": "invoice"}), tr("9 results"), None),
+            tool("mail.move_messages", serde_json::json!({"ids": ["m-1", "m-2"]}), tr("Moved 4 mails"), None),
+        ],
+    );
+    running.summary.running = true;
+    // Frozen half way, as "Draft a reply to Anna", so screenshots come out the same.
+    let text = tr(RUNNING_ANSWER);
+    running.growing = Some(Growing { text: text.to_owned(), shown: text.chars().count() / 2, frozen: true });
+    let stopped = sample(
+        JOB_PAUSED,
+        tr("Answer the offers of the week"),
+        now,
+        Duration::days(3) + Duration::hours(1),
+        vec![
+            message(tr(PAUSED_GOAL)),
+            tool("mail.search_messages", serde_json::json!({"query": "offer"}), tr("3 results"), None),
+            EntryContent::Stopped { heard: None },
+            paused(tr("The answer was stopped, so the job is paused. Resume it to go on.")),
+        ],
+    );
+    let unclear = sample(
+        JOB_UNCERTAIN,
+        tr("Send the monthly report"),
+        now,
+        Duration::days(3) + Duration::hours(2),
+        vec![
+            message(tr(UNCERTAIN_GOAL)),
+            tool("tools.create_pdf", serde_json::json!({"title": "Report October"}), tr("Report October.pdf"), None),
+            tool("mail.save_draft", serde_json::json!({"to": "team@example.org"}), tr("Draft saved"), None),
+            tool("mail.send_draft", serde_json::json!({"draft": "d-17"}), String::new().as_str(), Some("interrupted")),
+            paused(tr(UNCERTAIN_REASON)),
+        ],
+    );
+    let model = sample(
+        JOB_MODEL,
+        tr("Collect the dates of the trip"),
+        now,
+        Duration::days(3) + Duration::hours(3),
+        vec![
+            message(tr(MODEL_GOAL)),
+            tool("mail.search_messages", serde_json::json!({"query": "Porto booking"}), tr("5 results"), None),
+            paused(&model_reason()),
+        ],
+    );
+    vec![running, stopped, unclear, model]
+}
+
+/// The goal typed in the composer of `--open job-start` (issue #962).
+pub const START_GOAL: &str = "Go through last week's mails and make a task for every request that is still open.";
+const RUNNING_GOAL: &str =
+    "Sort this month's invoices into the folder Invoices and make a task for each one still to pay.";
+const RUNNING_ANSWER: &str =
+    "Four invoices are in the folder Invoices now. Two of them are still to pay, so I am making a task for each.";
+const PAUSED_GOAL: &str = "Answer the offers of the week: thank each sender and ask for delivery dates.";
+const UNCERTAIN_GOAL: &str = "Make the monthly report as a PDF and send it to the team.";
+const UNCERTAIN_REASON: &str = "A step of this job changes something, and it is not known whether it happened. It does not run again by itself: check it, mark it as done or not done, then resume the job.";
+const MODEL_GOAL: &str = "Collect the dates of the trip to Porto from my mails and put them in the calendar.";
+/// The core's words for a job whose model does not answer (issue #961), with the demo's model.
+fn model_reason() -> String {
+    trf(
+        "The model {model} is not available ({code}). The job is paused: resume it once the model is back, or resume it with another model.",
+        &[("model", &"qwen3:14b"), ("code", &"offline")],
+    )
+}
+
+/// The demo's jobs (issue #962), one per state the card shows, with their steps.
+fn sample_jobs(now: DateTime<Utc>) -> Vec<(JobInfo, Vec<StepInfo>)> {
+    let at = now - Duration::days(3);
+    let step = |seq: u32, tool: &str, state: StepState, repeatable: bool| StepInfo {
+        seq,
+        tool: tool.into(),
+        state,
+        repeatable,
+        approval: None,
+        result: Some(u64::from(seq) + 1),
+        error: (state == StepState::Uncertain).then(|| "interrupted".to_owned()),
+        created: at,
+        updated: at,
+    };
+    let job =
+        |id: &str, conversation: &str, goal: &'static str, state: JobState, reason: Option<(JobReason, String)>| {
+            JobInfo {
+                id: id.into(),
+                conversation: conversation.into(),
+                goal: tr(goal).to_owned(),
+                owner: None,
+                engine: OLLAMA.into(),
+                model: "qwen3:14b".into(),
+                state,
+                reason: reason.as_ref().map(|(reason, _)| *reason),
+                message: reason.map(|(_, text)| text),
+                last_confirmed: None,
+                created: at,
+                updated: at,
+            }
+        };
+    use StepState::{Confirmed, Uncertain};
+    let stopped = tr("The answer was stopped, so the job is paused. Resume it to go on.").to_owned();
+    vec![
+        (
+            job("0000000000000a01", JOB_RUNNING, RUNNING_GOAL, JobState::Running, None),
+            vec![step(1, "mail.search_messages", Confirmed, true), step(2, "mail.move_messages", Confirmed, false)],
+        ),
+        (
+            job("0000000000000a02", JOB_PAUSED, PAUSED_GOAL, JobState::Paused, Some((JobReason::Stopped, stopped))),
+            vec![step(1, "mail.search_messages", Confirmed, true)],
+        ),
+        (
+            JobInfo {
+                last_confirmed: Some(2),
+                ..job(
+                    "0000000000000a03",
+                    JOB_UNCERTAIN,
+                    UNCERTAIN_GOAL,
+                    JobState::Paused,
+                    Some((JobReason::Uncertain, tr(UNCERTAIN_REASON).to_owned())),
+                )
+            },
+            vec![
+                step(1, "tools.create_pdf", Confirmed, false),
+                step(2, "mail.save_draft", Confirmed, false),
+                step(3, "mail.send_draft", Uncertain, false),
+            ],
+        ),
+        (
+            job(
+                "0000000000000a04",
+                JOB_MODEL,
+                MODEL_GOAL,
+                JobState::Paused,
+                Some((JobReason::ModelUnavailable, model_reason())),
+            ),
+            vec![step(1, "mail.search_messages", Confirmed, true)],
+        ),
+    ]
 }
 
 /// The mail account of the content cards' sample (issue #784).

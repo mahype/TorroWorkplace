@@ -50,6 +50,7 @@ mod cards;
 #[cfg(test)]
 pub(crate) use cards::CardLook;
 mod editor;
+mod job;
 
 /// The fewest lines of an answer worth scrolling in a glance with a file card under it; with less
 /// room the answer shows as one line.
@@ -71,6 +72,8 @@ struct Anchors {
     /// The "…" of the sidebar's groups "Recent" and "Archive" (issue #697).
     recent: Anchor,
     archive: Anchor,
+    /// "Choose another model" of a job whose model is gone (issue #962).
+    job_model: Anchor,
 }
 
 /// What the bar of a sidebar row ("…" and the bin, issue #697) takes of the title's room: its two icon
@@ -88,7 +91,17 @@ fn dialog_card<'a>(
     content: Element<'a, Message>,
     confirm: Element<'a, Message>,
 ) -> Element<'a, Message> {
-    let cancel = widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseDialog));
+    dialog_card_with(title, content, tr("Cancel"), confirm)
+}
+
+/// A [`dialog_card`] whose way back says `back` ("Keep job", issue #962).
+fn dialog_card_with<'a>(
+    title: String,
+    content: Element<'a, Message>,
+    back: &'a str,
+    confirm: Element<'a, Message>,
+) -> Element<'a, Message> {
+    let cancel = widgets::text_button(None, back, style::button::ghost, Some(Message::CloseDialog));
     let buttons = row![Space::new().width(Fill), cancel, confirm].spacing(space::s()).align_y(Alignment::Center);
     let card = column![typo::text(typo::title(), title), content, buttons].spacing(space::l());
     container(card).width(Fill).padding(layout::panel_padding()).style(style::container::popover).into()
@@ -379,6 +392,19 @@ impl App {
                 let menu = widgets::menu(vec![MenuSection::new(items), MenuSection::new(vec![delete])]);
                 widgets::floating(&anchors.recent, Placement::Below(Align::End), menu, Message::CloseMenu)
             }
+            // A job whose model is gone (issue #962): the models without effort; a pick resumes the job with it.
+            Menu::JobModel => {
+                let own = self
+                    .job
+                    .as_ref()
+                    .map(|view| Choice { engine: view.job.engine.clone(), model: Some(view.job.model.clone()) });
+                let menu = self.picker_menu(
+                    own.as_ref(),
+                    |choice| Message::Job(crate::job::JobAction::ResumeWith(choice)),
+                    false,
+                );
+                widgets::floating(&anchors.job_model, Placement::Below(Align::Start), menu, Message::CloseMenu)
+            }
             Menu::Archive => {
                 let empty = MenuItem::new(Icon::Trash2, tr("Empty archive…"), Message::AskEmptyArchive);
                 let menu = widgets::menu(vec![MenuSection::new(vec![empty])]);
@@ -527,7 +553,10 @@ impl App {
         // The title fits the row or ends in "…", with the whole title as tooltip; the marks before
         // and after it take their room.
         let about = conversation.about.is_some();
-        let marks = usize::from(conversation.running) + usize::from(about);
+        // A job that waits for the person (issue #962) shows in place of "Answering".
+        let waiting = self.waiting_mark(&conversation.id);
+        let marked = conversation.running || waiting.is_some();
+        let marks = usize::from(marked) + usize::from(about);
         let menu_here = matches!(&self.menu, Some(Menu::Conversation { id: open, at: MenuAt::Row }) if *open == id);
         let mut room = row_title_room(self.sidebar_shown()) - marks as f32 * (icon::SIZE_SM + space::s());
         // While "…" and the bin stand over the row's end (issue #697), the title ends in "…" before them.
@@ -546,7 +575,9 @@ impl App {
                 .push(widgets::with_tooltip(tinted(Icon::Mail, icon::SIZE_SM, |p| p.text_3), tr("About a mail")));
         }
         let mut content = content.push(title);
-        if conversation.running {
+        if let Some(waiting) = waiting {
+            content = content.push(waiting);
+        } else if conversation.running {
             content = content.push(widgets::with_tooltip(
                 tinted(Icon::CircleDotDashed, icon::SIZE_SM, |p| p.text_3),
                 tr("Answering"),
@@ -587,7 +618,7 @@ impl App {
         let delete = RowAction::new(Icon::Trash2, tr("Delete"), "", Message::AskDelete(id));
         // The bar keeps the row's own inset and leaves the mark of an answer that runs free.
         let mut right = style::ITEM_PADDING.right;
-        if conversation.running {
+        if marked {
             right += icon::SIZE_SM + space::s();
         }
         widgets::row_actions_inset(row, vec![more, delete], menu_here, false, right)
@@ -737,7 +768,7 @@ impl App {
         let history: Element<'a, Message> = if self.current.is_none() {
             container(self.welcome()).width(Fill).height(Fill).into()
         } else {
-            let entries = container(widgets::content(size::content_max(), self.entries()))
+            let entries = container(widgets::content(size::content_max(), self.entries(anchors)))
                 .width(Fill)
                 .padding(Padding { top: space::xl(), right: side, bottom: space::l(), left: side });
             // Anchored at the top: an answer that grows below moves nothing the person scrolled up
@@ -830,7 +861,7 @@ impl App {
     /// The entries in order, the growing answer last; tool lines close together, everything else
     /// with room between. While an answer appears letter by letter, what came after it waits, and
     /// before its first letter it takes no room; so does a card the core has not resolved yet.
-    fn entries(&self) -> Element<'_, Message> {
+    fn entries<'a>(&'a self, anchors: &Anchors) -> Element<'a, Message> {
         let colours = answer_colours(palette(&self.theme()));
         let mut list = column![].width(Fill);
         let mut previous_tool: Option<bool> = None;
@@ -878,6 +909,11 @@ impl App {
         if self.transcript.running() && !writing && !self.waits_for_approval() {
             list = list.push(Space::new().height(space::l()));
             list = list.push(typo::text(typo::meta(), tr("Working …")).style(theme::text_3));
+        }
+        // The conversation's job (issue #962) as the last entry, under "Working …": its state and controls stay at
+        // the foot of the history.
+        if let Some(card) = self.job_entry(anchors) {
+            list = list.push(Space::new().height(space::l())).push(card);
         }
         list.into()
     }
@@ -942,6 +978,14 @@ impl App {
                 self.tool(entry.seq, name, input, summary, error.as_deref(), *lack)
             }
             EntryContent::Approval { id } => self.approval_card(id, self.approvals.get(id)),
+            // A job paused (issue #962) is no error: a quiet line like "Stopped", the card below says what to do.
+            EntryContent::Error { message, code } if code == "paused" => row![
+                tinted(Icon::Pause, icon::SIZE_SM, |p| p.text_3),
+                typo::text(typo::meta(), message.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph)
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+            .into(),
             EntryContent::Error { message, .. } => row![
                 tinted(Icon::CircleAlert, icon::SIZE, |p| p.error_text),
                 typo::text(typo::body(), message.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)
@@ -1217,6 +1261,7 @@ impl App {
         // While the microphone records, the field says so in words too (issue #699).
         let placeholder = match self.dictation {
             Dictation::Recording => tr("Listening…").to_owned(),
+            _ if self.as_job && self.offers_job() => tr("Describe the job…").to_owned(),
             _ => self.placeholder(),
         };
         // The editor is the frame of the whole field (its focus ring shows on it); the row of
@@ -1239,9 +1284,25 @@ impl App {
         let roomy = matches!(class, SizeClass::Wide | SizeClass::Medium);
         let mut left = row![].spacing(space::xs()).align_y(Alignment::Center);
         if self.offers_areas_and_mode() {
-            if !self.switchable().is_empty() {
-                let plus = widgets::icon_button(Icon::Plus, tr("Areas"), Some(Message::ToggleMenu(Menu::Areas)));
+            let offers_job = self.offers_job();
+            // The plus holds "Run as job" too (issue #962), so it stands wherever a job can start.
+            if !self.switchable().is_empty() || offers_job {
+                let tip = if self.switchable().is_empty() { tr("Options") } else { tr("Areas") };
+                let plus = widgets::icon_button(Icon::Plus, tip, Some(Message::ToggleMenu(Menu::Areas)));
                 left = left.push(widgets::anchored(&anchors.areas, plus));
+                if self.as_job && offers_job {
+                    left = left.push(match roomy {
+                        true => {
+                            widgets::dismiss_chip_with(tr("As job"), tr("Send normally instead"), Message::ToggleJob)
+                        }
+                        false => widgets::icon_toggle(
+                            Icon::ListChecks,
+                            tr("Send normally instead"),
+                            true,
+                            Some(Message::ToggleJob),
+                        ),
+                    });
+                }
                 if roomy {
                     for area in &self.without {
                         let label = trf("Without {areas}", &[("areas", &chat::area_name(*area))]);
@@ -1301,14 +1362,20 @@ impl App {
             None if self.engines_loaded => typo::text(typo::meta(), tr("No AI account")).style(theme::text_3).into(),
             None => typo::text(typo::meta(), tr("Loading …")).style(theme::text_3).into(),
         };
-        let send = if self.transcript.running() {
+        // "Run as job" (issue #962): the same button starts the job; in a job's conversation "Stop" pauses it, and
+        // says so.
+        let job = self.as_job && self.offers_job();
+        let send_word = if job { tr("Start job") } else { tr("Send") };
+        let send = if self.transcript.running() && self.open_job().is_some() {
+            widgets::round_button(Icon::Pause, tr("Pause job"), style::button::round_quiet, Some(Message::Stop))
+        } else if self.transcript.running() {
             widgets::round_button(Icon::Square, tr("Stop"), style::button::round_quiet, Some(Message::Stop))
         } else if self.sending {
-            widgets::round_busy(tr("Sending…"))
+            widgets::round_busy(if job { tr("Starting job…") } else { tr("Sending…") })
         } else if self.choice.is_some() && !self.editor.text().trim().is_empty() {
-            widgets::round_button(Icon::ArrowUp, tr("Send"), style::button::round_primary, Some(Message::Send))
+            widgets::round_button(Icon::ArrowUp, send_word, style::button::round_primary, Some(Message::Send))
         } else {
-            widgets::round_button(Icon::ArrowUp, tr("Send"), style::button::round_quiet, None)
+            widgets::round_button(Icon::ArrowUp, send_word, style::button::round_quiet, None)
         };
         let mut right = row![picker, self.speaker_button()].spacing(space::xs()).align_y(Alignment::Center);
         if self.offers_talk() {
@@ -1583,7 +1650,7 @@ impl App {
     /// The areas of the composer: each with a check while the assistant may use it here.
     fn areas_menu(&self) -> Element<'_, Message> {
         let check = palette(&self.theme()).text_2;
-        let items = self
+        let items: Vec<MenuItem<'_, Message>> = self
             .switchable()
             .into_iter()
             .map(|area| {
@@ -1591,7 +1658,17 @@ impl App {
                 MenuItem::new(Mark::Check(check, on), chat::area_name(area), Message::ToggleArea(area))
             })
             .collect();
-        widgets::menu(vec![MenuSection::titled(tr("The assistant may use"), items)])
+        let mut sections = Vec::new();
+        if !items.is_empty() {
+            sections.push(MenuSection::titled(tr("The assistant may use"), items));
+        }
+        // Issue #962: a job is started on purpose, never by a normal "Send"; no check mark, so it does not read as
+        // one more area.
+        if self.offers_job() {
+            let job = MenuItem::new(Icon::ListChecks, tr("Run as job"), Message::ToggleJob).current(self.as_job);
+            sections.push(MenuSection::new(vec![job]));
+        }
+        widgets::menu(sections)
     }
 
     /// A conversation's menu: Rename, Pin or Unpin, Archive, Open in new window (main window), Delete;
@@ -1695,6 +1772,18 @@ impl App {
                 );
                 return dialog_card(title, words.into(), confirm);
             }
+            // Issue #962: "Cancel" would read as the action itself, so the way back is "Keep job".
+            Dialog::CancelJob { .. } => {
+                let text = tr("Nothing more of it will run. Steps already done stay done.");
+                let words = typo::text(typo::body(), text).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
+                let confirm = widgets::text_button(
+                    Some(Icon::CircleSlash),
+                    tr("Cancel job"),
+                    style::button::danger,
+                    Some(Message::ConfirmCancelJob),
+                );
+                return dialog_card_with(tr("Cancel this job?").to_owned(), words.into(), tr("Keep job"), confirm);
+            }
             Dialog::DeleteMany { ids, archive } => {
                 let n = ids.len();
                 let label = if n == 1 {
@@ -1752,7 +1841,7 @@ impl App {
         };
         let mut composer = row![field].spacing(space::s()).align_y(Alignment::Center);
         if self.transcript.running() {
-            composer = composer.push(stop_button(class));
+            composer = composer.push(stop_button(class, self.open_job().is_some()));
         }
         let content: Element<'_, Message> = if strip {
             // A flat strip: the answer takes the height, the composer stands beside it at the bottom,
@@ -2047,13 +2136,15 @@ fn glance_scrollable(content: Element<'_, Message>, strip: bool) -> Element<'_, 
 
 /// "Stop" while an answer runs: with its word where there is room, only its icon in narrow windows
 /// and tiles (design review of #547), where the word was squeezed to a dot.
-fn stop_button<'a>(class: SizeClass) -> Element<'a, Message> {
+/// "Stop" of mini and strip; in a job's conversation "Pause job" (issue #962), which is what it does there.
+fn stop_button<'a>(class: SizeClass, job: bool) -> Element<'a, Message> {
+    let (which, word) = if job { (Icon::Pause, tr("Pause job")) } else { (Icon::Square, tr("Stop")) };
     match class {
         SizeClass::Wide | SizeClass::Medium => {
-            widgets::text_button(Some(Icon::Square), tr("Stop"), style::button::secondary, Some(Message::Stop))
+            widgets::text_button(Some(which), word, style::button::secondary, Some(Message::Stop))
         }
         SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
-            widgets::compact_button(Icon::Square, tr("Stop"), style::button::secondary, Some(Message::Stop))
+            widgets::compact_button(which, word, style::button::secondary, Some(Message::Stop))
         }
     }
 }
@@ -2129,7 +2220,8 @@ mod tests {
     #[test]
     fn send_and_the_strip_line_up() {
         for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow, SizeClass::Mini, SizeClass::Strip] {
-            drop(stop_button(class));
+            drop(stop_button(class, false));
+            drop(stop_button(class, true));
         }
         assert_eq!(glance_lift(typo::body()), style::INPUT_PADDING.top);
         assert!(glance_lift(typo::meta()) >= glance_lift(typo::body()));
