@@ -1378,7 +1378,7 @@ impl App {
         // says so.
         let job = self.as_job && self.offers_job();
         let send_word = if job { tr("Start job") } else { tr("Send") };
-        let send = if self.transcript.running() && self.open_job().is_some() {
+        let send = if self.transcript.running() && self.stop_pauses_job() {
             widgets::round_button(Icon::Pause, tr("Pause job"), style::button::round_quiet, Some(Message::Stop))
         } else if self.transcript.running() {
             widgets::round_button(Icon::Square, tr("Stop"), style::button::round_quiet, Some(Message::Stop))
@@ -1853,7 +1853,7 @@ impl App {
         };
         let mut composer = row![field].spacing(space::s()).align_y(Alignment::Center);
         if self.transcript.running() {
-            composer = composer.push(stop_button(class, self.open_job().is_some()));
+            composer = composer.push(stop_button(class, self.stop_pauses_job()));
         }
         let content: Element<'_, Message> = if strip {
             // A flat strip: the answer takes the height, the composer stands beside it at the bottom,

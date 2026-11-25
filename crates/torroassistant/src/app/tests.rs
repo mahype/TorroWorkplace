@@ -2525,10 +2525,10 @@ fn no_job_in_a_bots_chat() {
 }
 
 #[test]
-fn pause_resume_and_the_composers_stop_of_a_running_job() {
+fn pause_and_resume_a_running_job() {
     let mut app = started(&["--open", "job-running"]);
     assert_eq!(job_state(&app), Some(torro_ipc::assistant::JobState::Running));
-    assert!(app.open_job().is_some());
+    assert!(app.job.as_ref().is_some_and(JobView::is_open));
     sent(&mut app);
     let _ = app.update(Message::Job(JobAction::Pause));
     let requests = app.sent.clone();
@@ -2568,7 +2568,7 @@ fn cancel_job_asks_first() {
     assert!(matches!(requests.as_slice(), [Request::CancelJob { .. }]), "{requests:?}");
     settle(&mut app);
     assert_eq!(job_state(&app), Some(torro_ipc::assistant::JobState::Cancelled));
-    assert!(app.open_job().is_none());
+    assert!(!app.job.as_ref().is_some_and(JobView::is_open));
 }
 
 #[test]
@@ -2641,4 +2641,108 @@ fn the_job_start_state_has_the_switch_on() {
     assert!(app.as_job && app.offers_job());
     let app = started(&["--open", "job-cancel"]);
     assert!(matches!(app.dialog, Some(Dialog::CancelJob { .. })));
+}
+
+/// The requests out and their replies, taken, so a test hands an answer in when it likes (a late one).
+fn taken(app: &mut App) -> Vec<(Request, Reply)> {
+    let requests = std::mem::take(&mut app.sent);
+    let replies = std::mem::take(&mut app.replies);
+    requests.into_iter().zip(replies).collect()
+}
+
+#[test]
+fn stop_pauses_a_running_job_and_stays_stop_beside_a_paused_one() {
+    let mut app = started(&["--open", "job-running"]);
+    assert!(app.transcript.running() && app.stop_pauses_job(), "\"Pause job\" while the job runs");
+    sent(&mut app);
+    let _ = app.update(Message::Stop);
+    assert_eq!(sent(&mut app), [Request::CancelAnswer { conversation: demo::JOB_RUNNING.into() }]);
+    // A paused job: a normal answer beside it stops with "Stop", which pauses nothing.
+    let app = started(&["--open", "job-paused"]);
+    assert!(!app.stop_pauses_job());
+}
+
+#[test]
+fn the_cancel_question_cancels_only_the_job_it_asked_about() {
+    let mut app = started(&["--open", "job-running"]);
+    sent(&mut app);
+    let _ = app.update(Message::Job(JobAction::Cancel));
+    assert!(matches!(app.dialog, Some(Dialog::CancelJob { .. })));
+    // Meanwhile the conversation's job became another one.
+    if let Some(view) = app.job.as_mut() {
+        view.job.id = "0000000000000bbb".into();
+    }
+    let _ = app.update(Message::ConfirmCancelJob);
+    assert!(sent(&mut app).is_empty(), "the job asked about is no longer shown: nothing is cancelled");
+    assert_eq!(app.job_busy, None);
+}
+
+#[test]
+fn a_late_answer_of_another_conversation_leaves_the_cards_request_running() {
+    let mut app = started(&["--open", "job-running"]);
+    sent(&mut app);
+    let _ = app.update(Message::Job(JobAction::Pause));
+    let first = taken(&mut app);
+    // The person opens the paused job and resumes it there before the pause is answered.
+    let _ = app.update(Message::Select(demo::JOB_PAUSED.into()));
+    settle(&mut app);
+    let _ = app.update(Message::Job(JobAction::Resume));
+    assert_eq!(app.job_busy, Some(JobAction::Resume));
+    let second = taken(&mut app);
+    for (request, reply) in first {
+        let result = block_on(app.backend.ask(request));
+        let _ = app.update(reply(result));
+    }
+    assert_eq!(app.job_busy, Some(JobAction::Resume), "the first conversation's answer frees nothing here");
+    for (request, reply) in second {
+        let result = block_on(app.backend.ask(request));
+        let _ = app.update(reply(result));
+    }
+    assert_eq!(app.job_busy, None);
+    assert_eq!(job_state(&app), Some(torro_ipc::assistant::JobState::Running));
+}
+
+#[test]
+fn a_late_start_keeps_what_the_person_writes_elsewhere() {
+    let mut app = started(&["--open", "new"]);
+    let _ = app.update(Message::ToggleJob);
+    app.editor = Content::with_text("Sort the invoices");
+    let _ = app.update(Message::Send);
+    let start = taken(&mut app);
+    let _ = app.update(Message::Select(TOOLS.into()));
+    settle(&mut app);
+    app.editor = Content::with_text("A new draft");
+    for (request, reply) in start {
+        let result = block_on(app.backend.ask(request));
+        let _ = app.update(reply(result));
+    }
+    assert_eq!(app.current.as_deref(), Some(TOOLS), "the open conversation stays");
+    assert_eq!(app.editor.text().trim_end(), "A new draft", "the draft stays");
+    assert!(!app.sending);
+}
+
+#[test]
+fn it_didnt_happen_frees_the_step_to_run_again() {
+    let mut app = started(&["--open", "job-uncertain"]);
+    sent(&mut app);
+    let _ = app.update(Message::Job(JobAction::Resolve { step: 3, done: false }));
+    settle(&mut app);
+    let view = app.job.clone().expect("the job is in");
+    let step = view.steps.iter().find(|step| step.seq == 3).expect("step 3");
+    assert_eq!(step.state, torro_ipc::assistant::StepState::Failed);
+    assert!(view.can_resume());
+}
+
+#[test]
+fn a_job_waiting_for_approval_offers_pause_and_builds() {
+    let mut app = started(&["--open", "job-running"]);
+    if let Some(view) = app.job.as_mut() {
+        view.job.state = torro_ipc::assistant::JobState::AwaitingApproval;
+    }
+    let view = app.job.clone().expect("the job is in");
+    assert!(view.can_pause() && !view.can_resume() && app.stop_pauses_job());
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
 }

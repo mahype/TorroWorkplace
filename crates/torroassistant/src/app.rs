@@ -437,10 +437,12 @@ pub enum Message {
     Job(JobAction),
     /// "Cancel job" in the question.
     ConfirmCancelJob,
-    /// The core answered a button of the job card in the conversation.
-    JobAnswered(String, JobAction, Result<JobView, Refusal>),
-    /// The core started the job of "Send" with "Run as job" (`assistant.start_job`).
-    JobStarted(Result<JobView, Refusal>),
+    /// The core answered a button of the job card in the conversation; the number is the request's
+    /// ([`App::job_ticket`]), so a late answer to an earlier one changes nothing.
+    JobAnswered(String, u64, JobAction, Result<JobView, Refusal>),
+    /// The core started the job of "Send" with "Run as job" (`assistant.start_job`); first the conversation that
+    /// was open when it was sent (`None` for a new chat).
+    JobStarted(Option<String>, Result<JobView, Refusal>),
     /// Every job of the assistant came (`assistant.list_jobs`), for the marks in the sidebar.
     WaitingJobs(Result<Vec<torro_ipc::assistant::JobInfo>, Refusal>),
     /// From the sidebar: show the conversation with this id.
@@ -674,6 +676,8 @@ pub struct App {
     pub(crate) job_fetching: bool,
     /// The button of the job card whose request is on its way: it shows busy, the others take no click.
     pub(crate) job_busy: Option<JobAction>,
+    /// The number of the newest request of the job card: only its answer frees the card again.
+    pub(crate) job_ticket: u64,
     /// The jobs that wait for the person, by conversation (issue #962): their rows in the sidebar carry a mark.
     pub(crate) waiting_jobs: HashMap<String, torro_ipc::assistant::JobInfo>,
     /// The cards of the open conversation as the core resolved them last (`assistant.get_cards`,
@@ -855,6 +859,7 @@ impl App {
             job: None,
             job_fetching: false,
             job_busy: None,
+            job_ticket: 0,
             waiting_jobs: HashMap::new(),
             cards: HashMap::new(),
             card_pictures: HashMap::new(),
@@ -1330,11 +1335,11 @@ impl App {
             Message::JobLoaded(id, result) => self.job_loaded(id, result),
             Message::Job(action) => return self.job_action(action),
             Message::ConfirmCancelJob => {
-                let Some(Dialog::CancelJob { .. }) = self.dialog.take() else { return Task::none() };
-                return self.run_job_action(JobAction::Cancel);
+                let Some(Dialog::CancelJob { id }) = self.dialog.take() else { return Task::none() };
+                return self.run_job_action(&id, JobAction::Cancel);
             }
-            Message::JobAnswered(id, action, result) => return self.job_answered(id, action, result),
-            Message::JobStarted(result) => return self.job_started(result),
+            Message::JobAnswered(id, ticket, action, result) => return self.job_answered(id, ticket, action, result),
+            Message::JobStarted(origin, result) => return self.job_started(origin, result),
             Message::Select(id) => {
                 self.marked = None;
                 return self.select(id);
@@ -2432,7 +2437,8 @@ impl App {
             let request = job::start_request(self.current.as_deref(), self.choice.as_ref(), &self.draft(), &without);
             let Some(request) = request else { return Task::none() };
             self.sending = true;
-            return self.ask(request, |result| Message::JobStarted(job_of(result)));
+            let origin = self.current.clone();
+            return self.ask(request, move |result| Message::JobStarted(origin.clone(), job_of(result)));
         }
         let effort = self.offered_effort();
         let Some(mut request) = chat::send_request(
@@ -2778,9 +2784,10 @@ impl App {
             && !self.job.as_ref().is_some_and(JobView::is_open)
     }
 
-    /// The open job of the conversation, if it has one that is not over.
-    pub(crate) fn open_job(&self) -> Option<&JobView> {
-        self.job.as_ref().filter(|job| job.is_open())
+    /// Whether "Stop" pauses the conversation's job: one of it runs, waits in the queue or for an approval. With a
+    /// paused job a normal answer stops as any other.
+    pub(crate) fn stop_pauses_job(&self) -> bool {
+        self.job.as_ref().is_some_and(JobView::can_pause)
     }
 
     /// Asks for the jobs of the open conversation, unless a request for them is out already.
@@ -2865,24 +2872,38 @@ impl App {
             }
             return Task::none();
         }
-        self.run_job_action(action)
+        let id = view.job.id.clone();
+        self.run_job_action(&id, action)
     }
 
-    fn run_job_action(&mut self, action: JobAction) -> Task<Message> {
+    /// Sends `action` for the job `id`, only while it is still the job the card shows: a question answered after
+    /// the conversation's job changed never reaches another job.
+    fn run_job_action(&mut self, id: &str, action: JobAction) -> Task<Message> {
         let (Some(view), Some(conversation)) = (&self.job, self.current.clone()) else { return Task::none() };
-        if self.job_busy.is_some() {
+        if self.job_busy.is_some() || view.job.id != id {
             return Task::none();
         }
-        let request = action.request(&view.job.id);
+        let request = action.request(id);
         self.job_busy = Some(action.clone());
-        self.ask(request, move |result| Message::JobAnswered(conversation.clone(), action.clone(), job_of(result)))
+        self.job_ticket += 1;
+        let ticket = self.job_ticket;
+        self.ask(request, move |result| {
+            Message::JobAnswered(conversation.clone(), ticket, action.clone(), job_of(result))
+        })
     }
 
-    fn job_answered(&mut self, id: String, action: JobAction, result: Result<JobView, Refusal>) -> Task<Message> {
-        self.job_busy = None;
-        if self.current.as_ref() != Some(&id) {
+    fn job_answered(
+        &mut self,
+        id: String,
+        ticket: u64,
+        action: JobAction,
+        result: Result<JobView, Refusal>,
+    ) -> Task<Message> {
+        // Another conversation's or an earlier request's answer: the card's own request still runs.
+        if self.current.as_ref() != Some(&id) || ticket != self.job_ticket {
             return Task::none();
         }
+        self.job_busy = None;
         match result {
             Ok(view) => {
                 self.job = Some(view);
@@ -2896,8 +2917,15 @@ impl App {
         }
     }
 
-    fn job_started(&mut self, result: Result<JobView, Refusal>) -> Task<Message> {
+    fn job_started(&mut self, origin: Option<String>, result: Result<JobView, Refusal>) -> Task<Message> {
         self.sending = false;
+        // The person went elsewhere meanwhile: what they write there stays; the job shows in the list.
+        if self.current != origin {
+            if let Err(refusal) = &result {
+                self.note_failure(tr("Couldn't start the job."), refusal);
+            }
+            return self.load_list();
+        }
         match result {
             Ok(view) => {
                 self.editor = Content::new();
