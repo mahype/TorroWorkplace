@@ -15,12 +15,13 @@
 //! - `{"speak": {"text": …, "language": …, "voice": …, "most": n}}`: `text` in the voice `id`, at most
 //!   `n` frames; answered `{"sound": [f32 …]}` at `rate`.
 //!
-//! A request that fails is answered `{"error": "…"}`. When its input ends, it ends and its graphics
-//! memory is free.
+//! A request that fails is answered `{"error": "…"}`. When its input ends, it ends at once, also while
+//! the model loads or a piece is computed, and its graphics memory is free.
 
 use std::collections::HashMap;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::process::ExitCode;
+use std::sync::mpsc::{self, Receiver};
 
 use crane_core::generation::SpeechOptions;
 use crane_core::models::qwen3_tts::Model;
@@ -72,6 +73,10 @@ fn graphics_card() -> Option<String> {
 /// Loads the model from `folder` onto the first NVIDIA card and answers the reading helper until its
 /// input ends.
 fn serve(folder: &str) -> ExitCode {
+    // The input is read from the start, while the model loads and while a piece is computed, so the
+    // program ends the moment the helper is gone (it is killed when another provider reads, and then
+    // never closes this program itself): the graphics memory is free at once, not after the piece.
+    let lines = read_lines(std::io::stdin(), || std::process::exit(0));
     let device = match Device::new_cuda(0) {
         Ok(device) => device,
         Err(err) => {
@@ -93,11 +98,7 @@ fn serve(folder: &str) -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let mut voices: HashMap<String, (Vec<f32>, String)> = HashMap::new();
-    for line in std::io::stdin().lock().lines() {
-        let Ok(line) = line else { break };
-        if line.trim().is_empty() {
-            continue;
-        }
+    for line in lines {
         let answer = request(&line).and_then(|request| answer(&mut model, &mut voices, request));
         let line = answer.unwrap_or_else(|message| json!({ "error": message }));
         if !say(&line) {
@@ -105,6 +106,22 @@ fn serve(folder: &str) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+/// The lines of `input` that are not empty, read on a thread of their own; `end` runs on that thread
+/// when the input ends or fails.
+fn read_lines(input: impl std::io::Read + Send + 'static, end: impl FnOnce() + Send + 'static) -> Receiver<String> {
+    let (sender, lines) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(input).lines() {
+            let Ok(line) = line else { break };
+            if !line.trim().is_empty() && sender.send(line).is_err() {
+                return;
+            }
+        }
+        end();
+    });
+    lines
 }
 
 /// What the reading helper asks.
@@ -202,6 +219,17 @@ mod tests {
                 most: 60
             })
         );
+    }
+
+    /// Issue #808: the end of the input is noticed on its own thread, after the lines before it.
+    #[test]
+    fn the_end_of_the_input_is_noticed_at_once() {
+        let (ended, end) = mpsc::channel();
+        let lines = read_lines(std::io::Cursor::new("eins\n\n  \nzwei\n"), move || {
+            let _ = ended.send(());
+        });
+        assert_eq!(end.recv_timeout(std::time::Duration::from_secs(5)), Ok(()), "the end is told");
+        assert_eq!(lines.iter().collect::<Vec<_>>(), ["eins", "zwei"], "empty lines are skipped");
     }
 
     #[test]
