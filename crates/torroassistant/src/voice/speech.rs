@@ -42,8 +42,8 @@
 //!   keeps what was heard of an answer the person interrupts.
 //!
 //! Pocket TTS and Qwen3-TTS compute on a thread of their own ([`Synth`], [`super::pocket::Pocket`],
-//! [`super::qwen`]), one at a time: when the other reads, the thread of the first ends, so Qwen's
-//! graphics memory is free again. Each hands its sound out piece by piece; it plays at once on the system's output ([`Sound`], [`super::sound::Player`]), so
+//! [`super::qwen`]), one at a time: when the other reads, the thread of the first ends, and with Qwen's
+//! its program `torro-qwen-tts` (issue #808), so its graphics memory is free again. Each hands its sound out piece by piece; it plays at once on the system's output ([`Sound`], [`super::sound::Player`]), so
 //! the first words sound after a few seconds while the rest is computed. A stop ends the sound at once
 //! and tells the thread to stop computing. Neither text nor sound touch the disk.
 //!

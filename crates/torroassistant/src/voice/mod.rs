@@ -17,7 +17,7 @@
 //!   only when it does not load, with the recogniser on short windows ([`wake::TranscriptWake`]),
 //! - the microphone and the sound output with cpal ([`sound`]),
 //! - reading aloud with Pocket TTS ([`pocket`]) or, in builds with `qwen-cuda`, Qwen3-TTS on the graphics card
-//!   ([`qwen`], issue #764), in the helper [`speech`],
+//!   ([`qwen`], issue #764, computed by the program `torro-qwen-tts` since #808), in the helper [`speech`],
 //! - the echo cancellation ([`echo`], issue #834): what the helper plays is taken out of the microphone, so it
 //!   stays open while something is read aloud.
 //!
