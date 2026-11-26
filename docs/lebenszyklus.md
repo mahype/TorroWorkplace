@@ -109,20 +109,29 @@ So war es, bevor #279 umgesetzt wurde. Was daraus wurde, steht unter „Entschei
 | `scripts/install-local.sh` | den Dienst neu | bei jeder Installation aus dem Quellbaum (#1001), siehe unten |
 
 **Installation aus dem Quellbaum** (#1001): `scripts/install-local.sh` startet den Dienst nach jeder Installation
-neu und prüft, dass ein neuer Prozess das neue Programm ausführt. Auf Linux gleicht es die systemd-User-Unit
-`torroworkplace.service` vor dem Stop ab: `daemon-reload` nur bei geänderter Unit oder `NeedDaemonReload=yes`, `enable`
-nur wenn nötig. Startet die Unit durch ein Drop-in ein anderes Programm, bricht es ab, bevor etwas gestoppt oder
-installiert wird. Die Unit hat `KillMode=process`: Stop und Neustart beenden nur den Dienst, nicht die Apps, die er
-gestartet hat und die in seiner cgroup laufen. Auf macOS startet es den Dienst über den LaunchAgent von „Start at
-login“: Fehlt er oder startet er ein anderes Programm, schaltet `torroworkplace login-item enable` des neuen Dienstes
-die Einstellung ein (dieselbe Logik wie in der Oberfläche, kein zweiter LaunchAgent im Skript). Hat launchd einen Agent
-mit einem anderen Programm geladen, entlädt es ihn vorher (`bootout`, bei jedem Lauf geprüft). Danach `launchctl
-kickstart -k` bzw. `bootstrap`, mit bis zu drei Versuchen, weil macOS den ersten Start eines ersetzten Programms
-abbrechen kann (`OS_REASON_CODESIGNING`). Ein `torroworkplace daemon` des Benutzers, den eine App außerhalb von systemd
-oder launchd gestartet hat, wird vorher beendet; erkannt am Programm, am Subkommando und am Eigentümer, nicht an der
-Kommandozeile. Apps, die noch ein ersetztes Programm ausführen, nennt das Skript mit Programm, Rolle und PID;
-`--restart-apps` beendet sie wie beim Schließen und startet sie neu. Schreibfenster, Erinnerung, MCP-Server und Helfer
-des Dienstes nennt es nur.
+neu und prüft, dass ein neuer Prozess genau die eben installierte Datei ausführt (Linux über die Inode von
+`/proc/<pid>/exe`, macOS über argv[0] und die Inode unter den Programmdateien, die `lsof` für den Prozess nennt). Auf
+Linux gleicht es die systemd-User-Unit `torroworkplace.service` vor dem Stop ab: `daemon-reload` nur bei geänderter
+Unit oder `NeedDaemonReload=yes`. Danach prüft es die geladene Unit samt Drop-ins: genau ein `ExecStart` mit
+`~/.local/bin/torroworkplace daemon` und `KillMode=process`. Weicht etwas ab, bricht es mit Verweis auf die Drop-ins
+ab, bevor etwas gestoppt, aktiviert oder installiert wird. `KillMode=process` heißt: Stop und Neustart beenden nur den
+Dienst, nicht die Apps, die er gestartet hat und die in seiner cgroup laufen. Helfer und ein Nachfolger aus `daemon
+--takeover` (#411) laufen dann ebenfalls weiter; den Nachfolger findet das Skript über den Dienst-Lock (siehe unten).
+Auf macOS startet es den Dienst über den LaunchAgent von „Start at login“: Fehlt er oder startet er ein anderes
+Programm, schaltet `torroworkplace login-item enable` des neuen Dienstes die Einstellung ein (dieselbe Logik wie in der
+Oberfläche, Plist atomar ersetzt), erst wenn nachweislich kein Dienst mehr läuft. Hat launchd einen Agent geladen,
+dessen Definition (Programm und Argumente) nicht `<neuer Dienst> daemon` ist oder die es nicht zeigt, entlädt es ihn
+vorher (`bootout`, bei jedem Lauf geprüft). Danach `launchctl kickstart -k` bzw. `bootstrap`, mit bis zu drei
+Versuchen, weil macOS den ersten Start eines ersetzten Programms abbrechen kann (`OS_REASON_CODESIGNING`).
+Ein Dienst des Benutzers außerhalb von systemd oder launchd (von einer App gestartet oder per Takeover) wird vorher
+beendet. Erkannt wird er daran, dass er den Dienst-Lock offen hält (`torroworkplace service-lock`, die Datei
+`service.lock` im State-Verzeichnis, die nur der laufende Dienst hält), dazu an Eigentümer, Programmname und
+Subkommando. Seine Identität (Startzeit, Programm) wird zwischen zwei Lesungen der Startzeit erfasst und direkt vor dem
+Signal noch einmal geprüft. Apps, die noch ein ersetztes Programm ausführen, nennt das Skript mit Programm, Rolle und
+PID. `--restart-apps` beendet sie mit SIGTERM und startet sie neu. SIGTERM umgeht die eigene Rückfrage einer App vor
+dem Schließen, ungespeicherte Eingaben gehen also verloren. Schreibfenster (`--compose`, auch nach `--view mail`),
+Erinnerungen (`--reminders`, `torro-reminder`), MCP-Server, Helfer des Dienstes und Prozesse, deren Argumente sich
+nicht lesen lassen, nennt es nur.
 
 Ein Tray-Icon und die Einrichtung zeigt der Dienst nur, wenn die Hauptanwendung installiert ist, egal wer
 ihn startet. Ohne sie läuft er still wie mit `--headless` (#408, [einzelne-apps.md](einzelne-apps.md),

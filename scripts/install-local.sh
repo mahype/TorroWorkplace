@@ -5,24 +5,28 @@
 #
 #   scripts/install-local.sh [--help] [--restart-apps] [macos-dest]
 #
-# Linux:   first the systemd user unit torroworkplace.service (running ~/.local/bin/torroworkplace daemon, only the
-#          service itself is stopped: KillMode=process) to ~/.config/systemd/user, `daemon-reload` when it changed or
-#          systemd asks for it (NeedDaemonReload=yes), `enable` when it is not. When a drop-in makes the unit start
-#          another program, it stops here, before anything is installed. Then the programs to ~/.local/bin, the
-#          .desktop files and SVG icons from packaging/linux/ to ~/.local/share, `restart`, and a check that a new
-#          service process runs the new program.
+# Linux:   first the systemd user unit torroworkplace.service (running ~/.local/bin/torroworkplace daemon; stop and
+#          restart end only the service, not the apps it started: KillMode=process) to ~/.config/systemd/user,
+#          `daemon-reload` when it changed or systemd asks for it (NeedDaemonReload=yes). When the loaded unit starts
+#          anything but `~/.local/bin/torroworkplace daemon` or has another KillMode (a drop-in), it stops here,
+#          before anything is stopped or installed; else `enable` when it is not. Then the programs to
+#          ~/.local/bin, the .desktop files and SVG icons from packaging/linux/ to ~/.local/share, `restart`, and a
+#          check that a new service process runs the file just installed.
 # macOS:   the bundles of scripts/macos-dev-bundles.sh, made from target/release, to ~/Applications (or
 #          `macos-dest`). The service starts at login through the LaunchAgent the setting "Start at login"
 #          writes: when it is missing or starts another program, `torroworkplace login-item enable` of the new
-#          service switches the setting on. When launchd has an agent loaded that runs another program, it is
-#          unloaded (`bootout`) first. Then the service is restarted (`launchctl kickstart -k`, or `bootstrap` when
-#          the agent is not loaded), up to three times, since macOS may kill the first start of a replaced program
-#          (OS_REASON_CODESIGNING), and checked: a new process whose program file is the new one.
-# Both:    a `torroworkplace daemon` of this user started outside systemd or launchd (by an app) is ended first.
-#          Apps still running a replaced program of the suite are named afterwards. With --restart-apps they are
-#          ended (SIGTERM, as if closed: input not saved in them is lost) and started again; compose windows,
-#          the reminder, MCP servers and the service's helpers are only named, never ended. MCP configurations are
-#          not touched.
+#          service switches the setting on, once no service runs any more. When launchd has an agent loaded whose
+#          definition is not `<new service> daemon`, it is unloaded (`bootout`) first. Then the service is
+#          restarted (`launchctl kickstart -k`, or `bootstrap` when the agent is not loaded), up to three times,
+#          since macOS may kill the first start of a replaced program (OS_REASON_CODESIGNING), and checked: a new
+#          process that runs the file just installed.
+# Both:    a service of this user started outside systemd or launchd (by an app, or one that took over from
+#          another copy) holds the service's lock (`torroworkplace service-lock`); it is ended first. Apps still
+#          running a replaced program of the suite are named afterwards by program, role and pid. With
+#          --restart-apps they are ended with SIGTERM and started again: SIGTERM skips an app's own question
+#          before closing, so input not saved in them is lost. Compose windows, reminders, MCP servers, the
+#          service's helpers and processes whose arguments cannot be read are only named, never ended. MCP
+#          configurations are not touched.
 # Windows: not supported yet, the tray service is missing there (docs/release.md, section Windows).
 #
 # Exit codes: 0 done, 1 the service does not run with the new program (or a unit conflict stopped the install),
@@ -59,9 +63,9 @@ is_program() {
 }
 
 # --- Processes -------------------------------------------------------------------------------------------------
-# A process is told by what it is, not by its command line: its owner, the program file it runs (Linux
-# /proc/<pid>/exe, " (deleted)" once replaced; macOS the first program file lsof names, since `ps -o comm=` only shows
-# argv[0]) and its first argument. Its start time tells it apart from a later process with the same pid.
+# A process is told by what it is, not by its command line. Its start time tells it apart from a later process
+# with the same pid: every identity is read between two readings of the start time, and an identity whose start
+# changed in between, or that misses a part, counts as none.
 
 # Whether the process `pid` belongs to this user.
 process_owned() {
@@ -71,15 +75,7 @@ process_owned() {
     esac
 }
 
-# The program file of `pid`, empty when it cannot be read.
-process_exe() {
-    case "$os" in
-        Linux) readlink "$proc/$1/exe" 2>/dev/null || true ;;
-        *) { lsof -a -p "$1" -d txt -Fn 2>/dev/null || true; } | awk '/^n/ { print substr($0, 2); exit }' ;;
-    esac
-}
-
-# When `pid` started, in the system's own form; only compared, never shown.
+# When `pid` started, in the system's own form; only compared, never shown. Empty when it is gone.
 process_start() {
     case "$os" in
         Linux) { cat "$proc/$1/stat" 2>/dev/null || true; } | awk '{ sub(/.*\) /, ""); print $20 }' ;;
@@ -87,14 +83,28 @@ process_start() {
     esac
 }
 
-# The arguments of `pid` after the program, one per line; read to tell its role or to start it again, never shown.
+# The path `pid` runs: Linux the program file (/proc/<pid>/exe, " (deleted)" once replaced), macOS argv[0], which
+# launchd and LaunchServices set to the program file. Empty when it cannot be read.
+process_path() {
+    case "$os" in
+        Linux) readlink "$proc/$1/exe" 2>/dev/null || true ;;
+        *) ps -o comm= -p "$1" 2>/dev/null || true ;;
+    esac
+}
+
+# The arguments of `pid` after the program, one per line; fails when they cannot be read. Read to tell a role or
+# to start the program again, never shown.
 process_args() {
     local args comm
     case "$os" in
-        Linux) { tr '\0' '\n' < "$proc/$1/cmdline"; } 2>/dev/null | sed '1d' || true ;;
+        Linux)
+            [ -s "$proc/$1/cmdline" ] || return 1
+            { tr '\0' '\n' < "$proc/$1/cmdline"; } 2>/dev/null | sed '1d' || true
+            ;;
         *)
             args="$(ps -o args= -p "$1" 2>/dev/null || true)"
             comm="$(ps -o comm= -p "$1" 2>/dev/null || true)"
+            [ -n "$args" ] && [ -n "$comm" ] || return 1
             # Without argv[0], which may hold blanks (a bundle path); the arguments of the suite hold none.
             local words=()
             read -r -a words <<< "${args#"$comm"}" || true
@@ -103,22 +113,61 @@ process_args() {
     esac
 }
 
-# The first argument of `pid` (its subcommand), empty without one.
-process_sub() {
-    process_args "$1" | sed -n 1p
+# The identity of the file at `path` (device and inode), empty when there is none.
+file_id() {
+    case "$os" in
+        Linux) stat -L -c %d:%i "$1" 2>/dev/null || true ;;
+        *) stat -L -f %d:%i "$1" 2>/dev/null || true ;;
+    esac
 }
 
-# What identifies `pid` until it ends: its start and its program file.
-process_id() {
-    echo "$(process_start "$1")|$(process_exe "$1")"
+# Whether `pid` runs the file `file` itself, not only one at the same path: Linux the inode of /proc/<pid>/exe,
+# macOS argv[0] and the inode among the program files lsof lists for it (the first is not always the program).
+runs_file() {
+    local pid="$1" file="$2" inode
+    case "$os" in
+        Linux)
+            [ -n "$(file_id "$file")" ] && [ "$(file_id "$proc/$pid/exe")" = "$(file_id "$file")" ]
+            ;;
+        *)
+            [ "$(process_path "$pid")" = "$file" ] || return 1
+            inode="$(file_id "$file")"
+            inode="${inode#*:}"
+            [ -n "$inode" ] || return 1
+            { lsof -a -p "$pid" -d txt -Fi 2>/dev/null || true; } | grep -qx "i$inode"
+            ;;
+    esac
 }
 
-# Sends SIGTERM to `pid` only when it is still the process `id` (process_id) of this user.
-end_process() {
-    local pid="$1" id="$2"
+# Whether `pid` holds the file `lock` open.
+holds_file() {
+    local pid="$1" lock="$2" fd
+    case "$os" in
+        Linux)
+            for fd in "$proc/$pid/fd/"*; do
+                [ "$(readlink "$fd" 2>/dev/null || true)" = "$lock" ] && return 0
+            done
+            return 1
+            ;;
+        *) { lsof -a -p "$pid" -t -- "$lock" 2>/dev/null || true; } | grep -qx "$pid" ;;
+    esac
+}
+
+# The identity of the service `pid` (`start|path`) when it is one of this user: its program is `torroworkplace`,
+# its subcommand `daemon`, and it holds the service's lock `lock` open, which only the service does. Fails
+# otherwise, also when the pid changed hands while it was read.
+service_id() {
+    local pid="$1" lock="$2" start path
+    start="$(process_start "$pid")"
+    [ -n "$start" ] || return 1
     process_owned "$pid" || return 1
-    [ "$(process_id "$pid")" = "$id" ] || return 1
-    kill "$pid" 2>/dev/null
+    path="$(process_path "$pid")"
+    path="${path% (deleted)}"
+    [ "${path##*/}" = torroworkplace ] || return 1
+    [ "$( (process_args "$pid" || true) | sed -n 1p)" = daemon ] || return 1
+    holds_file "$pid" "$lock" || return 1
+    [ "$(process_start "$pid")" = "$start" ] || return 1
+    echo "$start|$path"
 }
 
 # Waits up to `TORRO_INSTALL_WAIT` pauses (default 15) until none of the processes `pids...` runs any more.
@@ -136,43 +185,37 @@ wait_gone() {
     done
 }
 
-# Whether `pid` is a service of this user: its program file is `torroworkplace` (also a replaced one) and its
-# subcommand is `daemon`.
-is_service() {
-    local exe
-    process_owned "$1" || return 1
-    exe="$(process_exe "$1")"
-    exe="${exe% (deleted)}"
-    [ "${exe##*/}" = torroworkplace ] || return 1
-    [ "$(process_sub "$1")" = daemon ]
-}
-
-# The services of this user except `keep` (the one systemd or launchd runs), as `pid id` lines (process_id).
-# pgrep only proposes; is_service decides.
-service_processes() {
-    local keep="${1:-}" pid
-    for pid in $(pgrep -U "$uid" -f torroworkplace 2>/dev/null || true); do
-        [ "$pid" = "$keep" ] && continue
-        is_service "$pid" || continue
-        echo "$pid $(process_id "$pid")"
-    done
-    return 0
-}
-
-# Ends a service that runs outside systemd or launchd (an app started it): it holds the lock, so the new service
-# would give up as "already running". SIGTERM ends it like `systemctl --user stop` does; each one is checked again
-# right before the signal.
+# Ends every service of this user that holds `lock` except `keep` (the one systemd or launchd runs): it would make
+# the new service give up as "already running". SIGTERM ends it like `systemctl --user stop` does; its identity is
+# read again right before the signal. A service taking over from another one (`daemon --takeover`) gets the lock
+# once that one ended, so this looks again, up to three rounds. Fails when one is left.
 end_stray_daemons() {
-    local found pid id ended=""
-    found="$(service_processes "${1:-}")"
-    [ -n "$found" ] || return 0
-    while read -r pid id; do
-        end_process "$pid" "$id" && ended="$ended $pid"
-    done <<< "$found"
-    [ -n "$ended" ] || return 0
-    say "ended the service started outside the system's service manager (pid${ended})"
-    # shellcheck disable=SC2086 # one pid per word
-    wait_gone $ended || warn "the old service (pid${ended}) did not end; the new one may not start"
+    local keep="$1" lock="$2" round=0 pid id ended
+    while [ "$round" -lt 3 ]; do
+        round=$((round + 1))
+        ended=""
+        for pid in $(pgrep -U "$uid" -f torroworkplace 2>/dev/null || true); do
+            [ "$pid" = "$keep" ] && continue
+            id="$(service_id "$pid" "$lock")" || continue
+            [ "$(service_id "$pid" "$lock" || true)" = "$id" ] || continue
+            kill "$pid" 2>/dev/null && ended="$ended $pid"
+        done
+        [ -n "$ended" ] || return 0
+        say "ended the service started outside the system's service manager (pid${ended})"
+        # shellcheck disable=SC2086 # one pid per word
+        if ! wait_gone $ended; then
+            warn "the old service (pid${ended}) did not end"
+            return 1
+        fi
+    done
+    warn "a service outside the system's service manager still holds $lock"
+    return 1
+}
+
+# The lock the service holds, from the new program `program`; empty with a warning when it cannot tell.
+service_lock() {
+    "$1" service-lock 2>/dev/null || warn "cannot ask $1 for the service's lock; services outside the" \
+        "service manager are not looked for"
 }
 
 # --- Linux -----------------------------------------------------------------------------------------------------
@@ -197,8 +240,28 @@ unit_pid() {
     return 0
 }
 
-# Sets the unit up before the old service stops: written, loaded, enabled, and starting `bin/torroworkplace`. Fails
-# (1) when a drop-in or another unit of the same name makes it start something else.
+# Whether the loaded unit, drop-ins included, runs exactly `bin/torroworkplace daemon` as its one ExecStart and
+# stops with KillMode=process; says what differs.
+unit_as_wanted() {
+    local bin="$1" exec kill
+    exec="$(systemctl --user show -p ExecStart --value "$unit" 2>/dev/null || true)"
+    kill="$(systemctl --user show -p KillMode --value "$unit" 2>/dev/null || true)"
+    case "$exec" in
+        "{ path=$bin/torroworkplace ; argv[]=$bin/torroworkplace daemon ; "*) ;;
+        *) warn "$unit does not start '$bin/torroworkplace daemon'"; return 1 ;;
+    esac
+    case "${exec#*"argv[]="}" in
+        *"{ path="*) warn "$unit has more than one ExecStart"; return 1 ;;
+    esac
+    if [ "$kill" != process ]; then
+        warn "$unit has KillMode=$kill, so a stop would end the apps the service started"
+        return 1
+    fi
+    return 0
+}
+
+# Sets the unit up before the old service stops: written, loaded, checked, enabled. Fails when a drop-in or
+# another unit of the same name makes it differ, naming the drop-ins.
 prepare_unit_linux() {
     local bin="$1" config="$2" packaging="$3" file
     file="$config/systemd/user/$unit"
@@ -210,6 +273,11 @@ prepare_unit_linux() {
             return 1
         fi
     fi
+    if ! unit_as_wanted "$bin"; then
+        warn "drop-ins: $(systemctl --user show -p DropInPaths --value "$unit" 2>/dev/null || true)" \
+            "(see: systemctl --user cat $unit). Nothing was stopped or installed."
+        return 1
+    fi
     if ! systemctl --user is-enabled --quiet "$unit" 2>/dev/null; then
         say "enabling $unit"
         if ! systemctl --user enable "$unit"; then
@@ -217,22 +285,17 @@ prepare_unit_linux() {
             return 1
         fi
     fi
-    case "$(systemctl --user show -p ExecStart "$unit" 2>/dev/null || true)" in
-        *"path=$bin/torroworkplace "*) return 0 ;;
-    esac
-    warn "$unit does not start $bin/torroworkplace; drop-ins:" \
-        "$(systemctl --user show -p DropInPaths --value "$unit" 2>/dev/null || true)" \
-        "(see: systemctl --user cat $unit). Nothing was installed."
-    return 1
+    return 0
 }
 
-# Whether the unit runs `program` in a process other than `old` and still does a pause later; prints the pid.
+# Whether the unit runs the file `program` in a process other than `old` and still does a pause later; prints
+# the pid.
 unit_runs() {
     local program="$1" old="${2:-}" tries=0 pid
     while [ "$tries" -lt 5 ]; do
         tries=$((tries + 1))
         pid="$(unit_pid)"
-        if [ -n "$pid" ] && [ "$pid" != "$old" ] && [ "$(process_exe "$pid")" = "$program" ]; then
+        if [ -n "$pid" ] && [ "$pid" != "$old" ] && runs_file "$pid" "$program"; then
             # A service that finds another one running gives up at once: look again.
             sleep "$pause"
             if [ "$(unit_pid)" = "$pid" ]; then
@@ -248,8 +311,13 @@ unit_runs() {
 # Restarts the systemd user unit and checks that a new process runs `bin/torroworkplace`; `old` is the service's
 # pid before the install.
 restart_service_linux() {
-    local bin="$1" old="${2:-}" pid out
-    end_stray_daemons
+    local bin="$1" old="${2:-}" pid out lock
+    lock="$(service_lock "$bin/torroworkplace")"
+    if [ -n "$lock" ] && ! end_stray_daemons "" "$lock"; then
+        warn "the service was not restarted"
+        status=1
+        return 0
+    fi
     if ! out="$(systemctl --user restart "$unit" 2>&1)"; then
         warn "systemctl --user restart $unit failed: $out (see: journalctl --user -u $unit)"
         status=1
@@ -279,7 +347,7 @@ install_linux() {
         old="$(unit_pid)"
         # Stop the service first: a running program file cannot be overwritten in place on every file system, and
         # the unit is restarted below anyway.
-        systemctl --user stop "$unit" 2>/dev/null || true
+        systemctl --user stop "$unit" 2>/dev/null || warn "systemctl --user stop $unit failed; installing anyway"
     else
         write_unit "$config/systemd/user/$unit" "$packaging/$unit" || true
     fi
@@ -307,10 +375,14 @@ install_linux() {
     say "installed to $bin, $data and $config/systemd/user"
 }
 
-# Processes of this user still running a replaced program of the suite from `bin`: `pid<TAB>program<TAB>id` lines.
+# Processes of this user still running a replaced program of the suite from `bin`: `pid<TAB>program<TAB>id`
+# lines, `id` being `start|path`.
 old_processes_linux() {
-    local bin="$1" link pid target program
+    local bin="$1" link pid target program start
     for link in "$proc"/[0-9]*/exe; do
+        pid="${link%/exe}"
+        pid="${pid##*/}"
+        start="$(process_start "$pid")"
         target="$(readlink "$link" 2>/dev/null)" || continue
         case "$target" in
             "$bin/"*" (deleted)") ;;
@@ -319,12 +391,19 @@ old_processes_linux() {
         program="${target#"$bin/"}"
         program="${program% (deleted)}"
         is_program "$program" || continue
-        pid="${link%/exe}"
-        pid="${pid##*/}"
         process_owned "$pid" || continue
-        printf '%s\t%s\t%s\n' "$pid" "$program" "$(process_id "$pid")"
+        [ -n "$start" ] && [ "$(process_start "$pid")" = "$start" ] || continue
+        printf '%s\t%s\t%s\n' "$pid" "$program" "$start|$target"
     done
     return 0
+}
+
+# Sends SIGTERM to the app `pid` only when it still is the process `id` (`start|path`) of this user.
+end_app() {
+    local pid="$1" id="$2"
+    process_owned "$pid" || return 1
+    [ "$(process_start "$pid")|$(process_path "$pid")" = "$id" ] || return 1
+    kill "$pid" 2>/dev/null
 }
 
 # Ends the app `pid` (still the process `id`) running `program` from `bin` and starts it again with the same
@@ -335,9 +414,9 @@ restart_app_linux() {
     # Read before the process ends; a newline inside an argument would split it, which the suite's never hold.
     while IFS= read -r arg; do
         args+=("$arg")
-    done <<< "$(process_args "$pid")"
+    done <<< "$(process_args "$pid" || true)"
     [ -n "${args[0]:-}" ] || args=()
-    end_process "$pid" "$id" || { warn "$program (pid $pid) ended or changed meanwhile; not restarted"; return 0; }
+    end_app "$pid" "$id" || { warn "$program (pid $pid) ended or changed meanwhile; not restarted"; return 0; }
     wait_gone "$pid" || { warn "$program (pid $pid) did not end; restart it yourself"; return 0; }
     (cd "$HOME" && setsid "$bin/$program" ${args[@]+"${args[@]}"} >/dev/null 2>&1 < /dev/null &)
     say "restarted $program"
@@ -350,17 +429,18 @@ launchd_pid() {
     { launchctl print "$1" 2>/dev/null || true; } | awk '$1 == "pid" && $2 == "=" { print $3; exit }'
 }
 
-# The program of the agent launchd has loaded for `target`, empty when none is loaded: the `program` line of
-# `launchctl print`, else the first of its `arguments`.
-launchd_program() {
+# The definition launchd has loaded for `target`: its `program`, then each of its `arguments`, one per line.
+# Empty when it shows neither.
+launchd_definition() {
     { launchctl print "$1" 2>/dev/null || true; } | awk '
-        /^[[:space:]]*program = / { sub(/^[[:space:]]*program = /, ""); print; exit }
-        /^[[:space:]]*arguments = \{/ { args = 1; next }
-        args { sub(/^[[:space:]]*/, ""); print; exit }'
+        args && /^[[:space:]]*\}/ { args = 0; next }
+        args { sub(/^[[:space:]]*/, ""); print; next }
+        /^[[:space:]]*program = / { sub(/^[[:space:]]*program = /, ""); print; next }
+        /^[[:space:]]*arguments = \{/ { args = 1 }'
 }
 
-# Whether launchd runs `program` for `target` in a process other than `old`, and still does a pause later; prints
-# the pid.
+# Whether launchd runs the file `program` for `target` in a process other than `old`, and still does a pause
+# later; prints the pid.
 launchd_runs() {
     local target="$1" program="$2" old="${3:-}" tries=0 pid
     while [ "$tries" -lt 5 ]; do
@@ -368,7 +448,7 @@ launchd_runs() {
         sleep "$pause"
         pid="$(launchd_pid "$target")"
         [ -n "$pid" ] && [ "$pid" != "$old" ] || continue
-        [ "$(process_exe "$pid")" = "$program" ] || continue
+        runs_file "$pid" "$program" || continue
         sleep "$pause"
         if [ "$(launchd_pid "$target")" = "$pid" ]; then
             echo "$pid"
@@ -395,7 +475,7 @@ unload_agent() {
 
 # Makes sure the service's LaunchAgent starts `svc`, the service in the new bundles, and (re)starts it.
 restart_service_macos() {
-    local svc="$1" line state plist label domain target loaded attempt pid old reason out rc
+    local svc="$1" line state plist label domain target loaded=0 stale=0 attempt pid old reason out rc lock wanted
     if [ ! -x "$svc" ]; then
         warn "no service program at $svc; the service was not restarted"
         status=1
@@ -412,16 +492,25 @@ restart_service_macos() {
     label="$(basename "$plist" .plist)"
     domain="gui/$uid"
     target="$domain/$label"
-    # What launchd has loaded may differ from the file (an earlier unload failed, the file was replaced): checked
-    # on every run, not only when the file changes.
-    loaded="$(launchd_program "$target")"
-    if [ "$state" != current ] || { [ -n "$loaded" ] && [ "$loaded" != "$svc" ]; }; then
-        if [ -n "$loaded" ]; then
-            [ "$loaded" = "$svc" ] || say "launchd runs the service from another program; loading the agent again"
+    lock="$(service_lock "$svc")"
+    # What launchd has loaded may differ from the file (an earlier unload failed, the file was replaced by hand, a
+    # definition it cannot show): checked on every run, as a whole.
+    wanted="$(printf '%s\n%s\n%s' "$svc" "$svc" daemon)"
+    if launchctl print "$target" >/dev/null 2>&1; then
+        loaded=1
+        [ "$(launchd_definition "$target")" = "$wanted" ] || stale=1
+    fi
+    if [ "$state" != current ] || [ "$stale" = 1 ]; then
+        if [ "$loaded" = 1 ]; then
+            [ "$stale" = 0 ] || say "launchd has the agent loaded with another definition; loading it again"
             unload_agent "$target" || { status=1; return 0; }
         fi
-        # No service runs while the setting changes, so none writes settings.json meanwhile.
-        end_stray_daemons
+        # The setting changes only once no service runs, so none writes settings.json meanwhile.
+        if [ -z "$lock" ] || ! end_stray_daemons "" "$lock"; then
+            warn "cannot make sure no service runs; \"Start at login\" was not changed, the service not restarted"
+            status=1
+            return 0
+        fi
         if [ "$state" != current ]; then
             case "$state" in
                 missing) say "no LaunchAgent for the service yet; switching \"Start at login\" on ($plist)" ;;
@@ -433,8 +522,10 @@ restart_service_macos() {
                 return 0
             fi
         fi
-    else
-        end_stray_daemons "$(launchd_pid "$target")"
+    elif [ -n "$lock" ] && ! end_stray_daemons "$(launchd_pid "$target")" "$lock"; then
+        warn "the service was not restarted"
+        status=1
+        return 0
     fi
     attempt=1
     while [ "$attempt" -le 3 ]; do
@@ -467,14 +558,19 @@ restart_service_macos() {
     status=1
 }
 
-# The processes of this user whose argv[0] lies inside `dest`, as `pid id` lines (process_id), taken before the
+# The processes of this user whose program lies inside `dest`, as `pid start|path` lines, taken before the
 # install: what runs from the bundles now runs the old programs afterwards.
 processes_in() {
-    local dest="$1" pid comm
+    local dest="$1" pid comm start
     { ps -axo pid=,comm= 2>/dev/null || true; } | while read -r pid comm; do
         case "$comm" in
-            "$dest/"*) process_owned "$pid" && echo "$pid $(process_id "$pid")" ;;
+            "$dest/"*) ;;
+            *) continue ;;
         esac
+        start="$(process_start "$pid")"
+        process_owned "$pid" || continue
+        [ -n "$start" ] && [ "$(process_path "$pid")" = "$comm" ] && [ "$(process_start "$pid")" = "$start" ] \
+            && echo "$pid $start|$comm"
     done
     return 0
 }
@@ -500,7 +596,7 @@ old_processes_macos() {
     while read -r pid id; do
         exe="${id#*|}"
         printf '%s\n' "$replaced" | grep -qxF -- "$exe" || continue
-        [ "$(process_id "$pid")" = "$id" ] && printf '%s\t%s\t%s\n' "$pid" "$exe" "$id"
+        [ "$(process_start "$pid")|$(process_path "$pid")" = "$id" ] && printf '%s\t%s\t%s\n' "$pid" "$exe" "$id"
     done <<< "$before"
     return 0
 }
@@ -509,7 +605,7 @@ old_processes_macos() {
 restart_app_macos() {
     local pid="$1" path="$2" id="$3" bundle
     bundle="${path%%.app/Contents/MacOS/*}.app"
-    end_process "$pid" "$id" || { warn "${bundle##*/} (pid $pid) ended or changed meanwhile; not restarted"; return 0; }
+    end_app "$pid" "$id" || { warn "${bundle##*/} (pid $pid) ended or changed meanwhile; not restarted"; return 0; }
     wait_gone "$pid" || { warn "${bundle##*/} (pid $pid) did not end; restart it yourself"; return 0; }
     if open "$bundle"; then
         say "restarted $(basename "$bundle" .app)"
@@ -533,19 +629,31 @@ install_macos() {
 # --- Both ------------------------------------------------------------------------------------------------------
 
 # The role of the process `pid` running `program` (a name or a path): `app`, which --restart-apps may restart, or
-# what else it is, which is only named.
+# what else it is, which is only named. Told by every argument the suite takes for it, and `unknown` when the
+# arguments cannot be read.
 process_role() {
-    local pid="$1" program="$2" sub
-    sub="$(process_sub "$pid")"
+    local pid="$1" program="$2" args sub
     case "$program" in
+        *"/Contents/Library/LoginItems/"*) echo service; return 0 ;;
         */torro-reminder) echo reminder; return 0 ;;
     esac
+    args="$(process_args "$pid")" || { echo unknown; return 0; }
+    # torroinbox --compose (also after --view mail), torrocalendar --reminders (crates/torroinbox/src/compose.rs,
+    # crates/torroworkplace/src/reminders.rs).
+    if printf '%s\n' "$args" | grep -qx -- --compose; then
+        echo "compose window"
+        return 0
+    fi
+    if printf '%s\n' "$args" | grep -qx -- --reminders; then
+        echo reminder
+        return 0
+    fi
+    sub="$(printf '%s\n' "$args" | sed -n 1p)"
     case "${program##*/}:$sub" in
         torroworkplace:daemon) echo service ;;
         torroworkplace:mcp) echo "MCP server" ;;
         torroworkplace: | torroworkplace:ui) echo app ;;
         torroworkplace:*) echo "service helper" ;;
-        torroinbox:--compose) echo "compose window" ;;
         *) echo app ;;
     esac
 }
@@ -557,9 +665,6 @@ report_old_apps() {
     [ -n "$old" ] || return 0
     while IFS="$(printf '\t')" read -r pid program id; do
         role="$(process_role "$pid" "$program")"
-        case "$program" in
-            *"/Contents/Library/LoginItems/"*) [ "$role" = app ] && role=service ;;
-        esac
         if [ "$role" != app ]; then
             others="$others, ${program##*/} ($role, pid $pid)"
         elif [ "$restart" = 1 ]; then
@@ -571,7 +676,8 @@ report_old_apps() {
             apps="$apps, ${program##*/} (pid $pid)"
         fi
     done <<< "$old"
-    [ -z "$apps" ] || warn "still running the old program: ${apps#, }; restart them, or run again with --restart-apps"
+    [ -z "$apps" ] || warn "still running the old program: ${apps#, }; restart them, or run again with" \
+        "--restart-apps (SIGTERM: input not saved in them is lost)"
     [ -z "$others" ] || warn "still running the old program: ${others#, }; close compose windows yourself once" \
         "they are sent or saved, restart the agents of MCP servers"
     return 0
@@ -611,7 +717,10 @@ main() {
 
     case "$os" in
         Darwin)
+            # Absolute, since processes and launchd name absolute paths.
             dest="${dest:-$HOME/Applications}"
+            mkdir -p "$dest"
+            dest="$(cd "$dest" && pwd -P)"
             before="$(processes_in "$dest")"
             install_macos "$dest"
             report_old_apps "$(old_processes_macos "$before" "$replaced")" "$restart_apps" ""
