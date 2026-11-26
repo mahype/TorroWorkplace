@@ -41,8 +41,6 @@ use wry::http::{Request, Response, header::CONTENT_TYPE};
 use wry::{DragDropEvent, WebViewBuilder};
 
 #[cfg(target_os = "linux")]
-use tao::platform::unix::WindowBuilderExtUnix;
-#[cfg(target_os = "linux")]
 use tao::platform::unix::WindowExtUnix;
 #[cfg(target_os = "linux")]
 use wry::WebViewBuilderExtUnix;
@@ -285,15 +283,25 @@ fn own_origin(uri: &str) -> bool {
 
 /// Opens the compose window on `source` and runs until it closes.
 pub fn run<S: ComposeSource + 'static>(source: Arc<S>, suite: Source, start: Start) -> Result<(), WebError> {
+    // The window class `torro-compose` that rules of a tiling manager match on. tao has no setter for it: its
+    // `with_app_id` (tao 0.37.2) becomes GTK's application ID, which must contain a dot, and a valid one, registered
+    // with empty flags, can make a second start a remote instance of the first on the session bus, which tao does not
+    // hand over to the open window. So GTK's own names: under Wayland the app ID is the program name, read when
+    // the window is shown; under X11 `WM_CLASS` is the program name and the program class. The program name is
+    // set before the event loop starts GTK, which would otherwise take the binary's name.
+    #[cfg(target_os = "linux")]
+    gdk::glib::set_prgname(Some(super::COMPOSE.window_class));
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
+    // GTK starts with the program name with a capital first letter as the class (`Torro-compose`); set it after
+    // GTK is up (it would be overwritten before) and before the window is built.
+    #[cfg(target_os = "linux")]
+    gdk::set_program_class(super::COMPOSE.window_class);
     let proxy = event_loop.create_proxy();
     let title = start.kind.title();
     let builder = WindowBuilder::new()
         .with_title(title)
         .with_inner_size(LogicalSize::new(WINDOW.0, WINDOW.1))
         .with_min_inner_size(LogicalSize::new(320.0, 320.0));
-    #[cfg(target_os = "linux")]
-    let builder = builder.with_name(super::COMPOSE.window_class, super::COMPOSE.window_class);
     let window = builder.build(&event_loop).map_err(|err| WebError::Window(err.to_string()))?;
 
     let store = Arc::new(Store::default());

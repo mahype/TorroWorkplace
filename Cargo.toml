@@ -236,6 +236,9 @@ winit = { version = "0.30.13", default-features = false }
 tao = { version = "0.37.1", default-features = false, features = ["rwh_06"] }
 wry = { version = "0.57.0", default-features = false }
 muda = { version = "0.21.2", default-features = false }
+# GDK for the compose window on Linux (issue #1002): the program name (`gdk::glib`, the Wayland app ID and the X11
+# instance name) and the program class (the X11 class) of the window. The version tao's gtk 0.18 already brings.
+gdk = "0.18.2"
 # The template keys on macOS and Windows (issue #243, WS.4), registered on the tray's event loop. 0.8: the same
 # objc2, objc2-app-kit, windows-sys and keyboard-types as tray-icon, muda and torro-ipc already bring.
 global-hotkey = { version = "0.8.0", default-features = false }
