@@ -18,6 +18,9 @@ Type=simple
 # (`command -v torroworkplace` shows where it is).
 ExecStart=%h/.cargo/bin/torroworkplace daemon
 Restart=on-failure
+# Stop and restart end the service only, not the apps it started: they run in its cgroup, and the default
+# (control-group) would close them with it, unsaved input included (issue #1001).
+KillMode=process
 
 [Install]
 WantedBy=graphical-session.target
