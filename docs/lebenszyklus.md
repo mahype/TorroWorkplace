@@ -106,6 +106,17 @@ So war es, bevor #279 umgesetzt wurde. Was daraus wurde, steht unter „Entschei
 | MCP-Server (`torroworkplace mcp`) | den Dienst | wenn er nicht antwortet, nicht nach Quit durch einen Menschen |
 | der Dienst | Apps | Tray, `apps.open_app`, Vorlagen, Erinnerungsfenster |
 | der Dienst | Einrichtung | erster Start ohne Konto, erst wenn sein Socket antwortet; nur mit Hauptanwendung |
+| `scripts/install-local.sh` | den Dienst neu | bei jeder Installation aus dem Quellbaum (#1001), siehe unten |
+
+**Installation aus dem Quellbaum** (#1001): `scripts/install-local.sh` startet den Dienst nach jeder Installation
+neu und prüft, dass er das neue Programm ausführt. Auf Linux gleicht es die systemd-User-Unit `torroworkplace.service`
+ab (`daemon-reload` nur bei Änderung, `enable`, `restart`). Auf macOS startet es den Dienst über den LaunchAgent von
+„Start at login“: Fehlt er oder startet er ein anderes Programm, schaltet `torroworkplace login-item enable` des neuen
+Dienstes die Einstellung ein (dieselbe Logik wie in der Oberfläche, kein zweiter LaunchAgent im Skript); danach
+`launchctl kickstart -k` bzw. `bootstrap`, mit bis zu drei Versuchen, weil macOS den ersten Start eines ersetzten
+Programms abbrechen kann (`OS_REASON_CODESIGNING`). Ein Dienst, den eine App außerhalb von systemd oder launchd
+gestartet hat, wird vorher beendet. Apps, die noch das alte Programm ausführen, nennt das Skript; `--restart-apps`
+startet sie neu.
 
 Ein Tray-Icon und die Einrichtung zeigt der Dienst nur, wenn die Hauptanwendung installiert ist, egal wer
 ihn startet. Ohne sie läuft er still wie mit `--headless` (#408, [einzelne-apps.md](einzelne-apps.md),
