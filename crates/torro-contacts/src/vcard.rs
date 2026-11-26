@@ -1012,7 +1012,19 @@ pub fn patch(raw: &str, before: &Contact, after: &Contact) -> String {
     );
     edit.patch_labeled("URL", &index.urls, &current.urls, &before.urls, &after.urls, encode_text);
     edit.patch_labeled("IMPP", &index.impps, &current.impps, &before.impps, &after.impps, encode_text);
+    // Issue #854: only a pin set by hand changes `GEO`; the line there keeps its group and parameters.
+    if before.geo != after.geo {
+        edit.set_single("GEO", after.geo.map(|geo| geo_value(geo, version)), &[]);
+    }
     edit.finish()
+}
+
+/// `GEO` as the version writes it: `lat;lon` in 3.0 (RFC 2426), a `geo:` URI in 4.0 (RFC 6350).
+fn geo_value(geo: Geo, version: Version) -> String {
+    match version {
+        Version::V3 => format!("{};{}", geo.lat, geo.lon),
+        Version::V4 => format!("geo:{},{}", geo.lat, geo.lon),
+    }
 }
 
 /// Puts `photo` (`None`: removes the picture) into `raw`; every other line stays.
@@ -1235,6 +1247,26 @@ mod tests {
         round_trip("v4.vcf", "BDAY", |c| c.birthday = PartialDate::parse("1985-08-02"));
         round_trip("v4.vcf", "N", |c| c.name.given = "Helena".into());
         round_trip("v4.vcf", "EMAIL", |c| c.emails[0].kind = FieldKind::Home);
+    }
+
+    /// Issue #854: a pin set by hand writes `GEO` as the version does, and only that line changes.
+    #[test]
+    fn geo_is_written_in_the_form_of_the_version() {
+        let moved = Some(Geo { lat: 48.137154, lon: 11.576124 });
+        round_trip("v4.vcf", "GEO", |c| c.geo = moved);
+        let raw = fixture("v4.vcf");
+        let before = read(&raw).expect("card");
+        let patched = patch(&raw, &before, &Contact { geo: moved, ..before.clone() });
+        assert!(patched.contains("GEO:geo:48.137154,11.576124"), "{patched}");
+        round_trip("v4.vcf", "GEO", |c| c.geo = None);
+
+        // A 3.0 card without `GEO` gets the line, as `lat;lon`.
+        round_trip("nextcloud.vcf", "GEO", |c| c.geo = moved);
+        let raw = fixture("nextcloud.vcf");
+        let before = read(&raw).expect("card");
+        assert_eq!(before.geo, None);
+        let patched = patch(&raw, &before, &Contact { geo: moved, ..before.clone() });
+        assert!(patched.contains("GEO:48.137154;11.576124"), "{patched}");
     }
 
     #[test]

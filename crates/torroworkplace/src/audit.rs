@@ -318,7 +318,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ResolveContactConflict { id: contact, .. }
         // Where an address is (issue #355): the contact hashed, never the address or the point.
         | Request::LocateContact { id: contact, .. }
-        | Request::OpenContactInMaps { id: contact, .. } => vec![format!("item:{}", hashed(contact))],
+        | Request::OpenContactInMaps { id: contact, .. }
+        | Request::SetContactLocation { id: contact, .. } => vec![format!("item:{}", hashed(contact))],
         Request::MoveContact { id: contact, to_book, .. } => {
             vec![format!("item:{}", hashed(contact)), collection(to_book)]
         }

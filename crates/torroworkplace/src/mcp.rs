@@ -704,6 +704,8 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
                 // old address book (issue #351).
                 | "contacts.resolve_conflict"
                 | "contacts.move_contact"
+                // With `replace` the old point is gone (issue #854); the hint holds for the tool.
+                | "contacts.set_location"
                 // What other people see in the chat cannot be taken back (`docs/chat.md`).
                 | "chat.send_message"
                 | "chat.react"
@@ -2296,6 +2298,7 @@ mod tests {
             "workspaces_load_template",
             "contacts_resolve_conflict",
             "contacts_move_contact",
+            "contacts_set_location",
         ] {
             assert_eq!(hints(name).and_then(|h| h.destructive_hint), Some(true), "{name}");
         }

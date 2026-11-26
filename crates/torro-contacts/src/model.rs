@@ -268,7 +268,7 @@ impl JsonSchema for PartialDate {
     }
 }
 
-/// A place as coordinates (vCard `GEO`), read only in this stage.
+/// A place as coordinates (vCard `GEO`).
 ///
 /// `Eq` holds because a `Geo` never holds NaN: JSON has no NaN, and the vCard reader refuses
 /// anything but finite numbers in range (as `torro_pim::model::Geo`).
@@ -354,7 +354,8 @@ pub struct Contact {
     /// The groups the contact is in (vCard `CATEGORIES`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub groups: Vec<String>,
-    /// Coordinates the vCard names (`GEO`); never written back by this stage.
+    /// Coordinates the vCard names (`GEO`); written only by a pin set by hand (`contacts.set_location`,
+    /// issue #854).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geo: Option<Geo>,
     /// A favourite of the person, kept on this device only.
