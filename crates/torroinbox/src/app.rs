@@ -6912,7 +6912,18 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::SearchTick(now) => {
                 if self.search_due.is_some_and(|due| now >= due) {
-                    return self.run_search();
+                    // The results close a mail open in the panel. The panel beside or over the list
+                    // wraps what the window shows: without it the field stands elsewhere in the widget
+                    // tree, and Iced builds it anew, without the keyboard. It gets it back, so the word
+                    // types on (issue #991). The wide mail window reads in its own column, which
+                    // stays: there the field keeps its state, its cursor included.
+                    let panel =
+                        self.panel_open() && !(self.launch.kind == Kind::Mail && self.class() == SizeClass::Wide);
+                    let shown = self.run_search();
+                    if panel && !self.panel_open() {
+                        return Task::batch([shown, operation::focus(search::FIELD)]);
+                    }
+                    return shown;
                 }
             }
             Message::Suggest(query) => {
@@ -21982,6 +21993,22 @@ mod tests {
         focus.0
     }
 
+    /// Carries out on `ui` what `task` asks of the widgets (such as [`operation::focus`]), as the
+    /// runtime does after `update`; the rest of the task is left out.
+    fn operate(
+        task: Task<Message>,
+        ui: &mut iced_test::runtime::UserInterface<'_, Message, iced::Theme, iced::Renderer>,
+        renderer: &iced::Renderer,
+    ) {
+        use iced::futures::StreamExt as _;
+        let Some(stream) = iced_test::runtime::task::into_stream(task) else { return };
+        for action in block_on(stream.collect::<Vec<_>>()) {
+            if let iced_test::runtime::Action::Widget(mut operation) = action {
+                ui.operate(renderer, operation.as_mut());
+            }
+        }
+    }
+
     /// The keys that type `text`, one per letter.
     fn letters(text: &str) -> Vec<iced::keyboard::Key> {
         text.chars().map(|letter| iced::keyboard::Key::Character(letter.to_string().into())).collect()
@@ -22036,11 +22063,13 @@ mod tests {
             // The view the key brought (the suggestions under the field), then the search after the pause.
             let ui = UserInterface::build(app.view(), size, cache, renderer);
             cache = ui.into_cache();
+            let mut ticked = Task::none();
             if let Some(due) = app.search_due {
-                let _ = app.update(Message::SearchTick(due));
+                ticked = app.update(Message::SearchTick(due));
                 load(app);
             }
             let mut ui = UserInterface::build(app.view(), size, cache, renderer);
+            operate(ticked, &mut ui, renderer);
             held.push(search_focused(&mut ui, renderer));
             cache = ui.into_cache();
         }
@@ -22060,13 +22089,29 @@ mod tests {
             None,
         ))
         .expect("a renderer without a window");
+        let cases = [
+            (WIDE, false, false),
+            (WIDE, true, false),
+            (MEDIUM, false, false),
+            (NARROW, false, false),
+            (WIDE, false, true),
+            (MEDIUM, false, true),
+            (NARROW, false, true),
+        ];
         for name in ["mail", "folder"] {
-            for (size, rail) in [(WIDE, false), (WIDE, true), (MEDIUM, false), (NARROW, false)] {
+            for (size, rail, reading) in cases {
                 let mut app =
                     if name == "mail" { mail_window(Density::Compact, &[]) } else { in_folder("f:work-inbox") };
                 let _ = app.update(Message::Resized(size));
                 if rail {
                     let _ = app.update(Message::UiState(UiState { sidebar: SidebarMode::Rail }));
+                }
+                // A mail open beside the list, which the search closes once it shows its results.
+                if reading {
+                    let first = app.messages.first().map(|message| message.id.clone()).expect("a mail");
+                    let _ = app.update(Message::SelectMail(first.clone()));
+                    deliver_letter(&mut app, &first);
+                    assert!(app.panel_open() || app.reading, "{name}: the mail is open");
                 }
                 // "budget", then three steps back into the word and "xy": the cursor stays where it
                 // was put, key after key.
@@ -22075,8 +22120,14 @@ mod tests {
                 keys.extend([left.clone(), left.clone(), left]);
                 keys.extend(letters("xy"));
                 let held = type_keys(&mut app, &mut renderer, size, &keys);
-                assert_eq!(app.search, "budxyget", "{name} {size:?} rail {rail}: every key in its place");
-                assert!(held.iter().all(|held| *held), "{name} {size:?} rail {rail}: focus after each key {held:?}");
+                assert_eq!(
+                    app.search, "budxyget",
+                    "{name} {size:?} rail {rail} reading {reading}: every key in its place"
+                );
+                assert!(
+                    held.iter().all(|held| *held),
+                    "{name} {size:?} rail {rail} reading {reading}: focus after each key {held:?}"
+                );
                 assert_eq!(app.view.search().map(|search| search.query.as_str()), Some("budxyget"), "searched live");
             }
         }
