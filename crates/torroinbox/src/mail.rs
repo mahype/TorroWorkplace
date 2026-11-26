@@ -182,6 +182,22 @@ pub trait MailSource: Send + Sync {
         remember: bool,
     ) -> impl Future<Output = Result<Item, InboxError>> + Send;
 
+    /// [`MailSource::set_mail_category`], also with the id of the rule `remember` made (issue #992):
+    /// `None` without one or when it was there already. Taking the call back removes only that one.
+    fn set_mail_category_ruled(
+        &self,
+        id: String,
+        category: torro_mail::Category,
+        remember: bool,
+    ) -> impl Future<Output = Result<(Item, Option<String>), InboxError>> + Send;
+
+    /// The category the rule "Always for {sender}" files mail of `sender` under, if there is one
+    /// (issue #992, `inbox.list_rules`): what taking back a replaced rule puts back.
+    fn sender_category(
+        &self,
+        sender: String,
+    ) -> impl Future<Output = Result<Option<torro_mail::Category>, InboxError>> + Send;
+
     /// `inbox.classify_item`: asks the decision model what the mail `id` is, again (task E12.8).
     fn classify_mail(&self, id: String) -> impl Future<Output = Result<Item, InboxError>> + Send;
 
@@ -616,6 +632,19 @@ impl MailSource for InboxClient {
         InboxClient::set_mail_category(self, id, category, remember).await
     }
 
+    async fn set_mail_category_ruled(
+        &self,
+        id: String,
+        category: torro_mail::Category,
+        remember: bool,
+    ) -> Result<(Item, Option<String>), InboxError> {
+        InboxClient::set_mail_category_ruled(self, id, category, remember).await
+    }
+
+    async fn sender_category(&self, sender: String) -> Result<Option<torro_mail::Category>, InboxError> {
+        InboxClient::sender_category(self, sender).await
+    }
+
     async fn classify_mail(&self, id: String) -> Result<Item, InboxError> {
         InboxClient::classify_mail(self, id).await
     }
@@ -875,6 +904,20 @@ impl MailSource for DemoSource {
         _remember: bool,
     ) -> Result<Item, InboxError> {
         DemoSource::set_mail_category(self, &id, category)
+    }
+
+    /// The demo keeps no rules: the mail only.
+    async fn set_mail_category_ruled(
+        &self,
+        id: String,
+        category: torro_mail::Category,
+        _remember: bool,
+    ) -> Result<(Item, Option<String>), InboxError> {
+        DemoSource::set_mail_category(self, &id, category).map(|item| (item, None))
+    }
+
+    async fn sender_category(&self, _sender: String) -> Result<Option<torro_mail::Category>, InboxError> {
+        Ok(None)
     }
 
     async fn classify_mail(&self, id: String) -> Result<Item, InboxError> {
@@ -1238,6 +1281,19 @@ impl MailSource for crate::empty::EmptySource {
         _remember: bool,
     ) -> Result<Item, InboxError> {
         Err(InboxError::Unsupported)
+    }
+
+    async fn set_mail_category_ruled(
+        &self,
+        _id: String,
+        _category: torro_mail::Category,
+        _remember: bool,
+    ) -> Result<(Item, Option<String>), InboxError> {
+        Err(InboxError::Unsupported)
+    }
+
+    async fn sender_category(&self, _sender: String) -> Result<Option<torro_mail::Category>, InboxError> {
+        Ok(None)
     }
 
     async fn classify_mail(&self, _id: String) -> Result<Item, InboxError> {
@@ -1716,6 +1772,9 @@ pub struct MailLook {
     /// What a click on an attachment's name does (task M12.6, `mail_attachments.click`); "Open"
     /// until the core said otherwise, and in the demo.
     pub click: AttachmentClick,
+    /// How long the hint after a change offers "Undo" (issue #992, `mail_undo_seconds`); 10 s until
+    /// the core said otherwise, and in the demo.
+    pub undo_for: torro_core::settings::UndoSeconds,
 }
 
 /// Reads [`MailLook`] from the settings of the core (`settings.get_settings`), on every tick like
@@ -1731,6 +1790,7 @@ pub async fn stored_look(suite: &source::Source) -> Result<MailLook, String> {
             colors: settings.mail_appearance,
             hidden_categories: settings.hidden_categories,
             click: settings.mail_attachments.click,
+            undo_for: settings.mail_undo_seconds,
         }),
         Ok(_) => Err("unexpected answer to settings.get_settings".to_owned()),
         Err(err) => Err(err.to_string()),
@@ -2004,6 +2064,50 @@ pub fn filed_text(pile: Option<MailPile>) -> &'static str {
         None => tr("Archived"),
         Some(MailPile::SetAside) => tr("Archived and removed from Set aside."),
         Some(MailPile::ReplyLater) => tr("Archived and removed from Reply later."),
+    }
+}
+
+/// The hint after archiving `n` marked mails (issue #992, design): with their number when there are
+/// several and they left no pile, else as [`filed_text`] says it.
+pub fn filed_several_text(pile: Option<MailPile>, n: usize) -> String {
+    match (pile, n) {
+        (None, 2..) => trf("{n} messages archived", &[("n", &n)]),
+        _ => filed_text(pile).to_owned(),
+    }
+}
+
+/// The hint after deleting `n` mails into the trash (issue #992, design): with their number when
+/// there are several.
+pub fn trashed_text(n: usize) -> String {
+    match n {
+        2.. => trf("{n} messages moved to Trash", &[("n", &n)]),
+        _ => tr("Moved to Trash").to_owned(),
+    }
+}
+
+/// The hint after marking `n` mails read or unread, flagging or unflagging them by hand (`action`,
+/// issue #992): with their number when there are several. Empty for any other action.
+pub fn marked_text(action: MailAction, n: usize) -> String {
+    let several = n >= 2;
+    match (action, several) {
+        (MailAction::Read(true), false) => tr("Marked as read").to_owned(),
+        (MailAction::Read(false), false) => tr("Marked as unread").to_owned(),
+        (MailAction::Flag(true), false) => tr("Flagged").to_owned(),
+        (MailAction::Flag(false), false) => tr("Unflagged").to_owned(),
+        (MailAction::Read(true), true) => trf("{n} messages marked as read", &[("n", &n)]),
+        (MailAction::Read(false), true) => trf("{n} messages marked as unread", &[("n", &n)]),
+        (MailAction::Flag(true), true) => trf("{n} messages flagged", &[("n", &n)]),
+        (MailAction::Flag(false), true) => trf("{n} messages unflagged", &[("n", &n)]),
+        _ => String::new(),
+    }
+}
+
+/// The hint after filing `n` mails under the category called `name` by hand (issue #992, design):
+/// "Filed under …" – a category is no folder, nothing moved.
+pub fn categorized_text(name: &str, n: usize) -> String {
+    match n {
+        2.. => trf("{n} messages filed under {category}", &[("n", &n), ("category", &name)]),
+        _ => trf("Filed under {category}", &[("category", &name)]),
     }
 }
 
@@ -4675,7 +4779,8 @@ pub struct SelectedMail {
 
 /// The context menu of several marked mails (issue #904): what goes for every one of `mails`, each
 /// acting on all of them. "File" holds Archive, Reply later, Set aside, "Move to folder…" and Delete;
-/// "Mark" Mark read or unread and Flag or Unflag. An item is there only when it works for each mail –
+/// "Torro" "Category…" (issue #992; not for drafts, which have none); "Mark" Mark read or unread and
+/// Flag or Unflag. An item is there only when it works for each mail –
 /// Archive needs an archive folder for each, "Move to folder…" mail of one account (the server moves
 /// within one), a pile mail outside the trash and spam and no draft, "Remove from …" mail that all lie
 /// on that pile. "Mark read" while one is unread, else "Mark unread"; "Flag" while one is unflagged,
@@ -4705,7 +4810,9 @@ pub fn selection_groups<'a>(mails: &[SelectedMail], folders: &[Folder]) -> Vec<R
     }
     if mails.iter().all(|mail| mail.account == mails[0].account) {
         let ask = Some(Message::AskMoveSelected);
-        file.push(RailItem::new(Icon::Folder, tr("Move to folder…"), "", ask).opens_menu());
+        // It opens its folders in place of this menu, not beside it: "…", no chevron (#906, design
+        // review of #992).
+        file.push(RailItem::new(Icon::Folder, tr("Move to folder…"), "", ask));
     }
     if filings.iter().all(|filing| filing.delete) {
         file.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", Some(Message::DeleteSelectedMail)).danger());
@@ -4722,10 +4829,19 @@ pub fn selection_groups<'a>(mails: &[SelectedMail], folders: &[Folder]) -> Vec<R
     let flagged = has(Flag::Flagged);
     let flag = if flagged { tr("Unflag") } else { tr("Flag") };
     let flag = RailItem::new(Icon::Flag, flag, "", Some(Message::MarkSelectedMail(MailAction::Flag(!flagged))));
-    [RailGroup::new(Icon::Check, tr("File"), file), RailGroup::new(Icon::Flag, tr("Mark"), vec![read, flag])]
-        .into_iter()
-        .filter(|group| !group.items.is_empty())
-        .collect()
+    // "Category…" in its own group between File and Mark, as Torro stands for one mail (issue #992,
+    // design): without "Always for {sender}", the mails may come from several senders.
+    // Like "Move to folder…" it opens its list in place of this menu (design review of #992).
+    let category = RailItem::new(Icon::Tag, tr("Category…"), "", Some(Message::AskCategorySelected));
+    let torro = if drafts { Vec::new() } else { vec![category] };
+    [
+        RailGroup::new(Icon::Check, tr("File"), file),
+        RailGroup::new(Icon::ListTodo, tr("Torro"), torro),
+        RailGroup::new(Icon::Flag, tr("Mark"), vec![read, flag]),
+    ]
+    .into_iter()
+    .filter(|group| !group.items.is_empty())
+    .collect()
 }
 
 /// "Reply later" (`w`) and "Set aside" (`b`) for the mail in `reading` (task E19.4): each puts it on
@@ -6559,6 +6675,9 @@ pub struct FocusReply {
     pub at: usize,
     /// What is typed into the field for the mail shown.
     pub reply: text_editor::Content,
+    /// The steps back of that field (issue #992): Ctrl + Z there takes the text back. Only for the
+    /// mail shown; another mail starts without.
+    reply_steps: crate::app::TextBack,
     /// What was typed for the other mails of the round, by id; only replies with text.
     kept: HashMap<String, text_editor::Content>,
     /// The reply is on its way (`MailSource::send_reply`): "Sending…", the field and the buttons
@@ -6744,6 +6863,7 @@ impl FocusReply {
         self.ids.insert(place, id);
         self.at = place;
         self.reply = text_editor::Content::with_text(text);
+        self.reply_steps = crate::app::TextBack::default();
         self.error = None;
     }
 
@@ -6847,10 +6967,29 @@ impl FocusReply {
         }
     }
 
+    /// Performs `action` in the reply field at `now`; a change of its text is a step Ctrl + Z can take
+    /// back (issue #992, [`FocusReply::reply_back`]).
+    pub fn edit(&mut self, action: text_editor::Action, now: std::time::Instant) {
+        if action.is_edit() {
+            self.reply_steps.note(&self.reply.text(), now);
+        }
+        self.reply.perform(action);
+    }
+
+    /// Ctrl + Z in the reply field (issue #992): the text a step back, the cursor at its end. Nothing
+    /// without a step.
+    pub fn reply_back(&mut self) {
+        if let Some(text) = self.reply_steps.back() {
+            self.reply = text_editor::Content::with_text(&text);
+            self.reply.perform(text_editor::Action::Move(text_editor::Motion::DocumentEnd));
+        }
+    }
+
     /// The field of the mail now shown: what was typed for it, else empty; no error of another mail.
     fn arrive(&mut self) {
         let id = self.current().map(str::to_owned);
         self.reply = id.and_then(|id| self.kept.remove(&id)).unwrap_or_default();
+        self.reply_steps = crate::app::TextBack::default();
         self.error = None;
         self.timed_out = false;
     }
@@ -9912,5 +10051,37 @@ mod tests {
         let plain = DemoSource::get_mail(&demo, "m:w3").expect("a mail without");
         assert!(suggestion_mark(&plain.summary).is_none());
         assert!(message_card_height(&mail.summary, 400.0) >= message_card_height(&plain.summary, 400.0));
+    }
+
+    /// Issue #992: Ctrl + Z in the reply of "Focus & reply" takes the text a step back; another mail
+    /// starts without steps.
+    #[test]
+    fn the_reply_field_takes_its_text_back() {
+        use text_editor::{Action, Edit};
+        let mut focus = FocusReply::new(vec!["m:1".into(), "m:2".into()]);
+        let start = std::time::Instant::now();
+        for (at, c) in [(0, 'O'), (200, 'k')] {
+            focus.edit(Action::Edit(Edit::Insert(c)), start + std::time::Duration::from_millis(at));
+        }
+        focus.edit(Action::Edit(Edit::Insert('!')), start + std::time::Duration::from_secs(3));
+        assert_eq!(focus.reply.text().trim_end(), "Ok!");
+        focus.reply_back();
+        assert_eq!(focus.reply.text().trim_end(), "Ok");
+        focus.reply_back();
+        assert_eq!(focus.reply.text().trim_end(), "");
+        focus.reply_back();
+        assert_eq!(focus.reply.text().trim_end(), "", "nothing more to take back");
+    }
+
+    /// Issue #992: the hints of marking say how many mails there were when there were several.
+    #[test]
+    fn marking_hints_count_several_mails() {
+        assert_eq!(marked_text(MailAction::Read(true), 1), tr("Marked as read"));
+        assert_eq!(marked_text(MailAction::Read(false), 3), trf("{n} messages marked as unread", &[("n", &3)]));
+        assert_eq!(marked_text(MailAction::Flag(false), 1), tr("Unflagged"));
+        assert_eq!(trashed_text(1), tr("Moved to Trash"));
+        assert_eq!(filed_several_text(None, 2), trf("{n} messages archived", &[("n", &2)]));
+        assert_eq!(filed_several_text(Some(MailPile::SetAside), 2), tr("Archived and removed from Set aside."));
+        assert_eq!(categorized_text("Invoice", 1), trf("Filed under {category}", &[("category", &"Invoice")]));
     }
 }

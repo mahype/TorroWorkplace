@@ -219,6 +219,11 @@ pub struct Settings {
     /// checked or fetched and no mail shows a logo. On unless a person turned it off.
     #[serde(default = "on")]
     pub mail_sender_logos: bool,
+    /// How long the hint after a change of mail offers "Undo" (issue #992, setting
+    /// `mail_undo_seconds`): 5 to 30 seconds, 10 unless changed. Ctrl + Z takes changes back after it
+    /// as well. A value out of range in the file reads as the default.
+    #[serde(default, skip_serializing_if = "UndoSeconds::is_default", deserialize_with = "lenient")]
+    pub mail_undo_seconds: UndoSeconds,
     /// Reminders of events (task ER1.2, `docs/erinnerungen.md`): whether they come, which events,
     /// and per calendar as a notification or over the whole screen. Read leniently: a value that
     /// does not read gives the defaults, never a settings file that fails.
@@ -858,6 +863,7 @@ impl Default for Settings {
             ai_slots_taken: true,
             mail_contacts_personal: on(),
             mail_sender_logos: on(),
+            mail_undo_seconds: UndoSeconds::default(),
             reminders: Reminders::default(),
             maps: Maps::default(),
             ai_assignments: BTreeMap::new(),
@@ -2817,6 +2823,69 @@ impl From<FocusSlots> for u8 {
     }
 }
 
+/// How long the hint after a change of mail offers "Undo" (issue #992, setting `mail_undo_seconds`):
+/// whole seconds from [`UndoSeconds::MIN`] to [`UndoSeconds::MAX`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "u8", into = "u8")]
+pub struct UndoSeconds(u8);
+
+impl UndoSeconds {
+    /// The shortest: time to read the hint and press "Undo".
+    pub const MIN: u8 = 5;
+    /// The longest: longer, the hint covers the list for no use – Ctrl + Z goes on after it anyway.
+    pub const MAX: u8 = 30;
+    /// Ten seconds, as issue #992 recommends.
+    pub const DEFAULT: UndoSeconds = UndoSeconds(10);
+
+    /// `n` seconds, or `None` when `n` is out of range.
+    pub fn new(n: u8) -> Option<UndoSeconds> {
+        (UndoSeconds::MIN..=UndoSeconds::MAX).contains(&n).then_some(UndoSeconds(n))
+    }
+
+    /// The number of seconds.
+    pub fn get(self) -> u8 {
+        self.0
+    }
+
+    /// The time it stands for.
+    pub fn duration(self) -> std::time::Duration {
+        std::time::Duration::from_secs(u64::from(self.0))
+    }
+
+    /// The setting `mail_undo_seconds` from outside: a whole number in range, or why it is not one.
+    pub fn from_value(value: &serde_json::Value) -> Result<UndoSeconds, String> {
+        value
+            .as_u64()
+            .and_then(|n| u8::try_from(n).ok())
+            .and_then(UndoSeconds::new)
+            .ok_or_else(|| format!("{value} is not a time for undo: send a whole number of seconds from 5 to 30"))
+    }
+
+    fn is_default(&self) -> bool {
+        *self == UndoSeconds::DEFAULT
+    }
+}
+
+impl Default for UndoSeconds {
+    fn default() -> UndoSeconds {
+        UndoSeconds::DEFAULT
+    }
+}
+
+impl TryFrom<u8> for UndoSeconds {
+    type Error = String;
+
+    fn try_from(n: u8) -> Result<UndoSeconds, String> {
+        UndoSeconds::new(n).ok_or_else(|| format!("{n} seconds for undo are out of range"))
+    }
+}
+
+impl From<UndoSeconds> for u8 {
+    fn from(seconds: UndoSeconds) -> u8 {
+        seconds.0
+    }
+}
+
 /// How many days the history of postponed tasks is kept (issue #623, `docs/aufschieben.md`, setting
 /// `postpone_retention`): a whole number from [`PostponeRetention::MIN`] to [`PostponeRetention::MAX`]. A
 /// number outside is clamped to the nearest end, from outside as in the file, so a typo never costs the
@@ -3639,6 +3708,7 @@ mod tests {
             ai_slots_taken: true,
             mail_contacts_personal: true,
             mail_sender_logos: true,
+            mail_undo_seconds: UndoSeconds::DEFAULT,
             reminders: Reminders::default(),
             maps: Maps::default(),
             ai_assignments: BTreeMap::new(),
@@ -3730,6 +3800,18 @@ mod tests {
             assert!(written.get(gone).is_none(), "{gone} is never written again: {written}");
         }
         assert!(written["tools"].get("enabled").is_none(), "{written}");
+    }
+
+    #[test]
+    fn undo_seconds_are_ten_and_only_from_five_to_thirty() {
+        assert_eq!(Settings::default().mail_undo_seconds.get(), 10);
+        assert_eq!(UndoSeconds::new(4), None);
+        assert_eq!(UndoSeconds::new(31), None);
+        assert_eq!(UndoSeconds::from_value(&serde_json::json!(30)).map(UndoSeconds::get), Ok(30));
+        assert!(UndoSeconds::from_value(&serde_json::json!("10")).is_err(), "a number only");
+        let read = |text: &str| serde_json::from_str::<Settings>(text).expect("settings").mail_undo_seconds.get();
+        assert_eq!(read(r#"{"mailUndoSeconds": 99}"#), 10, "out of range reads as the default");
+        assert_eq!(read(r#"{"mailUndoSeconds": 15}"#), 15);
     }
 
     #[test]
@@ -3951,6 +4033,7 @@ mod tests {
             ai_slots_taken: true,
             mail_contacts_personal: false,
             mail_sender_logos: false,
+            mail_undo_seconds: UndoSeconds::new(20).expect("in range"),
             reminders: Reminders {
                 default_lead: None,
                 calendars: BTreeMap::from([("work".to_string(), CalendarReminders::FullScreen)]),
