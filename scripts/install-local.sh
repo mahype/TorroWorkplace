@@ -20,8 +20,9 @@
 #          restarted (`launchctl kickstart -k`, or `bootstrap` when the agent is not loaded), up to three times,
 #          since macOS may kill the first start of a replaced program (OS_REASON_CODESIGNING), and checked: a new
 #          process that runs the file just installed.
-# Both:    a service of this user started outside systemd or launchd (by an app, or one that took over from
-#          another copy) holds the service's lock (`torroworkplace service-lock`); it is ended first. Apps still
+# Both:    every service of this user that holds the service's lock (`torroworkplace service-lock`): one an app
+#          started, one that took over from another copy, launchd's own; it is ended first, and the new service is
+#          started only once `torroworkplace service-lock free` finds the lock free twice, a pause apart. Apps still
 #          running a replaced program of the suite are named afterwards by program, role and pid. With
 #          --restart-apps they are ended with SIGTERM and started again: SIGTERM skips an app's own question
 #          before closing, so input not saved in them is lost. Compose windows, reminders, MCP servers, the
@@ -135,7 +136,7 @@ runs_file() {
         *)
             [ "$(process_path "$pid")" = "$file" ] || return 1
             # One line `<device> <inode>` per file of lsof's field output (`f` starts a file, `D` in hex).
-            { lsof -a -p "$pid" -d txt -FDi 2>/dev/null || true; } | awk '
+            { lsof -a -p "$pid" -d txt -FfDi 2>/dev/null || true; } | awk '
                 /^f/ { if (seen) print d, i; d = ""; i = ""; seen = 1; next }
                 /^D/ { d = substr($0, 2) } /^i/ { i = substr($0, 2) }
                 END { if (seen) print d, i }' | {
@@ -160,16 +161,22 @@ lock_holders() {
         $2 != "->" { n = split($6, dev, ":"); if (n == 3 && dev[3] == ino) print $5 }'
 }
 
-# Whether `pid` holds the service's lock `lock`: Linux, a lock on that inode in /proc/locks for this pid and the
-# file open in it; macOS, the file open (lsof cannot show locks there; `service-lock free` decides afterwards).
+# Whether `pid` holds the service's lock `lock`. Linux: one of its descriptors is the lock file itself (device and
+# inode after resolving links, so a state directory behind a symlink is no other file) and its fdinfo shows an
+# exclusive flock taken by this pid (`lock: … FLOCK ADVISORY WRITE <pid>`; a waiting one is marked `->`). macOS:
+# the file open (lsof shows no locks there); `service-lock free` decides afterwards.
 holds_lock() {
-    local pid="$1" lock="$2" fd open=1
+    local pid="$1" lock="$2" fd want
     case "$os" in
         Linux)
+            want="$(file_id "$lock")"
+            [ -n "$want" ] || return 1
             for fd in "$proc/$pid/fd/"*; do
-                [ "$(readlink "$fd" 2>/dev/null || true)" = "$lock" ] && { open=0; break; }
+                [ "$(file_id "$fd")" = "$want" ] || continue
+                awk -v pid="$pid" '$1 == "lock:" && $3 == "FLOCK" && $4 == "ADVISORY" && $5 == "WRITE" && $6 == pid {
+                    found = 1 } END { exit !found }' "$proc/$pid/fdinfo/${fd##*/}" 2>/dev/null && return 0
             done
-            [ "$open" = 0 ] && lock_holders "$lock" | grep -qx "$pid"
+            return 1
             ;;
         *) { lsof -a -p "$pid" -t -- "$lock" 2>/dev/null || true; } | grep -qx "$pid" ;;
     esac
@@ -215,19 +222,18 @@ wait_gone() {
     done
 }
 
-# Ends every service of this user that holds `lock` except `keep` (the one systemd or launchd runs): it would make
-# the new service give up as "already running". SIGTERM ends it like `systemctl --user stop` does; its identity is
-# read again right before the signal, and a signal that fails is an error. Without `keep` it succeeds only once the
-# new program `program` finds the lock free twice, a pause apart: a service taking over from another one (`daemon
-# --takeover`) asks for the lock every 250 ms and gets it once that one ended, so this looks again, up to five
-# rounds. With `keep` (launchd's own service holds the lock) it succeeds once a round finds nothing to end.
-end_stray_daemons() {
-    local keep="$1" lock="$2" program="$3" round=0 pid id ended rc held
+# Ends every service of this user that holds `lock`, whoever started it (an app, a takeover, launchd): it would
+# make the new service give up as "already running". SIGTERM ends it like `systemctl --user stop` does; its
+# identity is read again right before the signal, and a signal that does not reach a living process is an error.
+# It succeeds only once the new program `program` finds the lock free twice, a pause apart: a service taking over
+# from another one (`daemon --takeover`) asks for the lock every 250 ms and gets it once that one ended, so this
+# looks again, up to five rounds. Only then may the new service be started.
+end_services() {
+    local lock="$1" program="$2" round=0 pid id ended rc held
     while [ "$round" -lt 5 ]; do
         round=$((round + 1))
         ended=""
         for pid in $(pgrep -U "$uid" -f torroworkplace 2>/dev/null || true); do
-            [ "$pid" = "$keep" ] && continue
             id="$(service_id "$pid" "$lock")" || continue
             [ "$(service_id "$pid" "$lock" || true)" = "$id" ] || continue
             if ! kill "$pid" 2>/dev/null; then
@@ -239,16 +245,12 @@ end_stray_daemons() {
             ended="$ended $pid"
         done
         if [ -n "$ended" ]; then
-            say "ended the service started outside the system's service manager (pid${ended})"
+            say "ended the running service (pid${ended})"
             # shellcheck disable=SC2086 # one pid per word
             if ! wait_gone $ended; then
                 warn "the old service (pid${ended}) did not end"
                 return 1
             fi
-        fi
-        if [ -n "$keep" ]; then
-            [ -n "$ended" ] || return 0
-            continue
         fi
         rc=0
         lock_free "$program" || rc=$?
@@ -371,7 +373,7 @@ unit_runs() {
 restart_service_linux() {
     local bin="$1" old="${2:-}" pid out lock
     lock="$(service_lock "$bin/torroworkplace")"
-    if [ -z "$lock" ] || ! end_stray_daemons "" "$lock" "$bin/torroworkplace"; then
+    if [ -z "$lock" ] || ! end_services "$lock" "$bin/torroworkplace"; then
         warn "the service was not restarted"
         status=1
         return 0
@@ -587,7 +589,7 @@ restart_service_macos() {
         fi
         # The setting changes only once the lock is shown free; `login-item enable` then holds it itself while it
         # changes the setting, so no service starts and writes settings.json meanwhile.
-        if [ -z "$lock" ] || ! end_stray_daemons "" "$lock" "$svc"; then
+        if [ -z "$lock" ] || ! end_services "$lock" "$svc"; then
             warn "cannot make sure no service runs; \"Start at login\" was not changed, the service not restarted"
             status=1
             return 0
@@ -603,7 +605,9 @@ restart_service_macos() {
                 return 0
             fi
         fi
-    elif [ -z "$lock" ] || ! end_stray_daemons "$(launchd_pid "$target")" "$lock" "$svc"; then
+    # Otherwise launchd's own service ends here too, so the lock is shown free before kickstart starts the new
+    # one: a takeover successor waiting for it cannot slip in between.
+    elif [ -z "$lock" ] || ! end_services "$lock" "$svc"; then
         warn "the service was not restarted"
         status=1
         return 0
@@ -725,7 +729,11 @@ process_role() {
         echo "compose window"
         return 0
     fi
-    if printf '%s\n' "$args" | grep -qx -- --reminders; then
+    # The calendar's reminder window also opens with `--open reminder…` or `--open=reminder…` (its demo states,
+    # crates/torrocalendar/src/reminder.rs).
+    if printf '%s\n' "$args" | grep -qx -e --reminders -e '--open=reminder.*' \
+        || printf '%s\n' "$args" | awk 'prev == "--open" && /^reminder/ { found = 1 } { prev = $0 }
+            END { exit !found }'; then
         echo reminder
         return 0
     fi

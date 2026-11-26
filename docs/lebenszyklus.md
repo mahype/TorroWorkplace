@@ -127,25 +127,29 @@ zeigt, entlädt es ihn vorher (`bootout`, bei jedem Lauf geprüft). Als entladen
 es nicht“ meldet (Exit 113); scheitert die Abfrage selbst, bricht es ab. Fehlt der Agent oder startet er ein anderes
 Programm, schaltet `torroworkplace login-item enable` des neuen Dienstes die Einstellung ein (dieselbe Logik wie in der
 Oberfläche, Plist atomar ersetzt). Das geschieht erst, wenn der Dienst-Lock nachweislich frei ist, und `login-item
-enable` hält den Lock selbst, solange es die Einstellung ändert; so kann währenddessen kein Dienst starten. Danach
-`launchctl kickstart -k` bzw. `bootstrap`, mit bis zu drei Versuchen, weil macOS den ersten Start eines ersetzten
-Programms abbrechen kann (`OS_REASON_CODESIGNING`).
+enable` nimmt und hält den Lock selbst, solange es die Einstellung ändert; lässt er sich nicht nehmen (ein Dienst
+läuft, die Datei lässt sich nicht öffnen oder sperren), ändert es nichts. Vor jedem Start, auch bei unverändertem
+Agent, endet zuerst jeder Dienst, der den Lock hält, launchds eigener eingeschlossen, und der Lock muss zweimal frei
+sein. Erst dann folgt `launchctl kickstart -k` bzw. `bootstrap`, mit bis zu drei Versuchen, weil macOS den ersten
+Start eines ersetzten Programms abbrechen kann (`OS_REASON_CODESIGNING`).
 
-Ein Dienst des Benutzers außerhalb von systemd oder launchd (von einer App gestartet oder per Takeover) wird vorher
-beendet. Erkannt wird er am Dienst-Lock (`torroworkplace service-lock`, die Datei `service.lock` im State-Verzeichnis):
-auf Linux an seinem flock in `/proc/locks` (pid und Inode) und der offenen Datei, auf macOS an der offenen Datei, weil
-`lsof` dort keine Sperren zeigt. Dazu kommen Eigentümer, Programmname und Subkommando `daemon`; die Argumente werden
+Jeder Dienst des Benutzers, der den Dienst-Lock hält (von einer App gestartet, per Takeover oder von launchd), wird
+vor dem Start beendet. Erkannt wird er am Lock (`torroworkplace service-lock`, die Datei `service.lock` im
+State-Verzeichnis): auf Linux an einem Deskriptor, der dieselbe Datei ist (Gerät und Inode nach Auflösung von Links,
+ein State-Verzeichnis hinter einem Symlink zählt also), und dessen `fdinfo` eine exklusive flock-Sperre dieses
+Prozesses zeigt (`FLOCK ADVISORY WRITE <pid>`; wartende Sperren sind mit `->` markiert und zählen nicht); auf macOS an
+der offenen Datei, weil `lsof` dort keine Sperren zeigt. Dazu kommen Eigentümer, Programmname und Subkommando `daemon`; die Argumente werden
 gelesen, nicht an der Dateigröße gemessen (procfs meldet für `cmdline` 0). Seine Identität (Startzeit, Programm) wird
 zwischen zwei Lesungen der Startzeit erfasst und direkt vor dem Signal noch einmal geprüft. Ein Signal, das einen noch
 laufenden Dienst nicht erreicht, ist ein Fehler. Erfolg gilt erst, wenn `torroworkplace service-lock free` (eine echte
-Sperrprobe) den Lock zweimal im Abstand einer Pause frei findet: Ein Takeover-Nachfolger fragt alle 250 ms nach dem
+Sperrprobe) den Lock zweimal im Abstand einer Pause frei findet, auf jedem Weg: Ein Takeover-Nachfolger fragt alle 250 ms nach dem
 Lock und bekommt ihn, sobald der alte endet. Ihn findet die nächste Runde (bis zu fünf). Bleibt der Lock belegt, bricht
 das Skript ab, ohne neu zu starten oder die Einstellung zu ändern.
 
 Apps, die noch ein ersetztes Programm ausführen, nennt das Skript mit Programm, Rolle und PID. `--restart-apps` beendet
 sie mit SIGTERM und startet sie neu. SIGTERM umgeht die eigene Rückfrage einer App vor dem Schließen, ungespeicherte
 Eingaben gehen also verloren. Schreibfenster (`--compose`, auch nach `--view mail`), Erinnerungen (`--reminders`,
-`torro-reminder`), MCP-Server, Helfer des Dienstes und Prozesse, deren Argumente sich nicht lesen lassen, nennt es nur.
+`--open reminder…`, `torro-reminder`), MCP-Server, Helfer des Dienstes und Prozesse, deren Argumente sich nicht lesen lassen, nennt es nur.
 
 Ein Tray-Icon und die Einrichtung zeigt der Dienst nur, wenn die Hauptanwendung installiert ist, egal wer
 ihn startet. Ohne sie läuft er still wie mit `--headless` (#408, [einzelne-apps.md](einzelne-apps.md),
