@@ -16,7 +16,7 @@
 //! Its sidebar (issues #337, #445, #455 and #559) starts with "All"
 //! (the mail of every inbox, with the unread mail it holds, [`App::top_entries`]) right above the groups
 //! of categories without a title; after a gap Reply later and Set aside (the piles, with the mail they hold) and Follow up (tasks E18.4 and E19.4,
-//! [`App::nav_entries`]); then "Folders" with Archive, pinned folders and an on-demand
+//! [`App::nav_entries`]); then "Folders" with Drafts, Archive (issue #993), Sent, Trash, pinned folders and an on-demand
 //! folder browser grouped by account ([`App::folder_entries`]); no sources. At the foot, "New email"
 //! stands directly above the account field, which chooses the accounts shown (issue #559). In the
 //! comfortable density mail shows as cards with their buttons always shown ([`App::look`],
@@ -130,9 +130,12 @@
 //! asking "always for this source?" ([`Edit::Lane`]), and hide it from the inbox (`m` or the
 //! panel's "…", task E3.10, [`Menu::Hide`]): "This entry" (done) and muting or unmuting the source
 //! at once (E3.2c: no dialog – a change with an undo needs no question as well); mail has the
-//! bell's menu instead (above). Every change shows a toast for
-//! [`UNDO_FOR`] (`widgets::toast`, task E3.11) with "Undo" (`u`, and Ctrl + Z / ⌘ + Z in the whole
-//! window), which sends the change that puts it back ([`Undo`]); Escape takes the toast away. Muting
+//! bell's menu instead (above). Every change shows a toast (`widgets::toast`, task E3.11) with
+//! "Undo" (`u`, and Ctrl + Z / ⌘ + Z in the whole window) for as long as the setting
+//! `mail_undo_seconds` says (10 s unless changed, issue #992), which sends the change that puts it
+//! back ([`Undo`]); Escape takes the toast away. Once the toast went, the newest 20 changes stay in
+//! a history that Ctrl + Z, `u` take back one by one ([`App::history`]); a toast without undo leaves
+//! it. Muting
 //! is undone exactly: a rule the call made is removed and the entries it closed or moved come back
 //! ([`Undo::Muted`]). A change that takes the entry off the
 //! list moves the cursor – and the panel – to the row that took its place, so `e`, `e`, `e` works
@@ -309,13 +312,18 @@ const FOLDER_CACHE: usize = 8;
 /// shows again.
 const LEAVING_GRACE: Duration = Duration::from_secs(5);
 
-/// How long the toast after a change shows, and with it "Undo" (`u`, Ctrl + Z): the suite's
-/// [`widgets::TOAST_FOR`].
+/// How long a toast without "Undo" shows – what happened, why nothing did, "Undone: …": the suite's
+/// [`widgets::TOAST_FOR`]. One with "Undo" shows as long as the setting `mail_undo_seconds` says
+/// (issue #992, [`App::hint_for`]).
 pub const UNDO_FOR: Duration = widgets::TOAST_FOR;
 
 /// How often a shown hint checks whether its time is up. Only while a hint shows; also while a reply
 /// of "Focus & reply" is on its way, for [`SEND_TIMEOUT`].
 const HINT_TICK: Duration = Duration::from_secs(1);
+
+/// How many changes the window keeps to take back with Ctrl + Z (issue #992): the newest
+/// [`HISTORY_LEN`], only while the window runs.
+const HISTORY_LEN: usize = 20;
 
 /// How long "Focus & reply" waits for the answer to "Send" (fifth review of #315): the round holds
 /// the window while a reply is on its way ([`App::holds_round`]), and the way through the core has
@@ -852,10 +860,28 @@ pub enum Undo {
     /// goes to the core only once its undo is over ([`App::send_dismissals`]), so nothing is undone
     /// there.
     Suggestion { id: String, kind: String },
+    /// Takes marking read or unread, flagging or unflagging back (issue #992): each edit sets the
+    /// flag back on the mails whose flag the change turned (`mail.set_flags`), and only those.
+    Flags(Vec<MailEdit>),
+    /// Takes a category set by hand back (issue #992): each mail `back` to the category it had
+    /// (`inbox.set_item_category`), after taking back the rule "Always for {sender}" the change made:
+    /// the one it `replaced` comes back (the core keeps one per sender, so filing the first mail with
+    /// it again replaces the new one), else the new one `rule` is removed (`inbox.remove_rule`; one
+    /// gone already is no reason to leave the mail where it is).
+    Category { back: Vec<(String, torro_mail::Category)>, rule: Option<String>, replaced: Option<torro_mail::Category> },
+}
+
+/// A change taken back with Ctrl + Z after its hint went (issue #992, [`App::history`]): what its
+/// hint said and its undo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kept {
+    pub text: String,
+    pub undo: Undo,
 }
 
 /// A suggestion dismissed on its card and not sent yet (issue #603, [`Undo::Suggestion`]): sent with
-/// `mail.dismiss_suggestion` once [`UNDO_FOR`] is over; until then "Undo" brings the card back.
+/// `mail.dismiss_suggestion` once the time of its undo is over (`mail_undo_seconds`); until then "Undo"
+/// brings the card back.
 #[derive(Debug, Clone)]
 struct Dismissing {
     account: String,
@@ -867,7 +893,54 @@ struct Dismissing {
     held: Option<torro_ipc::actions::Suggestion>,
 }
 
+/// The steps back of a text field (issue #992): Iced's fields have none of their own, so Ctrl + Z in
+/// the search field and the reply of "Focus & reply" takes the text back by these. Typing within
+/// [`TextBack::BURST`] of the last change is one step, so Ctrl + Z takes a word or a paste back, not
+/// a letter.
+#[derive(Debug, Clone, Default)]
+pub struct TextBack {
+    /// The texts before each step, oldest first, at most [`TextBack::LEN`].
+    past: Vec<String>,
+    /// When the last change came.
+    last: Option<Instant>,
+}
+
+impl TextBack {
+    /// How close changes come to make one step.
+    pub const BURST: Duration = Duration::from_secs(1);
+    /// How many steps a field keeps.
+    pub const LEN: usize = 100;
+
+    /// Notes `before`, the text before a change at `now`: a new step, unless the change follows the
+    /// last within [`TextBack::BURST`].
+    pub fn note(&mut self, before: &str, now: Instant) {
+        let joins = self.last.is_some_and(|last| now.saturating_duration_since(last) < Self::BURST);
+        self.last = Some(now);
+        if joins || self.past.last().is_some_and(|held| held == before) {
+            return;
+        }
+        self.past.push(before.to_owned());
+        if self.past.len() > Self::LEN {
+            self.past.remove(0);
+        }
+    }
+
+    /// The text a step back, which is then no longer kept; `None` when there is none. The next change
+    /// is a step of its own.
+    pub fn back(&mut self) -> Option<String> {
+        self.last = None;
+        self.past.pop()
+    }
+}
+
 impl Undo {
+    /// Whether the history keeps it once its hint goes (issue #992): every change the core takes
+    /// back – not the round of "Focus & reply" (a new round makes it void) and not a dismissed
+    /// suggestion, which goes to the core once its hint's time is over.
+    pub fn kept(&self) -> bool {
+        !matches!(self, Undo::Focus(_) | Undo::Removed { .. } | Undo::Suggestion { .. })
+    }
+
     /// The undo of muting that answered `muted`; `None` when it changed nothing (no new rule, no
     /// entry closed or moved – the same rule was there already, or "No popup" for good).
     pub fn of_muted(muted: &Muted) -> Option<Undo> {
@@ -882,7 +955,7 @@ impl Undo {
 pub struct Hint {
     pub text: String,
     pub undo: Option<Undo>,
-    /// When it appeared; it goes [`UNDO_FOR`] later.
+    /// When it appeared; it goes [`App::hint_for`] later.
     pub shown: Instant,
     /// "Show in folder" after attachments were saved (task M12.6): the folder of the first file,
     /// opened in the file manager as `mail::open_attachment` opens the folder of a program. A hint
@@ -1297,6 +1370,12 @@ pub enum Sent {
     MuteItem(String, MuteScope, Option<DateTime<Utc>>, MuteEffect),
     /// The undo of muting: the rule removed, if any, the entries opened again and moved back.
     Unmute(Option<String>, Vec<String>, Vec<String>),
+    /// `inbox.set_item_category` by hand (issue #992): the mails and categories, whether "Always" was
+    /// on.
+    SetCategory(Vec<(String, torro_mail::Category)>, bool),
+    /// The undo of a category set by hand (issue #992): the mails back in these categories, after the
+    /// rule removed, if any.
+    Category(Vec<(String, torro_mail::Category)>, Option<String>),
     /// `accounts.sync` (task E10.1, the shortcut "fetch").
     Fetch,
     /// `mail.list_save_targets` for the message with this id (task M12.6).
@@ -1360,14 +1439,18 @@ pub enum View {
     Sent,
     /// "Trash" under "Folders" of the mail window (issue #455): the mail in the trash folders of every
     /// account shown ([`Role::Trash`]), as "Sent" lists its role, without a number. Deleting there
-    /// is refused as for any mail in the trash. `mail.*` only. (The archive has no view of its own
-    /// since issue #476: the search's filter "Only archive" lists it.)
+    /// is refused as for any mail in the trash. `mail.*` only.
     Trash,
     /// "Drafts", the first row under "Folders" of the mail window (issue #502): the mail in the
     /// drafts folders of every account shown ([`Role::Drafts`]), as "Trash" lists its role, without
     /// a number. A draft opens in the reader, "Continue writing" in the compose window. `mail.*`
     /// only.
     Drafts,
+    /// "Archive" under "Folders" of the mail window (issue #993, back after issue #476 took it out): the
+    /// mail in the archive folders of every account shown ([`Role::Archive`]), as "Trash" lists its
+    /// role, without a number. The search's filter "Only archive" (issue #476) stays beside it.
+    /// `mail.*` only.
+    Archive,
     /// The pile "Reply later" of the mail window (task E19.4, decisions 1 and 3 of E19): the mail put
     /// there, from every folder but the trash and spam of every account shown, newest first, a page
     /// at a time (`MailSource::mail_in_pile`). `mail.*` only.
@@ -1395,6 +1478,7 @@ impl View {
             | View::Sent
             | View::Trash
             | View::Drafts
+            | View::Archive
             | View::ReplyLater
             | View::SetAside => return None,
         };
@@ -1421,6 +1505,7 @@ impl View {
             View::Sent => tr("Sent").into(),
             View::Trash => tr("Trash").into(),
             View::Drafts => tr("Drafts").into(),
+            View::Archive => tr("Archive").into(),
             View::ReplyLater => tr("Reply later").into(),
             // The pile, not the action (decision 11 of E19): "Beiseitegelegt", not "Beiseitelegen".
             View::SetAside => trc("pile", "Set aside").into(),
@@ -1443,6 +1528,7 @@ impl View {
             View::Sent => Icon::Send,
             View::Trash => Icon::Trash2,
             View::Drafts => Icon::FilePenLine,
+            View::Archive => mail::folder_icon(Some(Role::Archive)),
             View::ReplyLater => Icon::MessageSquareReply,
             View::SetAside => Icon::Bookmark,
         }
@@ -1469,6 +1555,7 @@ impl View {
                 | View::Sent
                 | View::Trash
                 | View::Drafts
+                | View::Archive
                 | View::ReplyLater
                 | View::SetAside
         )
@@ -1511,21 +1598,22 @@ impl View {
             View::Sent => Some("sent".to_owned()),
             View::Trash => Some("trash".to_owned()),
             View::Drafts => Some("drafts".to_owned()),
+            View::Archive => Some("archive".to_owned()),
             View::ReplyLater => Some("reply-later".to_owned()),
             View::SetAside => Some("set-aside".to_owned()),
             _ => None,
         }
     }
 
-    /// The folder role and snoozed mail of "All", "Sent", "Trash" and "Drafts" (task E18.4, issues
-    /// #445, #455, #502),
-    /// as `MailSource::mail_by_role` asks for them; `None` for every other view.
+    /// The folder role and snoozed mail of "All", "Sent", "Trash", "Drafts" and "Archive" (task E18.4,
+    /// issues #445, #455, #502, #993), as `MailSource::mail_by_role` asks for them; `None` for every other view.
     pub fn by_role(&self) -> Option<(Role, Option<bool>)> {
         match self {
             View::All => Some((Role::Inbox, Some(false))),
             View::Sent => Some((Role::Sent, None)),
             View::Trash => Some((Role::Trash, None)),
             View::Drafts => Some((Role::Drafts, None)),
+            View::Archive => Some((Role::Archive, None)),
             _ => None,
         }
     }
@@ -1827,6 +1915,16 @@ pub enum Open {
     /// "All" with its first three mails marked and the context menu of the second open (issue #904):
     /// the menu for every marked mail.
     MailContextSelection,
+    /// The same with "Category ▸" of the marked mail open (issue #992).
+    MailContextSelectionCategory,
+    /// "All" with the hint after archiving its first mail, with "Undo" (issue #992).
+    MailUndo,
+    /// "All" with the hint after a change was taken back: "Undone: Archived" (issue #992).
+    MailUndone,
+    /// "All" with the hint after taking a change back failed (issue #992).
+    MailUndoError,
+    /// "All" with its first three mails marked read together and the hint with "Undo" (issue #992).
+    MailMarkedSeveral,
     /// The mail window's "Waiting for me" open and shown, the group with the most categories of
     /// the demo (issue #300); set once the catalogue is in.
     CategoryGroup,
@@ -1840,8 +1938,8 @@ pub enum Open {
     Caught,
     /// The mail window's "Sent" below "All" (issue #445): the mail of every sent folder.
     Sent,
-    /// The archive of every account (task E18.4; since issue #476 the search's "Only archive"): "All"
-    /// with `in:archive` in the field.
+    /// "Archive" of the mail window (task E18.4, issue #993): the archived mail of every account. In
+    /// another window the search's "Only archive" (issue #476), `in:archive` in the field.
     Archive,
     /// "All" of the mail window with the filter menu open and the field empty (issue #476): the group
     /// "Archive" at its default "Without archive".
@@ -1960,7 +2058,7 @@ impl Open {
                 | Self::SaveShortened
         )
     }
-    const ALL: [(&'static str, Open); 144] = [
+    const ALL: [(&'static str, Open); 149] = [
         ("workflow-setup", Open::WorkflowSetup),
         ("workflow-template", Open::WorkflowTemplate),
         ("workflow-test", Open::WorkflowTest),
@@ -2061,6 +2159,11 @@ impl Open {
         ("context-category", Open::ContextCategory),
         ("context-save", Open::ContextSave),
         ("mail-context-selection", Open::MailContextSelection),
+        ("mail-context-selection-category", Open::MailContextSelectionCategory),
+        ("mail-undo", Open::MailUndo),
+        ("mail-undone", Open::MailUndone),
+        ("mail-undo-error", Open::MailUndoError),
+        ("mail-marked-several", Open::MailMarkedSeveral),
         ("category-group", Open::CategoryGroup),
         ("category", Open::Category),
         ("category-menu", Open::CategoryMenu),
@@ -2612,6 +2715,7 @@ impl Launch {
             colors: self.mail_colors.unwrap_or(stored.colors),
             hidden_categories: stored.hidden_categories,
             click: stored.click,
+            undo_for: stored.undo_for,
         }
     }
 
@@ -3212,6 +3316,9 @@ pub struct App<S> {
     /// The marked mail "Move to folder" was opened for from their context menu (issue #904): its
     /// choices move them all ([`App::move_choices`]); `None` while it acts on `mail_subject`.
     move_selection: Option<Vec<String>>,
+    /// The marked mail "Category ▸" was opened for from their context menu (issue #992): a category
+    /// picked files them all; `None` while the menu acts on `subject`.
+    category_selection: Option<Vec<String>>,
     /// The row right-clicked in the marking (issue #904): a message's id in a folder, an entry's in a
     /// view of entries. Its menu and "Move to folder" hang there, not at the cursor's row
     /// ([`App::anchored_row`]).
@@ -3262,6 +3369,17 @@ pub struct App<S> {
     mute_effect: MuteEffect,
     /// The hint after the last change, with its undo.
     hint: Option<Hint>,
+    /// The changes to take back once their hint went (issue #992), oldest first, at most
+    /// [`HISTORY_LEN`]: Ctrl + Z, `u` and "Undo" take the hint's undo first, then these from the
+    /// newest. A hint without undo leaves them; only the window's end forgets them.
+    history: Vec<Kept>,
+    /// Set by [`App::undo`] while a message is handled: the hint's undo was taken, not lost.
+    undid: bool,
+    /// When the hint that says an undo failed appeared (issue #992): that hint, and only while it
+    /// stands, shows as a failure ([`widgets::toast_error`]); any later hint has another time.
+    failed_hint: Option<Instant>,
+    /// The steps back of the search field (issue #992): Ctrl + Z there takes the text back.
+    search_back: TextBack,
     /// The messages archived or deleted here whose move is on its way or not yet seen in a load
     /// (issue #205): they and their entries stay out of every list until the core is through.
     leaving: Vec<Leaving>,
@@ -3612,9 +3730,16 @@ pub enum Message {
     Edit(Edit),
     /// The source's answer to an [`Edit`], with the hint to show (`None` after an undo).
     Edited(Result<Box<Item>, String>, Option<After>),
-    /// "Undo" in the hint, or `u`: send the hint's undo.
+    /// "Undo" in the hint, or `u`: send the hint's undo, else the newest of the history (issue #992).
     Undo,
-    /// The hint's timer: the hint goes once [`UNDO_FOR`] has passed.
+    /// Ctrl + Z (⌘ + Z, issue #992): a text field with the focus takes it, else it is [`Message::Undo`].
+    UndoKey,
+    /// The widget with the focus when Ctrl + Z came ([`App::undo_key`]).
+    UndoKeyChecked(Option<iced::widget::Id>),
+    /// The core's answer to an undo of mail (issue #992): the mails it moved back and what the hint of
+    /// the change said. A failure says so in the hint.
+    Undid(Result<(), String>, Vec<String>, String),
+    /// The hint's timer: the hint goes once its time has passed ([`App::hint_for`]).
     HintTick(Instant),
     /// The timer of a reply of "Focus & reply" on its way: after [`SEND_TIMEOUT`] the round lets go
     /// (fifth review of #315).
@@ -3657,6 +3782,15 @@ pub enum Message {
     Reclassify(String),
     /// What came back from filing or re-asking: the entry, or why it did not work.
     Categorized(Box<Result<Item, String>>),
+    /// What came back from filing mail by hand (issue #992): the rule "Always for {sender}" made, if
+    /// any, or why it did not work; and the hint to show, whose undo takes that rule along.
+    CategorySet(Result<(Option<String>, Option<torro_mail::Category>), String>, Box<Hint>),
+    /// What came back from filing several marked mails (issue #992): those filed, why the next one
+    /// was not, the hint for all of them and the category's name.
+    CategoriesSet(Vec<String>, Option<String>, Box<Hint>, String),
+    /// "Category…" in the context menu of the marked mail (issue #992): the categories to file them
+    /// all under.
+    AskCategorySelected,
     /// From the hide menu: mute the source of the entry with this id, or unmute it – at once,
     /// with an undo.
     AskMute(String),
@@ -4467,9 +4601,9 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
                 category_selected(&*inbox, view.categories(), limit, None, order, mail_accounts.as_deref()).await?;
             Some(page)
         }
-        // "All", "Sent", "Trash" and "Drafts" (task E18.4, issues #445, #455, #502): the mail of one
-        // folder role of every account shown, as the core leaves out what is snoozed.
-        View::All | View::Sent | View::Trash | View::Drafts => {
+        // "All", "Sent", "Trash", "Drafts" and "Archive" (task E18.4, issues #445, #455, #502, #993): the
+        // mail of one folder role of every account shown, as the core leaves out what is snoozed.
+        View::All | View::Sent | View::Trash | View::Drafts | View::Archive => {
             Some(role_selected(&*inbox, &view, limit, None, order, mail_accounts.as_deref()).await?)
         }
         // A pile (task E19.4): its mail from every folder of the accounts shown.
@@ -4868,8 +5002,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 Some(Open::Snoozed) => View::Snoozed,
                 Some(Open::Done) => View::Done,
                 Some(Open::Sent) => View::Sent,
-                // The archive is a search of "All" since issue #476 (the field is filled once the list
-                // is in, `open_launched`); a pinned folder shows beside "All".
+                // "Archive" under "Folders" (issue #993).
+                Some(Open::Archive) if mail_window => View::Archive,
+                // The filter "Only archive" is a search of "All" (issue #476; the field is filled once
+                // the list is in, `open_launched`); a pinned folder shows beside "All". ("archive" stays
+                // in the pattern, though the row above takes it: shorter, rustfmt re-indents this block.)
                 Some(
                     Open::Archive
                     | Open::ArchiveMenu
@@ -4934,6 +5071,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     | Open::ContextCategory
                     | Open::ContextSave
                     | Open::MailContextSelection
+                    | Open::MailContextSelectionCategory
+                    | Open::MailUndo
+                    | Open::MailUndone
+                    | Open::MailUndoError
+                    | Open::MailMarkedSeveral
                     | Open::Invitations
                     | Open::Invitation
                     | Open::Images
@@ -4984,6 +5126,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             subject: None,
             mail_subject: None,
             move_selection: None,
+            category_selection: None,
             context_row: None,
             unless_reply: false,
             focus_reply: None,
@@ -5004,6 +5147,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             mute_for: MuteFor::default(),
             mute_effect: MuteEffect::Info,
             hint: None,
+            history: Vec::new(),
+            undid: false,
+            failed_hint: None,
+            search_back: TextBack::default(),
             leaving: Vec::new(),
             deciding: None,
             answering: None,
@@ -5284,13 +5431,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             // Ctrl + Z (⌘ + Z) undoes while the toast offers it – not while the dialog of "Make task"
             // or the picker has the keys.
             if on_entries
-                && self.can_undo()
+                && self.listens_for_undo()
                 && !matches!(
                     self.menu,
                     Some(Menu::Task | Menu::Event | Menu::Pick | Menu::DeleteForGood | Menu::Unsubscribe)
                 )
             {
-                subscriptions.push(widgets::undo_key().map(|()| Message::Undo));
+                subscriptions.push(widgets::undo_key().map(|()| Message::UndoKey));
             }
         }
         if self.hint.is_some() || !self.dismissing.is_empty() {
@@ -5390,7 +5537,17 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         // The entries of the context menu while a submenu hangs at one of them (issue #906).
         let context_root = self.context_open().then(|| self.context_root()).flatten();
         let letter = matches!(message, Message::LetterLoaded(..));
+        // The hint's undo before (issue #992): a change that replaces or ends the hint keeps it in the
+        // history, unless it was taken back.
+        let held =
+            self.hint.as_ref().and_then(|hint| hint.undo.clone().map(|undo| Kept { text: hint.text.clone(), undo }));
+        let outer = std::mem::replace(&mut self.undid, false);
         let task = self.handle(message);
+        let taken = self.undid;
+        self.undid = outer || taken;
+        if let Some(kept) = held {
+            self.keep(kept, taken);
+        }
         // Whatever closed the context menu or opened another menu in its place closed its submenus
         // too (issue #906).
         if !self.context_open() && (!self.context_sub.is_empty() || self.context_cascade != widgets::Cascade::new()) {
@@ -5852,18 +6009,48 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::Edit(edit) => return self.edit(edit),
             Message::Edited(result, after) => return self.edited(result, after),
             Message::Undo => return self.undo(),
+            Message::UndoKey => return self.undo_key(),
+            Message::UndoKeyChecked(focused) => return self.undo_key_checked(focused),
+            Message::Undid(Ok(()), ids, _) => return self.handle(Message::MailEdited(Ok(()), ids, None)),
+            // Not undone (issue #992): the mail stays where the change put it – moved on meanwhile, or
+            // the server out of reach. The hint says which change and why; the load shows where the
+            // mail is. The change is gone from the history, so Ctrl + Z goes on with the one before
+            // instead of failing again.
+            Message::Undid(Err(err), _, change) => {
+                self.seen_mail.clear();
+                // In the hint, where the person looks after Ctrl + Z (design of #992), not in the error
+                // line.
+                self.note(trf(
+                    "Couldn't undo \u{201c}{change}\u{201d}: {reason}",
+                    &[("change", &change), ("reason", &err)],
+                ));
+                self.failed_hint = self.hint.as_ref().map(|hint| hint.shown);
+                return self.load();
+            }
             Message::SendTick(now) => return self.send_tick(now),
             Message::HintTick(now) => {
                 // The forced hints of `--open undo`, `mute`, `attachment-saved` and `contact-saved` stay,
                 // so they can be photographed.
                 let forced = matches!(
                     self.launch.open,
-                    Some(Open::Undo | Open::Mute | Open::AttachmentSaved | Open::ContactSaved)
+                    Some(
+                        Open::Undo
+                            | Open::Mute
+                            | Open::AttachmentSaved
+                            | Open::ContactSaved
+                            | Open::MailUndo
+                            | Open::MailUndone
+                            | Open::MailUndoError
+                            | Open::MailMarkedSeveral
+                    )
                 );
                 // While a reply is on its way the hint waits with its undo (fifth review of #315).
                 if !forced
                     && !self.holds_round()
-                    && self.hint.as_ref().is_some_and(|hint| now.saturating_duration_since(hint.shown) >= UNDO_FOR)
+                    && self
+                        .hint
+                        .as_ref()
+                        .is_some_and(|hint| now.saturating_duration_since(hint.shown) >= self.hint_for(hint))
                 {
                     self.hint = None;
                 }
@@ -5918,6 +6105,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             // One category picked: ask whether it holds for this sender from now on (E12.8).
             Message::PickCategory(category) => {
+                if let Some(ids) = self.category_selection.take() {
+                    return self.categorize_mails(ids, category);
+                }
                 let Some(id) = self.subject.as_ref().map(|item| item.id.clone()) else { return Task::none() };
                 return self.update(Message::SetCategory(id, category, self.category_always));
             }
@@ -5925,11 +6115,39 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::SetCategory(id, category, remember) => {
                 self.menu = None;
                 self.category_always = false;
-                let inbox = Arc::clone(&self.inbox);
-                return Task::perform(
-                    async move { inbox.set_mail_category(id, category, remember).await.map_err(|err| err.to_string()) },
-                    |result| Message::Categorized(Box::new(result)),
-                );
+                return self.categorize(id, category, remember);
+            }
+            Message::AskCategorySelected => return self.ask_category_selected(),
+            // Filed: the hint with its undo, which also removes the rule this made (issue #992); the list
+            // and the sidebar's counts follow.
+            Message::CategorySet(Ok((rule, old)), hint) => {
+                let mut hint = *hint;
+                if let Some(Undo::Category { rule: held, replaced, .. }) = hint.undo.as_mut() {
+                    *held = rule;
+                    *replaced = old;
+                }
+                self.hint = Some(Hint { shown: Instant::now(), ..hint });
+                return self.load();
+            }
+            Message::CategorySet(Err(err), _) => {
+                self.error = Some(Failure::new(tr("Couldn't change the category."), err));
+                return self.load();
+            }
+            // Several filed (issue #992, review): those that went keep their undo, also when a later
+            // one failed; the error line says why the rest did not.
+            Message::CategoriesSet(done, failed, hint, label) => {
+                let mut hint = *hint;
+                if let Some(Undo::Category { back, .. }) = hint.undo.as_mut() {
+                    back.retain(|(id, _)| done.contains(id));
+                }
+                if !done.is_empty() {
+                    let text = mail::categorized_text(&label, done.len());
+                    self.hint = Some(Hint { text, shown: Instant::now(), ..hint });
+                }
+                if let Some(err) = failed {
+                    self.error = Some(Failure::new(tr("Couldn't change the category."), err));
+                }
+                return self.load();
             }
             Message::Reclassify(id) => {
                 self.menu = None;
@@ -6638,8 +6856,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 // "Save mail as" (issue #501): its formats open where the context menu stood.
                 if self.menu == Some(Menu::SaveMailFormat) {
                     self.context_point = point;
-                } else if self.menu == Some(Menu::Move) && self.move_selection.is_some() {
-                    // Issue #904: so do the folders of the marked mail – the cursor may stand elsewhere.
+                } else if (self.menu == Some(Menu::Move) && self.move_selection.is_some())
+                    || (self.menu == Some(Menu::Category) && self.category_selection.is_some())
+                {
+                    // Issue #904: so do the folders of the marked mail – the cursor may stand elsewhere –,
+                    // and their categories (issue #992).
                     self.context_point = point;
                 }
                 self.menu_at = MenuAt::Row;
@@ -6775,7 +6996,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             // While the reply is on its way the field takes no typing: what goes is what shows.
             Message::FocusEdit(action) => {
                 if let Some(focus) = self.focus_reply.as_mut().filter(|focus| !focus.sending) {
-                    focus.reply.perform(action);
+                    focus.edit(action, Instant::now());
                 }
             }
             Message::FocusStep(forward) => return self.focus_step(forward),
@@ -6876,7 +7097,12 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
                 return self.handle(Message::MoreLoaded(view, order, cursor, result));
             }
-            Message::SearchInput(text) => return self.type_search(text),
+            Message::SearchInput(text) => {
+                if text != self.search {
+                    self.search_back.note(&self.search, Instant::now());
+                }
+                return self.type_search(text);
+            }
             Message::Search => {
                 self.suggesting = false;
                 let remembered = self.remember_search();
@@ -6885,11 +7111,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::ClearSearch => return self.clear_search(),
             Message::ToggleSearchFilters => self.toggle_menu(Menu::SearchFilters),
             Message::SearchFilter(filter) => {
-                let query = search::toggle(&self.search, filter, today());
+                let query = search::toggle(&self.filter_field(), filter, today());
                 return self.filter_search(query);
             }
             Message::SearchArchive(chosen) => {
-                let query = search::set_archive(&self.search, chosen);
+                let query = search::set_archive(&self.filter_field(), chosen);
+                // "Without archive" from the view "Archive" (issue #993), or from a search begun there,
+                // leaves nothing to search: the inboxes, "All", are the mail without the archive – not
+                // the archive the search would end in.
+                let from_archive = self.archive_unsearched() || self.search_from == Some(View::Archive);
+                if chosen == search::Archive::Without && query.trim().is_empty() && from_archive {
+                    self.close_menus();
+                    self.leave_search_state();
+                    return self.update(Message::Show(View::All));
+                }
                 return self.filter_search(query);
             }
             Message::ClearSearchFilters => {
@@ -6912,7 +7147,18 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             Message::SearchTick(now) => {
                 if self.search_due.is_some_and(|due| now >= due) {
-                    return self.run_search();
+                    // The results close a mail open in the panel. The panel beside or over the list
+                    // wraps what the window shows: without it the field stands elsewhere in the widget
+                    // tree, and Iced builds it anew, without the keyboard. It gets it back, so the word
+                    // types on (issue #991). The wide mail window reads in its own column, which
+                    // stays: there the field keeps its state, its cursor included.
+                    let panel =
+                        self.panel_open() && !(self.launch.kind == Kind::Mail && self.class() == SizeClass::Wide);
+                    let shown = self.run_search();
+                    if panel && !self.panel_open() {
+                        return Task::batch([shown, operation::focus(search::FIELD)]);
+                    }
+                    return shown;
                 }
             }
             Message::Suggest(query) => {
@@ -8544,6 +8790,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             return self.compose(kind, &id);
         }
         let Some(edit) = mail::edit_of(action, &id) else { return Task::none() };
+        if let MailAction::Read(_) | MailAction::Flag(_) = action {
+            return self.mark_mail(action, vec![id]);
+        }
         if !matches!(action, MailAction::Archive | MailAction::Delete | MailAction::Junk) {
             return self.mail_edit(Some(edit), None);
         }
@@ -8685,7 +8934,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
         let pile = piled.first().map(|(_, pile, _)| *pile);
         let hint = Hint {
-            text: mail::filed_text(pile).to_owned(),
+            text: mail::filed_several_text(pile, ids.len()),
             undo: Some(Undo::Filed { back, reopen, follow, piled: piled.clone() }),
             shown: Instant::now(),
             folder: None,
@@ -8808,12 +9057,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     _ => None,
                 };
                 // An entry's mail (issue #904, review): read as the window marked it or its entry says.
-                let seen = || {
-                    let held = self.items.iter().chain(&self.for_me).chain(&self.snoozed).chain(self.detail.as_ref());
-                    let read = self.seen_mail.contains(&id)
-                        || held.filter(|item| shows_mail(item, &id)).any(|item| matches!(item.state, State::Seen));
-                    Some(if read { vec![Flag::Seen] } else { Vec::new() })
-                };
+                let seen = || Some(if self.flag_known(&id, Flag::Seen) { vec![Flag::Seen] } else { Vec::new() });
                 let flags = listed.or_else(loaded).or_else(seen).unwrap_or_default();
                 let pile = self.mail_pile(&id);
                 let draft = self.in_role(&id, Role::Drafts);
@@ -8827,14 +9071,36 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     fn mark_selected_mail(&mut self, action: MailAction) -> Task<Message> {
         self.close_menus();
         let ids = self.selected_ids();
-        if ids.is_empty() || !matches!(action, MailAction::Read(_) | MailAction::Flag(_)) {
-            return Task::none();
-        }
-        let edit = match mail::edit_of(action, &ids[0]) {
-            Some(MailEdit::Flags { add, remove, .. }) => MailEdit::Flags { ids, add, remove },
+        self.mark_mail(action, ids)
+    }
+
+    /// Marks the mails `ids` read or unread, flags or unflags them (`action`, one `mail.set_flags`
+    /// for all) – by hand, never as a mail opens. The hint says so (issue #992, [`mail::marked_text`]);
+    /// its undo ([`Undo::Flags`]) turns the flag back only on the mails whose flag this turned, so a
+    /// mail read before stays read when "Mark read" on several is taken back. Nothing turned: no undo.
+    fn mark_mail(&mut self, action: MailAction, ids: Vec<String>) -> Task<Message> {
+        let (flag, set) = match action {
+            MailAction::Read(set) => (Flag::Seen, set),
+            MailAction::Flag(set) => (Flag::Flagged, set),
             _ => return Task::none(),
         };
-        self.mail_edit(Some(edit), None)
+        if ids.is_empty() {
+            return Task::none();
+        }
+        let turned: Vec<String> = ids.iter().filter(|id| self.flag_known(id, flag) != set).cloned().collect();
+        let back = (!turned.is_empty()).then(|| {
+            let (add, remove) = if set { (Vec::new(), vec![flag]) } else { (vec![flag], Vec::new()) };
+            Undo::Flags(vec![MailEdit::Flags { ids: turned, add, remove }])
+        });
+        let hint = Hint {
+            text: mail::marked_text(action, ids.len()),
+            undo: back,
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        };
+        let (add, remove) = if set { (vec![flag], Vec::new()) } else { (Vec::new(), vec![flag]) };
+        self.mail_edit(Some(MailEdit::Flags { ids, add, remove }), Some(hint))
     }
 
     /// "Reply later", "Set aside" or "Remove from …" (`pile` `None`) from the context menu of the marked
@@ -8913,16 +9179,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             return Task::none();
         }
         // One move back per account and folder, as archiving several does.
-        let mut homes: Vec<(Option<String>, MoveTarget, Vec<String>)> = Vec::new();
-        for id in &ids {
-            let account = self.mail_account_of(id);
-            let home = self.home_of(id);
-            match homes.iter_mut().find(|(held, to, _)| *held == account && *to == home) {
-                Some((_, _, held)) => held.push(id.clone()),
-                None => homes.push((account, home, vec![id.clone()])),
-            }
-        }
-        let back: Vec<MailEdit> = homes.into_iter().map(|(_, to, ids)| MailEdit::Move { ids, to }).collect();
+        let back = self.homes_of(&ids);
         // Gathered before `take_out`, which drops the entries `with_follow_backs` looks at (issue #331).
         let (reopen, follow) = self.follow_backs_of(&ids);
         let hint = Hint {
@@ -8937,6 +9194,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             self.take_out(id);
         }
         self.mail_edit(Some(MailEdit::Move { ids, to: MoveTarget::Folder(folder) }), Some(hint))
+    }
+
+    /// The moves that bring the mails `ids` back where they lie now (issue #992): one per account and
+    /// folder, since `mail.move_messages` takes the mail of one account ([`App::home_of`]).
+    fn homes_of(&self, ids: &[String]) -> Vec<MailEdit> {
+        let mut homes: Vec<(Option<String>, MoveTarget, Vec<String>)> = Vec::new();
+        for id in ids {
+            let account = self.mail_account_of(id);
+            let home = self.home_of(id);
+            match homes.iter_mut().find(|(held, to, _)| *held == account && *to == home) {
+                Some((_, _, held)) => held.push(id.clone()),
+                None => homes.push((account, home, vec![id.clone()])),
+            }
+        }
+        homes.into_iter().map(|(_, to, ids)| MailEdit::Move { ids, to }).collect()
     }
 
     /// `reopen` – the entries the undo of moving the message `id` opens again – with the follow-ups of
@@ -9446,7 +9718,23 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// [`Message::MailEdited`] with `hint`.
     fn mail_edit(&mut self, edit: Option<MailEdit>, hint: Option<Hint>) -> Task<Message> {
         let Some(edit) = edit else { return Task::none() };
-        if let MailEdit::Flags { ids, add, remove } = &edit {
+        self.show_flags(&edit);
+        #[cfg(test)]
+        self.sent.push(Sent::Mail(edit.clone(), hint.clone()));
+        let inbox = self.inbox.clone();
+        // Only a move answers for the messages on their way out: marking one read as it opens must
+        // neither forget nor bring back the delete that follows.
+        let ids = match &edit {
+            MailEdit::Flags { .. } => Vec::new(),
+            MailEdit::Move { ids, .. } | MailEdit::Delete { ids } | MailEdit::DeleteForGood { ids } => ids.clone(),
+        };
+        Task::perform(edit.apply(inbox), move |result| Message::MailEdited(result, ids.clone(), hint.clone()))
+    }
+
+    /// The rows, the entries and the reader show the flags `edit` sets at once, before the core
+    /// answers; the load after the answer has them as the server does.
+    fn show_flags(&mut self, edit: &MailEdit) {
+        if let MailEdit::Flags { ids, add, remove } = edit {
             if add.contains(&Flag::Seen) {
                 self.seen_mail.extend(ids.iter().cloned());
                 self.apply_seen_entries(ids, true);
@@ -9458,23 +9746,13 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
         }
         for message in self.messages.iter_mut().filter(|message| edit.ids().contains(&message.id)) {
-            message.flags = mail::flags_after(&message.flags, &edit);
+            message.flags = mail::flags_after(&message.flags, edit);
         }
         if let Some(Letter { loaded: Some(Ok(mail)), .. }) = self.letter.as_mut()
             && edit.ids().contains(&mail.summary.id)
         {
-            mail.summary.flags = mail::flags_after(&mail.summary.flags, &edit);
+            mail.summary.flags = mail::flags_after(&mail.summary.flags, edit);
         }
-        #[cfg(test)]
-        self.sent.push(Sent::Mail(edit.clone(), hint.clone()));
-        let inbox = self.inbox.clone();
-        // Only a move answers for the messages on their way out: marking one read as it opens must
-        // neither forget nor bring back the delete that follows.
-        let ids = match &edit {
-            MailEdit::Flags { .. } => Vec::new(),
-            MailEdit::Move { ids, .. } | MailEdit::Delete { ids } | MailEdit::DeleteForGood { ids } => ids.clone(),
-        };
-        Task::perform(edit.apply(inbox), move |result| Message::MailEdited(result, ids.clone(), hint.clone()))
     }
 
     fn apply_seen_entries(&mut self, ids: &[String], read: bool) {
@@ -9826,21 +10104,15 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             self.note(tr("This message is in the trash already.").to_owned());
             return Task::none();
         }
-        // Entry views do not necessarily hold each message's current folder. Offer undo only
-        // when every source folder is known and identical, rather than guessing the inbox.
-        let homes: Vec<_> = ids.iter().map(|id| self.folder_of(id)).collect();
+        // Each back to its own folder (issue #992), one move per account and folder, as archiving
+        // several does – also when they came from different folders and accounts. An entry's mail
+        // the window holds no folder for lies in its account's inbox ([`App::home_of`]).
+        let back = self.homes_of(&ids);
         // Gathered before `take_out`, which drops the entries `with_follow_backs` looks at (issue #331).
         let (reopen, follow) = self.follow_backs_of(&ids);
-        let undo = homes[0].as_ref().filter(|home| homes.iter().all(|held| held.as_ref() == Some(*home))).map(|home| {
-            Undo::Mail {
-                edit: MailEdit::Move { ids: ids.clone(), to: MoveTarget::Folder(home.clone()) },
-                reopen,
-                follow,
-            }
-        });
         let hint = Some(Hint {
-            text: tr("Moved to Trash").to_owned(),
-            undo,
+            text: mail::trashed_text(ids.len()),
+            undo: Some(Undo::Filed { back, reopen, follow, piled: Vec::new() }),
             shown: Instant::now(),
             folder: None,
             contact: None,
@@ -9925,6 +10197,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
 
     /// Whether the message `id` carries `flag`, as listed or loaded. A mail the window holds neither
     /// way (an entry's, not opened yet) counts as without: the shortcut then reads or flags it.
+    /// Whether the mail `id` has `flag`, as the menu of the marked mail reads it (review of #992): as
+    /// listed or loaded, else – an entry's mail – read when the window marked it so or its entry says
+    /// so; no other flag is known then.
+    fn flag_known(&self, id: &str, flag: Flag) -> bool {
+        let listed = self.messages.iter().any(|message| message.id == id);
+        let loaded = matches!(&self.letter, Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id);
+        if listed || loaded || flag != Flag::Seen {
+            return self.mail_has(id, flag);
+        }
+        let held = self.items.iter().chain(&self.for_me).chain(&self.snoozed).chain(self.detail.as_ref());
+        self.seen_mail.contains(id)
+            || held.filter(|item| shows_mail(item, id)).any(|item| matches!(item.state, State::Seen))
+    }
+
     fn mail_has(&self, id: &str, flag: Flag) -> bool {
         let listed = self.messages.iter().find(|message| message.id == id).map(|message| message.flags.contains(&flag));
         let loaded = || match &self.letter {
@@ -10211,6 +10497,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         Task::none()
     }
 
+    /// Whether the view "Archive" (issue #993) shows with nothing typed in the search field.
+    fn archive_unsearched(&self) -> bool {
+        self.view == View::Archive && self.search.trim().is_empty()
+    }
+
+    /// The field as the quick filters read and change it (issues #336, #993): what is typed, or in the
+    /// view "Archive" with nothing typed `in:archive` – the archive it lists –, so the menu shows "Only
+    /// archive" there and a quick filter searches the archive, not all mail. Words typed there search all
+    /// mail, as the field's placeholder says and as from "Drafts", "Sent" or "Trash": writing `in:archive`
+    /// into the field while the person types would move the text under the cursor; "Only archive" in
+    /// the menu narrows such a search to the archive.
+    fn filter_field(&self) -> String {
+        if self.archive_unsearched() { search::set_archive("", search::Archive::Only) } else { self.search.clone() }
+    }
+
     /// A quick filter changed the field to `query` (issue #336): searched at once, as if `Enter` was
     /// pressed, in the scope shown (all mail from a folder). Without a word left the search ends
     /// as it does when the field is emptied by hand.
@@ -10406,8 +10707,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     category_selected(&*inbox, categories, mail::PAGE, Some(cursor), order, selected.as_deref()).await
                 })
             }
-            // "All", "Sent", "Trash" and "Drafts" (task E18.4): the next page of the same role and fields.
-            View::All | View::Sent | View::Trash | View::Drafts => {
+            // "All", "Sent", "Trash", "Drafts" and "Archive" (task E18.4): the next page of the same role
+            // and fields.
+            View::All | View::Sent | View::Trash | View::Drafts | View::Archive => {
                 let (shown, selected, cursor) = (view.clone(), accounts.clone(), cursor.clone());
                 Box::pin(async move {
                     role_selected(&*inbox, &shown, mail::PAGE, Some(cursor), order, selected.as_deref()).await
@@ -11670,6 +11972,137 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         Task::none()
     }
 
+    /// "Category…" for the marked mail (issue #992): the categories to file them under, at their context
+    /// menu, without "Always for {sender}" – they may come from several senders.
+    fn ask_category_selected(&mut self) -> Task<Message> {
+        self.close_menus();
+        let ids = self.selected_ids();
+        if ids.is_empty() {
+            return Task::none();
+        }
+        self.category_always = false;
+        self.subject = None;
+        self.category_selection = Some(ids);
+        self.menu = Some(Menu::Category);
+        Task::none()
+    }
+
+    /// The category the mail or entry `id` is filed under, as the window holds it (issue #992); `None`
+    /// for mail filed under none or not known here.
+    fn category_of(&self, id: &str) -> Option<torro_mail::Category> {
+        let item = self.subject.as_ref().filter(|item| item.id == id).cloned().or_else(|| self.find(id).cloned());
+        if let Some(item) = item {
+            return item.category.map(|held| held.category);
+        }
+        self.message_summary(id)?.category.map(|held| held.category)
+    }
+
+    /// What a person reads for `category` (issue #992), as the menu "Category ▸" names it.
+    fn category_label(&self, category: torro_mail::Category) -> String {
+        self.category_catalogue()
+            .into_iter()
+            .find(|held| held.category == category)
+            .map_or_else(|| category.key().into_owned(), |held| held.label)
+    }
+
+    /// Files the mail or entry `id` under `category` by hand (`inbox.set_item_category`, task E12.8),
+    /// with `remember` for later mail of its sender too. The hint says so (issue #992); its undo
+    /// ([`Undo::Category`]) files it back under the category it had and removes the rule this made.
+    /// Mail filed under none has no undo: the core can set a category, not take it away (decision 3).
+    fn categorize(&mut self, id: String, category: torro_mail::Category, remember: bool) -> Task<Message> {
+        let before = self.category_of(&id);
+        let sender = self.subject.as_ref().filter(|item| item.id == id).and_then(Self::mail_sender_of);
+        let hint = Hint {
+            text: mail::categorized_text(&self.category_label(category), 1),
+            undo: before.map(|before| Undo::Category { back: vec![(id.clone(), before)], rule: None, replaced: None }),
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        };
+        #[cfg(test)]
+        self.sent.push(Sent::SetCategory(vec![(id.clone(), category)], remember));
+        // Shown at once (review of #992): a second change before the load must start from this one.
+        self.show_category(std::slice::from_ref(&id), category);
+        let inbox = Arc::clone(&self.inbox);
+        let filed = async move {
+            // The sender's rule this one replaces, so its undo can put it back (review of #992).
+            let replaced = match (remember, sender) {
+                (true, Some(sender)) => {
+                    inbox.sender_category(sender).await.ok().flatten().filter(|old| *old != category)
+                }
+                _ => None,
+            };
+            let (_, rule) =
+                inbox.set_mail_category_ruled(id, category, remember).await.map_err(|err| err.to_string())?;
+            Ok((rule, replaced))
+        };
+        Task::perform(filed, move |result| Message::CategorySet(result, Box::new(hint.clone())))
+    }
+
+    /// Files the marked mails `ids` under `category` (issue #992), one `inbox.set_item_category` each;
+    /// the first that fails stops the rest. The hint's undo files each back under its own category –
+    /// only when the window knows one for each (decision 3, [`App::categorize`]) – and, when one
+    /// failed, those filed before it ([`Message::CategoriesSet`]).
+    fn categorize_mails(&mut self, ids: Vec<String>, category: torro_mail::Category) -> Task<Message> {
+        self.close_menus();
+        let back: Vec<(String, torro_mail::Category)> =
+            ids.iter().filter_map(|id| Some((id.clone(), self.category_of(id)?))).collect();
+        let known = back.len() == ids.len();
+        let label = self.category_label(category);
+        let hint = Hint {
+            text: mail::categorized_text(&label, ids.len()),
+            undo: known.then_some(Undo::Category { back, rule: None, replaced: None }),
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        };
+        #[cfg(test)]
+        self.sent.push(Sent::SetCategory(ids.iter().map(|id| (id.clone(), category)).collect(), false));
+        self.show_category(&ids, category);
+        let inbox = Arc::clone(&self.inbox);
+        // Those filed are kept apart (review of #992): when one fails, the undo still knows them.
+        let filed = async move {
+            let mut done = Vec::new();
+            for id in ids {
+                if let Err(err) = inbox.set_mail_category(id.clone(), category, false).await {
+                    return (done, Some(err.to_string()));
+                }
+                done.push(id);
+            }
+            (done, None)
+        };
+        Task::perform(filed, move |(done, failed)| {
+            Message::CategoriesSet(done, failed, Box::new(hint.clone()), label.clone())
+        })
+    }
+
+    /// The mails and entries `ids` show `category`, set by hand, at once (review of #992): in the list,
+    /// the entries that show them and the reader, so the next change starts from it. The load after
+    /// the core's answer has them as the core keeps them.
+    fn show_category(&mut self, ids: &[String], category: torro_mail::Category) {
+        let filed = Some(torro_mail::MailCategory::by_person(category));
+        let mut mails: Vec<String> = ids.to_vec();
+        let items = self.items.iter_mut().chain(&mut self.for_me).chain(&mut self.info).chain(&mut self.snoozed);
+        for item in items.chain(self.detail.as_mut()).chain(self.subject.as_mut()) {
+            if ids.contains(&item.id) || ids.iter().any(|id| shows_mail(item, id)) {
+                item.category = filed;
+                if let Some(Link::Mail { message }) = &item.link
+                    && !mails.contains(message)
+                {
+                    mails.push(message.clone());
+                }
+            }
+        }
+        for message in self.messages.iter_mut().filter(|message| mails.contains(&message.id)) {
+            message.category = filed;
+        }
+        if let Some(Letter { loaded: Some(Ok(mail)), .. }) = self.letter.as_mut()
+            && mails.contains(&mail.summary.id)
+        {
+            mail.summary.category = filed;
+        }
+    }
+
     fn ask_lane(&mut self, id: &str) -> Task<Message> {
         let Some(item) = self.find(id).cloned() else { return Task::none() };
         if !rules_allowed(&item.source) {
@@ -12898,7 +13331,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     fn send_dismissals(&mut self, now: Instant) -> Task<Message> {
         let (due, waiting): (Vec<Dismissing>, Vec<Dismissing>) = std::mem::take(&mut self.dismissing)
             .into_iter()
-            .partition(|held| now.saturating_duration_since(held.at) >= UNDO_FOR);
+            .partition(|held| now.saturating_duration_since(held.at) >= self.look.undo_for.duration());
         self.dismissing = waiting;
         let sends = due.into_iter().map(|Dismissing { account, id, kind, .. }| {
             #[cfg(test)]
@@ -13434,19 +13867,97 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         }
     }
 
+    /// How long `hint` shows (issue #992): with "Undo" as the setting `mail_undo_seconds` says, without
+    /// as every toast of the suite ([`UNDO_FOR`]).
+    fn hint_for(&self, hint: &Hint) -> Duration {
+        match hint.undo {
+            Some(_) => self.look.undo_for.duration(),
+            None => UNDO_FOR,
+        }
+    }
+
     /// Whether the toast offers "Undo" now.
     fn can_undo(&self) -> bool {
         self.hint.as_ref().is_some_and(|hint| hint.undo.is_some())
     }
 
-    /// "Undo": sends the undo of the hint, which then goes. Nothing while no hint can be undone.
+    /// Keeps `kept`, the undo the hint offered before a message, in the history once the hint no
+    /// longer offers it (issue #992): a new hint replaced it – also one without undo –, its time ran
+    /// out or Esc closed it. Not when it was `taken` back, not a kind the history leaves out
+    /// ([`Undo::kept`]), and not twice (a message handled inside another).
+    fn keep(&mut self, kept: Kept, taken: bool) {
+        if taken || !kept.undo.kept() {
+            return;
+        }
+        if self.hint.as_ref().and_then(|hint| hint.undo.as_ref()) == Some(&kept.undo)
+            || self.history.last() == Some(&kept)
+        {
+            return;
+        }
+        self.history.push(kept);
+        if self.history.len() > HISTORY_LEN {
+            self.history.remove(0);
+        }
+    }
+
+    /// Whether Ctrl + Z (⌘ + Z) is listened to (issue #992): while the hint offers "Undo", the
+    /// history holds a change, or a text field with steps back of its own shows (search, the reply of
+    /// "Focus & reply").
+    fn listens_for_undo(&self) -> bool {
+        self.can_undo() || !self.history.is_empty() || self.shows_search() || self.focus_reply.is_some()
+    }
+
+    /// Ctrl + Z (⌘ + Z) pressed (issue #992): in a text field it takes the text back, so the window
+    /// first asks Iced which widget has the focus ([`Message::UndoKeyChecked`]).
+    fn undo_key(&mut self) -> Task<Message> {
+        iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::find_focused())
+            .collect()
+            .map(|focused: Vec<iced::widget::Id>| Message::UndoKeyChecked(focused.into_iter().next()))
+    }
+
+    /// Ctrl + Z with `focused` holding the keyboard: the search field and the reply of "Focus &
+    /// reply" take their text a step back; another field keeps the key (it has no steps back); without
+    /// a field it is "Undo" ([`App::undo`]).
+    fn undo_key_checked(&mut self, focused: Option<iced::widget::Id>) -> Task<Message> {
+        let Some(focused) = focused else { return self.undo() };
+        if focused == iced::widget::Id::new(search::FIELD) {
+            if let Some(text) = self.search_back.back() {
+                return self.type_search(text);
+            }
+        } else if focused == iced::widget::Id::new(mail::FOCUS_FIELD)
+            && let Some(focus) = self.focus_reply.as_mut().filter(|focus| !focus.sending)
+        {
+            focus.reply_back();
+        }
+        Task::none()
+    }
+
+    /// "Undo", `u` or Ctrl + Z: sends the undo of the hint, which then goes – or, without one, of the
+    /// newest change in the history (issue #992). Nothing while there is none.
     fn undo(&mut self) -> Task<Message> {
         // Not while a reply is on its way (fifth review of #315): the hint and its undo stay for after.
         if self.holds_round() {
             return Task::none();
         }
-        let Some(undo) = self.hint.take().and_then(|hint| hint.undo) else { return Task::none() };
+        let kept = match self.hint.take() {
+            Some(Hint { text, undo: Some(undo), .. }) => Kept { text, undo },
+            hint => {
+                self.hint = hint;
+                match self.history.pop() {
+                    Some(kept) => kept,
+                    None => {
+                        self.note(tr("Nothing to undo").to_owned());
+                        return Task::none();
+                    }
+                }
+            }
+        };
+        self.undid = true;
         self.close_menus();
+        let Kept { text, undo } = kept;
+        // With up to 20 steps the person must see which one went (issue #992, design): a hint without
+        // undo says it, on every way – the hint's button, `u` and Ctrl + Z.
+        self.note(trf("Undone: {change}", &[("change", &text)]));
         match undo {
             Undo::Edit(edit) => self.send(edit, None),
             Undo::Mute(source, muted) => self.mute(source, muted, false),
@@ -13458,7 +13969,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.leaving.retain(|leaving| !ids.contains(&leaving.id));
                 let inbox = self.inbox.clone();
                 Task::perform(undo_move(inbox, edit, reopen, follow), move |result| {
-                    Message::MailEdited(result, ids.clone(), None)
+                    Message::Undid(result, ids.clone(), text.clone())
                 })
             }
             // Back in their folders and on their pile with their time (issue #615): the number on the
@@ -13483,8 +13994,55 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
                 let inbox = self.inbox.clone();
                 Task::perform(undo_filed(inbox, back, piled, reopen, follow), move |result| {
-                    Message::MailEdited(result, ids.clone(), None)
+                    Message::Undid(result, ids.clone(), text.clone())
                 })
+            }
+            // Each flag back on the mails it was turned on (issue #992): the rows and the reader at
+            // once, as when it was turned.
+            Undo::Flags(edits) => {
+                for edit in &edits {
+                    self.show_flags(edit);
+                    #[cfg(test)]
+                    self.sent.push(Sent::Mail(edit.clone(), None));
+                }
+                let inbox = self.inbox.clone();
+                let undone = async move {
+                    for edit in edits {
+                        edit.apply(inbox.clone()).await?;
+                    }
+                    Ok(())
+                };
+                Task::perform(undone, move |result| Message::Undid(result, Vec::new(), text.clone()))
+            }
+            // The rule first, then each mail back in its category (issue #992): else the rule could
+            // file one of them again.
+            Undo::Category { back, rule, replaced } => {
+                #[cfg(test)]
+                self.sent.push(Sent::Category(back.clone(), rule.clone()));
+                for (id, category) in &back {
+                    self.show_category(std::slice::from_ref(id), *category);
+                }
+                let inbox = self.inbox.clone();
+                let undone = async move {
+                    match (replaced, back.first()) {
+                        (Some(old), Some((id, _))) => {
+                            inbox.set_mail_category(id.clone(), old, true).await.map_err(|err| err.to_string())?;
+                        }
+                        _ => {
+                            if let Some(id) = rule {
+                                match inbox.remove_rule(id).await {
+                                    Ok(()) | Err(InboxError::NotFound) => {}
+                                    Err(err) => return Err(err.to_string()),
+                                }
+                            }
+                        }
+                    }
+                    for (id, category) in back {
+                        inbox.set_mail_category(id, category, false).await.map_err(|err| err.to_string())?;
+                    }
+                    Ok(())
+                };
+                Task::perform(undone, move |result| Message::Undid(result, Vec::new(), text.clone()))
             }
             // Back on the pile it lay on, or off it: the load after the answer puts the row back.
             // With the time it lay there since (decision of #315).
@@ -14018,7 +14576,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 self.choices().into_iter().map(|choice| (Some(choice.message), false)).collect()
             }
             Menu::Category => {
-                let mut entries = vec![(Some(Message::ToggleCategoryAlways), false)];
+                // The marked mail's menu has no "Always for {sender}" (issue #992).
+                let mut entries = match self.category_selection {
+                    Some(_) => Vec::new(),
+                    None => vec![(Some(Message::ToggleCategoryAlways), false)],
+                };
                 let catalogue = self.category_catalogue();
                 for group in category_group_order(&catalogue) {
                     let of_group = catalogue
@@ -14519,7 +15081,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             (None, None, None) => None,
         };
-        widgets::toast(hint.text.as_str(), action)
+        match self.failed_hint == Some(hint.shown) {
+            true => widgets::toast_error(hint.text.as_str(), action),
+            false => widgets::toast(hint.text.as_str(), action),
+        }
     }
 
     /// Mini or strip: loading and the error of a first load as in every layout, then the glance at
@@ -14708,6 +15273,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     trf("Move to {lane}", &[("lane", &lane_name(other_lane(item.lane)))])
                 });
                 Some(widgets::floating(&lane_at, below, self.choice_menu(title), Message::CloseMenu))
+            }
+            // The marked mail's categories (issue #992) where their context menu stood.
+            Some(Menu::Category) if self.category_selection.is_some() && self.context_point.is_some() => {
+                let (spot, placement) = context_spot(self.context_point, &rows.row);
+                Some(widgets::floating(&spot, placement, self.category_menu(), Message::CloseMenu))
             }
             // "Category ▸" (task E12.8) with its switch "Always for <sender>" (issue #906).
             Some(Menu::Category) => {
@@ -16090,13 +16660,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .collect()
     }
 
-    /// The rows of "Folders" in the mail window (task E18.4, issues #455, #502), in this order:
-    /// "Drafts" ([`View::Drafts`]) while an account shown has a drafts folder, "Sent" – the sent mail
-    /// of every account ([`View::Sent`]), always –, "Trash" ([`View::Trash`]) while an account shown
-    /// has a trash folder, the pinned folders, and "Pin folders" ([`Target::OpenFolders`], with its
-    /// chevron) while there is a mail account. Empty in the other windows; a window of mail only has
-    /// no "Drafts", "Sent" and "Trash". The archive is no row here since issue #476: the filter menu
-    /// of the search has it ("Only archive").
+    /// The rows of "Folders" in the mail window (task E18.4, issues #455, #502, #993), in this order:
+    /// "Drafts" ([`View::Drafts`]) while an account shown has a drafts folder, "Archive"
+    /// ([`View::Archive`], beside "Drafts" as asked in issue #993) while an account shown has an archive
+    /// folder, "Sent" – the sent mail of every account ([`View::Sent`]), always –, "Trash"
+    /// ([`View::Trash`]) while an account shown has a trash folder, the pinned folders, and "Pin
+    /// folders" ([`Target::OpenFolders`], with its chevron) while there is a mail account. Empty in the
+    /// other windows; a window of mail only has no "Drafts", "Archive", "Sent" and "Trash". The search's
+    /// filter "Only archive" (issue #476) stays beside the row.
     fn folder_entries(&self) -> Vec<NavEntry> {
         if self.launch.kind != Kind::Mail && !self.mail_only {
             return Vec::new();
@@ -16125,9 +16696,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         };
         let whole = self.launch.kind == Kind::Mail && !self.mail_only;
         let drafts = (whole && has_role(Role::Drafts)).then(|| entry(View::Drafts));
+        let archive = (whole && has_role(Role::Archive)).then(|| entry(View::Archive));
         let sent = whole.then(|| entry(View::Sent));
         let trash = (whole && has_role(Role::Trash)).then(|| entry(View::Trash));
-        drafts.into_iter().chain(sent).chain(trash).chain(self.pinned_entries()).chain(browse).collect()
+        drafts.into_iter().chain(archive).chain(sent).chain(trash).chain(self.pinned_entries()).chain(browse).collect()
     }
 
     /// The pinned folders of "Folders" (task E18.4): the folder's name, and under it the address of
@@ -16352,7 +16924,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             list = list.push(widgets::menu_item(item));
         }
         // The archive (issue #476): a radio point, not a tick, since exactly one of the three holds.
-        let (chosen, default) = (search::archive(&self.search), search::archive_default(&self.search));
+        // The view "Archive" (issue #993) with nothing typed is "Only archive", as its list shows.
+        let field = self.filter_field();
+        let (chosen, default) = (search::archive(&field), search::archive_default(&self.search));
         list = list.push(menu_line()).push(menu_caption(tr("Archive")));
         for choice in search::Archive::ALL {
             let point = if choice == chosen { Icon::CircleDot } else { Icon::Circle };
@@ -16567,7 +17141,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if !self.mail_only && !views.is_empty() {
             sections.push(MenuSection::new(views.into_iter().map(item).collect()));
         }
-        // "Folders" as in the sidebar (task E18.4): Archive, the pinned folders, "Pin folders" ›.
+        // "Folders" as in the sidebar (task E18.4, issue #993): Drafts, Archive, Sent, Trash, the pinned
+        // folders, "Pin folders" ›.
         let filed = self.folder_entries();
         if !filed.is_empty() {
             sections.push(MenuSection::titled(tr("Folders"), filed.into_iter().map(item).collect()));
@@ -16622,7 +17197,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if !self.context_open() {
             list = list.push(menu_caption(tr("Category")));
         }
-        let mut list = list.push(widgets::menu_item_lit(switch, None, lit == Some(0))).push(menu_line());
+        // The marked mail's menu files mail of several senders: no switch (issue #992), so the choices
+        // count from 0.
+        let several = self.category_selection.is_some();
+        let mut list = match several {
+            true => list,
+            false => list.push(widgets::menu_item_lit(switch, None, lit == Some(0))).push(menu_line()),
+        };
+        let first = usize::from(!several);
         let mut at = 0;
         for group in category_group_order(&catalogue) {
             let of_group: Vec<&CategoryInfo> = catalogue
@@ -16652,7 +17234,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     message: Message::PickCategory(held.category),
                     line: false,
                 };
-                list = list.push(choice_entry(choice, keys::digit(at + 1), KeyLook::Kbd, width, lit == Some(at + 1)));
+                list =
+                    list.push(choice_entry(choice, keys::digit(at + 1), KeyLook::Kbd, width, lit == Some(at + first)));
                 at += 1;
             }
         }
@@ -17097,6 +17680,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         self.subject = None;
         self.mail_subject = None;
         self.move_selection = None;
+        self.category_selection = None;
         self.ai_suggesting = None;
         self.unsubscribe_ask = None;
         self.dialog_mail = None;
@@ -17256,7 +17840,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 return self.run_search();
             }
             // The archive as the search's filter shows it (issue #476): "Only archive" for the archive
-            // of every account, the two choices with the filter menu open.
+            // of every account, the two choices with the filter menu open. The mail window's "archive"
+            // is its view "Archive" (issue #993), nothing to search.
+            Some(Open::Archive) if self.view == View::Archive => {}
             Some(open @ (Open::Archive | Open::ArchiveWith | Open::ArchiveOnly)) => {
                 let chosen = if open == Open::ArchiveWith { search::Archive::With } else { search::Archive::Only };
                 self.search = search::set_archive("", chosen);
@@ -17389,11 +17975,54 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 }
             }
             // Issue #904: three mails marked, the right-click on the second.
-            Some(Open::MailContextSelection) => {
+            Some(open @ (Open::MailContextSelection | Open::MailContextSelectionCategory)) => {
                 self.selected_mail = self.messages.iter().take(3).map(|message| message.id.clone()).collect();
                 self.mail_anchor = self.selected_mail.first().cloned();
                 if let Some(id) = self.selected_mail.get(1).cloned() {
-                    return self.update(Message::ContextMail(id, Point::new(24.0, 12.0)));
+                    let context = self.update(Message::ContextMail(id, Point::new(24.0, 12.0)));
+                    if open == Open::MailContextSelectionCategory {
+                        let category = self.update(Message::ContextAction(Box::new(Message::AskCategorySelected)));
+                        return Task::batch([context, category]);
+                    }
+                    return context;
+                }
+            }
+            // Issue #992: the hints of undo, standing so they can be photographed.
+            Some(open @ (Open::MailUndo | Open::MailUndone | Open::MailUndoError)) => {
+                if let Some(id) = self.messages.first().map(|message| message.id.clone()) {
+                    let archived = tr("Archived").to_owned();
+                    self.hint = Some(Hint {
+                        text: match open {
+                            Open::MailUndo => archived.clone(),
+                            Open::MailUndone => trf("Undone: {change}", &[("change", &archived)]),
+                            _ => trf(
+                                "Couldn't undo \u{201c}{change}\u{201d}: {reason}",
+                                &[
+                                    ("change", &archived),
+                                    ("reason", &tr("The server can't be reached. Check the connection and try again.")),
+                                ],
+                            ),
+                        },
+                        undo: (open == Open::MailUndo).then(|| Undo::Mail {
+                            edit: MailEdit::Move { ids: vec![id], to: MoveTarget::Role(MoveRole::Inbox) },
+                            reopen: Vec::new(),
+                            follow: Vec::new(),
+                        }),
+                        shown: Instant::now(),
+                        folder: None,
+                        contact: None,
+                    });
+                    if open == Open::MailUndoError {
+                        self.failed_hint = self.hint.as_ref().map(|hint| hint.shown);
+                    }
+                }
+            }
+            Some(Open::MailMarkedSeveral) => {
+                let ids: Vec<String> = self.messages.iter().take(3).map(|message| message.id.clone()).collect();
+                if ids.len() == 3 {
+                    self.selected_mail = ids.clone();
+                    self.mail_anchor = ids.first().cloned();
+                    return self.mark_mail(MailAction::Read(true), ids);
                 }
             }
             Some(Open::Unsubscribe) => {
@@ -19329,7 +19958,9 @@ mod tests {
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Done")));
         let _ = press(&mut app, Key::U);
         assert_eq!(app.sent.last(), Some(&Sent::Edit(reopen, None)));
-        assert!(app.hint.is_none(), "the hint goes with the undo");
+        // Issue #992: the hint says what was taken back, without an undo of its own.
+        let undone = trf("Undone: {change}", &[("change", &tr("Done"))]);
+        assert!(app.hint.as_ref().is_some_and(|hint| hint.text == undone && hint.undo.is_none()));
         deliver(&mut app);
         assert_eq!(ids(&app)[..2], ["demo-18", "demo-1"], "back in its place, after the alert");
         assert_eq!(cursor(&app), Some("demo-1"), "and the cursor with it");
@@ -19548,10 +20179,11 @@ mod tests {
         assert_eq!(hint.undo, Some(Undo::Mute(deploy.clone(), false)));
         let _ = press(&mut app, Key::U);
         assert_eq!(app.sent.last(), Some(&Sent::Mute(deploy.clone(), false, false)), "undo unmutes");
-        assert!(app.hint.is_none(), "the hint goes with the undo");
+        // Issue #992: the hint says what was taken back, without an undo of its own.
+        assert!(app.hint.as_ref().is_some_and(|hint| hint.undo.is_none()), "the undo goes with the undo");
         deliver(&mut app);
         assert!(!app.is_muted(&deploy));
-        assert!(app.hint.is_none(), "an undo shows no new hint");
+        assert!(app.hint.as_ref().is_none_or(|hint| hint.undo.is_none()), "an undo offers no new undo");
         // Unmuting works the same way, with its own undo.
         mute_by_keys(&mut app);
         deliver(&mut app);
@@ -19709,8 +20341,12 @@ mod tests {
         let _ = app.update(Message::Select("demo-1".into()));
         let _ = app.update(Message::Escape);
         assert!(app.hint.is_none() && app.detail.is_some(), "Escape takes the toast first, the panel stays");
+        // Issue #992: the toast went, its change stays in the history.
         let _ = press(&mut app, Key::U);
-        assert!(app.sent.is_empty(), "nothing left to undo");
+        assert!(
+            matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { done: false, .. }, None))),
+            "undone after Escape"
+        );
     }
 
     /// Issue #123: the sender is muted from the bell's menu – the toast in the words of the rules –,
@@ -19915,10 +20551,11 @@ mod tests {
         let shown = app.hint.as_ref().map(|hint| hint.shown).expect("a hint");
         let _ = app.update(Message::HintTick(shown + Duration::from_secs(4)));
         assert!(app.hint.is_some());
-        let _ = app.update(Message::HintTick(shown + UNDO_FOR));
+        let _ = app.update(Message::HintTick(shown + app.look.undo_for.duration()));
         assert!(app.hint.is_none());
+        // Issue #992: the hint went, its change stays in the history for `u` and Ctrl + Z.
         let _ = press(&mut app, Key::U);
-        assert!(app.sent.is_empty(), "too late to undo");
+        assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { done: false, .. }, None))), "still undone");
     }
 
     #[test]
@@ -20744,14 +21381,19 @@ mod tests {
         let _ = press(&mut app, Key::Down);
         assert_eq!(cursor(&app), Some("m:w1"));
         let _ = shortcut(&mut app, S::ToggleRead, false);
+        // By hand each comes with a hint and its undo (issue #992).
+        let sent_edit = |app: &App<DemoSource>| match app.sent.last() {
+            Some(Sent::Mail(edit, Some(_))) => Some(edit.clone()),
+            _ => None,
+        };
         let read = MailEdit::Flags { ids: vec!["m:w1".into()], add: vec![Flag::Seen], remove: Vec::new() };
-        assert_eq!(app.sent.last(), Some(&Sent::Mail(read, None)), "unread: marked read");
+        assert_eq!(sent_edit(&app), Some(read), "unread: marked read");
         let _ = shortcut(&mut app, S::ToggleRead, false);
         let unread = MailEdit::Flags { ids: vec!["m:w1".into()], add: Vec::new(), remove: vec![Flag::Seen] };
-        assert_eq!(app.sent.last(), Some(&Sent::Mail(unread, None)), "then unread again");
+        assert_eq!(sent_edit(&app), Some(unread), "then unread again");
         let _ = shortcut(&mut app, S::Flag, false);
         let flag = MailEdit::Flags { ids: vec!["m:w1".into()], add: vec![Flag::Flagged], remove: Vec::new() };
-        assert_eq!(app.sent.last(), Some(&Sent::Mail(flag, None)));
+        assert_eq!(sent_edit(&app), Some(flag));
         let _ = shortcut(&mut app, S::Reply, false);
         assert_eq!(app.sent.last(), Some(&Sent::Compose(mail::compose_args(Compose::Reply, "m:w1", true))));
         let _ = shortcut(&mut app, S::NewMail, false);
@@ -21951,6 +22593,177 @@ mod tests {
         assert_eq!(format!("{under:?}"), format!("{row:?}"), "the whole row");
     }
 
+    /// Whether the search field ([`search::FIELD`]) holds the keyboard in the view built.
+    #[derive(Default)]
+    struct SearchFocus(bool);
+
+    impl iced::advanced::widget::Operation for SearchFocus {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+            operate(self);
+        }
+
+        fn focusable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            _bounds: iced::Rectangle,
+            state: &mut dyn iced::advanced::widget::operation::Focusable,
+        ) {
+            if id == Some(&iced::widget::Id::new(search::FIELD)) && state.is_focused() {
+                self.0 = true;
+            }
+        }
+    }
+
+    /// Whether the search field holds the keyboard in `ui`.
+    fn search_focused(
+        ui: &mut iced_test::runtime::UserInterface<'_, Message, iced::Theme, iced::Renderer>,
+        renderer: &iced::Renderer,
+    ) -> bool {
+        let mut focus = SearchFocus::default();
+        ui.operate(renderer, &mut focus);
+        focus.0
+    }
+
+    /// Carries out on `ui` what `task` asks of the widgets (such as [`operation::focus`]), as the
+    /// runtime does after `update`; the rest of the task is left out.
+    fn operate(
+        task: Task<Message>,
+        ui: &mut iced_test::runtime::UserInterface<'_, Message, iced::Theme, iced::Renderer>,
+        renderer: &iced::Renderer,
+    ) {
+        use iced::futures::StreamExt as _;
+        let Some(stream) = iced_test::runtime::task::into_stream(task) else { return };
+        for action in block_on(stream.collect::<Vec<_>>()) {
+            if let iced_test::runtime::Action::Widget(mut operation) = action {
+                ui.operate(renderer, operation.as_mut());
+            }
+        }
+    }
+
+    /// The keys that type `text`, one per letter.
+    fn letters(text: &str) -> Vec<iced::keyboard::Key> {
+        text.chars().map(|letter| iced::keyboard::Key::Character(letter.to_string().into())).collect()
+    }
+
+    /// Presses `keys` in the search field of `app`'s window of `size` one at a time, as a person would: each key builds
+    /// the view anew from `cache`, hands its messages to `update` and lets the pause of
+    /// [`search::DEBOUNCE`] pass, so the list is searched and shown again between the keys. Whether the
+    /// search field still held the keyboard after each key.
+    fn type_keys(
+        app: &mut App<DemoSource>,
+        renderer: &mut iced::Renderer,
+        size: Size,
+        keys: &[iced::keyboard::Key],
+    ) -> Vec<bool> {
+        use iced::keyboard::{self, key};
+        use iced::{Event, mouse};
+        use iced_test::runtime::{UserInterface, user_interface};
+
+        let mut cache = user_interface::Cache::default();
+        let mut ui = UserInterface::build(app.view(), size, cache, renderer);
+        ui.operate(renderer, &mut iced::advanced::widget::operation::focusable::focus(search::FIELD.into()));
+        cache = ui.into_cache();
+        let mut held = Vec::new();
+        for typed in keys {
+            let text = match typed {
+                keyboard::Key::Character(letter) => Some(letter.clone()),
+                _ => None,
+            };
+            let event = Event::Keyboard(keyboard::Event::KeyPressed {
+                key: typed.clone(),
+                modified_key: typed.clone(),
+                physical_key: key::Physical::Unidentified(key::NativeCode::Unidentified),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text,
+                repeat: false,
+            });
+            let mut messages = Vec::new();
+            let mut ui = UserInterface::build(app.view(), size, cache, renderer);
+            let _ = ui.update(
+                &[event],
+                mouse::Cursor::Unavailable,
+                renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut messages,
+            );
+            cache = ui.into_cache();
+            for message in messages {
+                let _ = app.update(message);
+            }
+            // The view the key brought (the suggestions under the field), then the search after the pause.
+            let ui = UserInterface::build(app.view(), size, cache, renderer);
+            cache = ui.into_cache();
+            let mut ticked = Task::none();
+            if let Some(due) = app.search_due {
+                ticked = app.update(Message::SearchTick(due));
+                load(app);
+            }
+            let mut ui = UserInterface::build(app.view(), size, cache, renderer);
+            operate(ticked, &mut ui, renderer);
+            held.push(search_focused(&mut ui, renderer));
+            cache = ui.into_cache();
+        }
+        held
+    }
+
+    /// Issue #991: a word types into the search field in one go – the field keeps the keyboard while
+    /// the suggestions come under it and the list is searched live, in every size of the mail window
+    /// (wide, rail, narrow) and in the window with folders beside the hub.
+    #[test]
+    fn the_search_field_keeps_the_keyboard_while_typing() {
+        // Several renderers at once crash the test process: the crate's one lock for them.
+        let _one = crate::one_renderer();
+        let mut renderer = block_on(<iced::Renderer as iced::advanced::renderer::Headless>::new(
+            iced::Font::with_name("Fira Sans"),
+            iced::Pixels(16.0),
+            None,
+        ))
+        .expect("a renderer without a window");
+        let cases = [
+            (WIDE, false, false),
+            (WIDE, true, false),
+            (MEDIUM, false, false),
+            (NARROW, false, false),
+            (WIDE, false, true),
+            (MEDIUM, false, true),
+            (NARROW, false, true),
+        ];
+        for name in ["mail", "folder"] {
+            for (size, rail, reading) in cases {
+                let mut app =
+                    if name == "mail" { mail_window(Density::Compact, &[]) } else { in_folder("f:work-inbox") };
+                let _ = app.update(Message::Resized(size));
+                if rail {
+                    let _ = app.update(Message::UiState(UiState { sidebar: SidebarMode::Rail }));
+                }
+                // A mail open beside the list, which the search closes once it shows its results.
+                if reading {
+                    let first = app.messages.first().map(|message| message.id.clone()).expect("a mail");
+                    let _ = app.update(Message::SelectMail(first.clone()));
+                    deliver_letter(&mut app, &first);
+                    assert!(app.panel_open() || app.reading, "{name}: the mail is open");
+                }
+                // "budget", then three steps back into the word and "xy": the cursor stays where it
+                // was put, key after key.
+                let left = iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowLeft);
+                let mut keys = letters("budget");
+                keys.extend([left.clone(), left.clone(), left]);
+                keys.extend(letters("xy"));
+                let held = type_keys(&mut app, &mut renderer, size, &keys);
+                assert_eq!(
+                    app.search, "budxyget",
+                    "{name} {size:?} rail {rail} reading {reading}: every key in its place"
+                );
+                assert!(
+                    held.iter().all(|held| *held),
+                    "{name} {size:?} rail {rail} reading {reading}: focus after each key {held:?}"
+                );
+                assert_eq!(app.view.search().map(|search| search.query.as_str()), Some("budxyget"), "searched live");
+            }
+        }
+    }
+
     /// Issue #136: typing searches once the keys pause, not at every key; a blank field goes back.
     #[test]
     fn typing_searches_after_a_pause() {
@@ -22062,7 +22875,8 @@ mod tests {
         let w4 = app.messages.iter().find(|message| message.id == "m:w4").expect("m:w4");
         assert!(w4.flags.contains(&Flag::Flagged));
         let flag = MailEdit::Flags { ids: vec!["m:w4".into()], add: vec![Flag::Flagged], remove: Vec::new() };
-        assert_eq!(app.sent.last(), Some(&Sent::Mail(flag, None)));
+        // Issue #992: by hand, with a hint and its undo.
+        assert!(matches!(app.sent.last(), Some(Sent::Mail(edit, Some(hint))) if *edit == flag && hint.undo.is_some()));
         deliver_mail(&mut app);
         let _ = app.update(Message::Mail(MailAction::Read(false), "m:w4".into()));
         deliver_mail(&mut app);
@@ -23771,18 +24585,17 @@ mod tests {
         };
         let browse = (tr("Pin folders").to_owned(), Target::OpenFolders, Trail::Icon(Icon::ChevronRight));
         let drafts = (tr("Drafts").to_owned(), Target::View, Trail::None);
+        let archive = (tr("Archive").to_owned(), Target::View, Trail::None);
         let sent = (tr("Sent").to_owned(), Target::View, Trail::None);
         let trash = (tr("Trash").to_owned(), Target::View, Trail::None);
-        // Issue #476: the archive is no row of its own; the search's filter has it. Issue #502:
-        // "Drafts" comes first.
-        let roles = [drafts.clone(), sent.clone(), trash.clone()];
+        // Issue #502: "Drafts" comes first. Issue #993: "Archive" beside it (the rail and the menu of
+        // the narrow windows draw these rows too).
+        let roles = [drafts.clone(), archive.clone(), sent.clone(), trash.clone()];
         assert_eq!(folders(&app), [roles.to_vec(), vec![browse.clone()]].concat(), "nothing pinned yet");
-        let views: Vec<View> = app.folder_entries().into_iter().take(3).map(|entry| entry.view).collect();
-        assert_eq!(views, [View::Drafts, View::Sent, View::Trash]);
-        let marks: Vec<Mark> = app.folder_entries().into_iter().take(3).map(|entry| entry.mark).collect();
-        assert_eq!(marks, [Icon::FilePenLine, Icon::Send, Icon::Trash2].map(Mark::Icon));
-        // The rail and the menu of the narrow windows draw these rows too.
-        assert!(!app.folder_entries().iter().any(|entry| entry.label == tr("Archive")), "no Archive under Folders");
+        let views: Vec<View> = app.folder_entries().into_iter().take(4).map(|entry| entry.view).collect();
+        assert_eq!(views, [View::Drafts, View::Archive, View::Sent, View::Trash]);
+        let marks: Vec<Mark> = app.folder_entries().into_iter().take(4).map(|entry| entry.mark).collect();
+        assert_eq!(marks, [Icon::FilePenLine, Icon::Archive, Icon::Send, Icon::Trash2].map(Mark::Icon));
         let pin = app.folders.iter().find(|folder| folder.role == Some(Role::Sent)).expect("a sent folder").clone();
         let _ = app.update(Message::ToggleFolderPin(pin.id.clone()));
         // Issue #398: the folder's name, and its account's address as the second line – the demo
@@ -23790,7 +24603,7 @@ mod tests {
         let pinned = mail::folder_name(&pin);
         let pinned_row = (pinned.clone(), Target::View, Trail::None);
         assert_eq!(folders(&app), [roles.to_vec(), vec![pinned_row, browse.clone()]].concat());
-        assert_eq!(app.folder_entries()[3].detail.as_deref(), Some(mail::address(&pin.account)));
+        assert_eq!(app.folder_entries()[4].detail.as_deref(), Some(mail::address(&pin.account)));
         assert!(
             app.folder_entries()
                 .iter()
@@ -23798,9 +24611,9 @@ mod tests {
                 .all(|entry| entry.detail.is_none())
         );
         assert_eq!(app.folder_entries()[0].detail, None, "only a pinned folder has a second line");
-        assert!(matches!(app.folder_entries()[4].message(), Message::OpenFolders), "the browser opens beside it");
-        // No account with a trash or drafts folder: no row; Sent always stands.
-        app.folders.retain(|folder| !matches!(folder.role, Some(Role::Trash | Role::Drafts)));
+        assert!(matches!(app.folder_entries()[5].message(), Message::OpenFolders), "the browser opens beside it");
+        // No account with a trash, drafts or archive folder: no row; Sent always stands.
+        app.folders.retain(|folder| !matches!(folder.role, Some(Role::Trash | Role::Drafts | Role::Archive)));
         let labels: Vec<String> = folders(&app).into_iter().map(|row| row.0).collect();
         assert_eq!(labels[..2], [tr("Sent").to_owned(), pinned.clone()]);
         // Folders of one account only: the address says nothing, the row keeps one line.
@@ -24097,6 +24910,85 @@ mod tests {
         let entry = app.folder_entries().into_iter().find(|entry| entry.view == View::Trash).expect("a row");
         assert_eq!(entry.count, None, "no number");
         assert!(entry.active, "chosen while it shows");
+    }
+
+    /// Issue #993: "Archive" lists the archived mail of every account shown, as "Trash" lists its role,
+    /// without a number, beside "Drafts"; the account field narrows it, and without an archive folder of
+    /// an account shown the row is gone. Its mail is not offered for archiving again.
+    #[test]
+    fn the_archive_lists_the_mail_of_every_archive_folder() {
+        assert_eq!(View::Archive.by_role(), Some((Role::Archive, None)));
+        assert!(View::Archive.is_mail() && View::Archive.filter().is_none());
+        assert_eq!((View::Archive.name(), View::Archive.icon()), (tr("Archive").to_owned(), Icon::Archive));
+        assert_eq!(View::Archive.listing().as_deref(), Some("archive"));
+        assert!(!View::Archive.leaves_out_piles() && !mail::names_recipient(&View::Archive));
+        let mut app = mail_window(Density::Compact, &["--open", "archive"]);
+        load(&mut app);
+        assert_eq!(app.view, View::Archive);
+        let archives: Vec<String> = app
+            .folders
+            .iter()
+            .filter(|folder| folder.role == Some(Role::Archive))
+            .map(|folder| folder.id.clone())
+            .collect();
+        assert!(!app.messages.is_empty(), "the demo's archive");
+        assert!(app.messages.iter().all(|message| archives.contains(&message.folder)), "archived mail only");
+        let accounts: std::collections::BTreeSet<&str> =
+            app.messages.iter().map(|message| message.account.as_str()).collect();
+        assert!(accounts.len() > 1, "of every account");
+        let dates: Vec<_> = app.messages.iter().map(|message| message.date).collect();
+        assert!(dates.windows(2).all(|pair| pair[0] >= pair[1]), "newest first");
+        let entry = app.folder_entries().into_iter().find(|entry| entry.view == View::Archive).expect("a row");
+        assert_eq!((entry.count, entry.active), (None, true), "no number, chosen while it shows");
+        let first = app.messages[0].id.clone();
+        assert!(app.in_role(&first, Role::Archive), "Archive is not offered for it (mail.rs, by role)");
+        let _ = app.view();
+        // One account chosen: its archive only.
+        let private = torro_inbox::demo::MAIL_ACCOUNTS[1].to_owned();
+        app.mail_accounts = Some(vec![private.clone()]);
+        load(&mut app);
+        assert!(app.messages.iter().all(|message| message.account == private), "that account's archive");
+        // No archive folder among the accounts shown: no row.
+        app.folders.retain(|folder| folder.role != Some(Role::Archive));
+        // ("Pin folders" carries the view shown, as it opens a menu.)
+        assert!(!app.folder_entries().iter().any(|entry| entry.target == Target::View && entry.view == View::Archive));
+    }
+
+    /// Issue #993: in the view "Archive" with nothing typed the filter menu reads the field as the archive
+    /// it lists – "Only archive" chosen –, a quick filter searches the archive, "With archive" the inboxes
+    /// and archives, and "Without archive" goes to "All".
+    #[test]
+    fn the_filter_menu_in_the_archive_reads_it_as_only_archive() {
+        let mut app = mail_window(Density::Compact, &["--open", "archive"]);
+        load(&mut app);
+        assert_eq!(app.filter_field(), "in:archive");
+        assert_eq!(search::archive(&app.filter_field()), search::Archive::Only);
+        let _ = app.update(Message::ToggleSearchFilters);
+        let _ = app.view();
+        let _ = app.update(Message::SearchFilter(QuickFilter::Unread));
+        assert_eq!(search::archive(&app.search), search::Archive::Only, "the archive stays: {}", app.search);
+        assert!(search::active(&app.search, today()).contains(&QuickFilter::Unread));
+        assert_eq!(app.search_from, Some(View::Archive), "from the archive");
+        let mut with = mail_window(Density::Compact, &["--open", "archive"]);
+        load(&mut with);
+        let _ = with.update(Message::SearchArchive(search::Archive::With));
+        assert_eq!(search::archive(&with.search), search::Archive::With);
+        let mut without = mail_window(Density::Compact, &["--open", "archive"]);
+        load(&mut without);
+        let _ = without.update(Message::SearchArchive(search::Archive::Without));
+        assert_eq!((without.view.clone(), without.search.as_str()), (View::All, ""), "the inboxes");
+        // One after the other in the same window: "With archive", then "Without archive" – "All", not
+        // back to the archive the search began in.
+        let _ = with.update(Message::SearchArchive(search::Archive::Without));
+        assert_eq!((with.view.clone(), with.search.as_str()), (View::All, ""), "the inboxes, not the archive");
+        assert!(with.search_from.is_none(), "the search is over");
+        load(&mut with);
+        assert_eq!(search::archive(&with.filter_field()), search::Archive::Without, "the menu says so");
+        // Something typed: the field as it is.
+        let mut typed = mail_window(Density::Compact, &["--open", "archive"]);
+        load(&mut typed);
+        typed.search = "budget".to_owned();
+        assert_eq!(typed.filter_field(), "budget");
     }
 
     /// Issue #502: "Drafts" lists the drafts of every account shown, newest first, as "Trash" lists its
@@ -24651,7 +25543,8 @@ mod tests {
         assert!(!app.sent[before..].iter().any(|sent| matches!(sent, Sent::Pile(..))), "no pile in a folder");
         assert!(!message_ids(&app).contains(&"m:w1") && !message_ids(&app).contains(&"m:w2"));
         deliver_archived(&mut app, before);
-        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Archived")));
+        let two = trf("{n} messages archived", &[("n", &2)]);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(two.as_str()));
         assert!(!message_ids(&app).contains(&"m:w1"), "archived");
         deliver_undo_filed(&mut app);
         assert!(message_ids(&app).contains(&"m:w1") && message_ids(&app).contains(&"m:w2"), "both back");
@@ -25930,8 +26823,9 @@ mod tests {
             block_on(app.inbox.set_item_done(entry.clone(), true)).expect("closed as the core does");
             assert!(entry_now(&app, entry).follow_up.is_none(), "closing cleared the follow-up");
         }
-        let Some(Undo::Mail { edit, reopen, follow }) = hint.undo else { panic!("an undo") };
-        block_on(undo_move(app.inbox.clone(), edit, reopen, follow)).expect("undone");
+        // Issue #992: each back to its own folder.
+        let Some(Undo::Filed { back, reopen, follow, piled }) = hint.undo else { panic!("an undo") };
+        block_on(undo_filed(app.inbox.clone(), back, piled, reopen, follow)).expect("undone");
 
         for (entry, when, unless_reply) in [(&one, at, true), (&other, later, false)] {
             let back = entry_now(&app, entry);
@@ -25957,13 +26851,17 @@ mod tests {
             assert!(app.detail.is_none() && app.reading, "{open}: a mail, no entry");
             assert_eq!(app.cursor.as_deref(), app.messages.first().map(|message| message.id.as_str()), "{open}");
         }
-        // The archive is "Only archive" of a search from All (issue #476).
+        // The archive is its view under "Folders" (issue #993), no search; "archive-only" is the
+        // search's filter "Only archive" from All (issue #476).
         let mut archive = mail_window(Density::Compact, &["--open", "archive"]);
         load(&mut archive);
-        assert_eq!(archive.view, View::Search(SearchView::new("in:archive", Scope::All, Sort::Relevance)));
-        assert_eq!(search::archive(&archive.search), search::Archive::Only);
-        assert_eq!(archive.search_from, Some(View::All), "from All");
+        assert_eq!(archive.view, View::Archive);
+        assert!(archive.search.is_empty() && archive.search_from.is_none(), "no search");
         assert!(!archive.messages.is_empty(), "the archived mail");
+        let mut only = mail_window(Density::Compact, &["--open", "archive-only"]);
+        load(&mut only);
+        assert_eq!(only.view, View::Search(SearchView::new("in:archive", Scope::All, Sort::Relevance)));
+        assert_eq!(only.search_from, Some(View::All), "from All");
         assert_eq!(overview_at(&["--view", "hub"]).view, View::Overview, "the hub keeps its overview");
         assert_eq!(overview_at(&["--view", "notifications"]).view, View::Overview);
         assert_eq!(overview_at(&["--view", "hub", "--open", "info"]).view, View::Info);
@@ -26196,6 +27094,7 @@ mod tests {
             colors: app.look.colors,
             hidden_categories: vec![hidden],
             click: app.look.click.clone(),
+            undo_for: app.look.undo_for,
         };
         assert!(app.update(Message::MailLook(Ok(stored.clone()))).units() > 0, "the group is loaded again");
         let View::Category(shown) = &app.view else { panic!("still the group") };
@@ -26221,6 +27120,7 @@ mod tests {
             colors: app.look.colors,
             hidden_categories: all,
             click: app.look.click.clone(),
+            undo_for: app.look.undo_for,
         };
         assert!(app.update(Message::MailLook(Ok(stored))).units() > 0, "All is loaded");
         assert_eq!(app.view, View::All);
@@ -26243,6 +27143,7 @@ mod tests {
             colors: app.look.colors,
             hidden_categories: with_mail,
             click: app.look.click.clone(),
+            undo_for: app.look.undo_for,
         };
         assert!(app.update(Message::MailLook(Ok(stored))).units() > 0, "All is loaded");
         assert!(!listed_groups(&app).contains(&group), "the group is gone from the sidebar");
@@ -26265,6 +27166,7 @@ mod tests {
             colors: app.look.colors,
             hidden_categories: all,
             click: app.look.click.clone(),
+            undo_for: app.look.undo_for,
         };
         assert!(app.update(Message::MailLook(Ok(stored))).units() > 0, "All is loaded");
         assert_eq!(app.view, View::All);
@@ -27161,11 +28063,16 @@ mod tests {
         };
 
         act(&mut app, Message::MarkSelectedMail(MailAction::Read(true)));
+        // With a hint and its undo (issue #992).
+        let sent_edit = |app: &App<DemoSource>| match app.sent.last() {
+            Some(Sent::Mail(edit, Some(_))) => Some(edit.clone()),
+            _ => None,
+        };
         let read = MailEdit::Flags { ids: ids.clone(), add: vec![Flag::Seen], remove: Vec::new() };
-        assert_eq!(app.sent.last(), Some(&Sent::Mail(read, None)));
+        assert_eq!(sent_edit(&app), Some(read));
         act(&mut app, Message::MarkSelectedMail(MailAction::Flag(true)));
         let flag = MailEdit::Flags { ids: ids.clone(), add: vec![Flag::Flagged], remove: Vec::new() };
-        assert_eq!(app.sent.last(), Some(&Sent::Mail(flag, None)));
+        assert_eq!(sent_edit(&app), Some(flag));
         assert!(app.messages.iter().filter(|m| ids.contains(&m.id)).all(|m| m.flags.contains(&Flag::Flagged)));
         assert_eq!(app.selected_mail, ids, "marking stays");
 
@@ -29681,7 +30588,7 @@ mod tests {
         let _ = app.update(Message::Undo);
         assert_eq!(cards(&app).iter().map(|card| card.kind.clone()).collect::<Vec<_>>(), ["task"], "back");
         let _ = app.update(Message::DismissSuggestion(account, id.clone(), "task".into()));
-        let _ = app.update(Message::HintTick(Instant::now() + UNDO_FOR));
+        let _ = app.update(Message::HintTick(Instant::now() + app.look.undo_for.duration()));
         assert_eq!(app.sent.last(), Some(&Sent::DismissSuggestion(id.clone(), "task".into())), "sent after the undo");
         assert!(cards(&app).is_empty());
         let _ = app.view();
@@ -30273,5 +31180,379 @@ mod tests {
         assert_eq!(mail::web_of(&mail, false, false), Web::All);
         mail.external = None;
         assert_eq!(mail::web_of(&mail, false, true), Web::Off);
+    }
+
+    // ----- Issue #992: undo with a history ----------------------------------------------------------
+
+    fn hint_text<S>(app: &App<S>) -> Option<&str> {
+        app.hint.as_ref().map(|hint| hint.text.as_str())
+    }
+
+    /// The move that brings the listed message `id` back to its folder, as the window sends it.
+    fn back_home<S>(app: &App<S>, id: &str) -> MailEdit {
+        let folder = app.messages.iter().find(|message| message.id == id).map(|message| message.folder.clone());
+        MailEdit::Move { ids: vec![id.to_owned()], to: MoveTarget::Folder(folder.expect("listed")) }
+    }
+
+    /// Issue #992: Ctrl + Z goes back change by change – also once the hints went, and past a hint
+    /// without undo –, the newest first; each says what it took back, and with none left that says so.
+    #[test]
+    fn undo_goes_back_through_the_history() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        let first = app.cursor.clone().expect("a mail");
+        let first_back = back_home(&app, &first);
+        let _ = press(&mut app, Key::Hash);
+        deliver_mail(&mut app);
+        let second = app.cursor.clone().expect("the next mail");
+        let second_back = back_home(&app, &second);
+        let _ = press(&mut app, Key::E);
+        deliver_mail(&mut app);
+        assert_eq!(hint_text(&app), Some(tr("Archived")));
+        // The hint goes with its time: its change stays in the history.
+        let _ = app.update(Message::HintTick(Instant::now() + Duration::from_secs(60)));
+        assert!(app.hint.is_none());
+        // A hint without undo replaces nothing in the history.
+        let _ = app.update(Message::Escape);
+        assert_eq!(app.history.len(), 2, "both changes kept");
+        let _ = app.update(Message::Undo);
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(second_back, None)), "the newest first");
+        assert_eq!(hint_text(&app), Some(trf("Undone: {change}", &[("change", &tr("Archived"))]).as_str()));
+        assert!(app.hint.as_ref().is_some_and(|hint| hint.undo.is_none()), "undoing has no undo of its own");
+        let _ = app.update(Message::UndoKeyChecked(None));
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(first_back, None)), "Ctrl + Z outside a field");
+        assert_eq!(hint_text(&app), Some(trf("Undone: {change}", &[("change", &tr("Moved to Trash"))]).as_str()));
+        let _ = app.update(Message::Undo);
+        assert_eq!(hint_text(&app), Some(tr("Nothing to undo")));
+    }
+
+    /// Issue #992: a hint without undo – here one saying an undo failed – takes the place of a hint
+    /// with undo, but that undo goes into the history instead of being lost.
+    #[test]
+    fn a_hint_without_undo_keeps_the_undo_it_replaces() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        let id = app.cursor.clone().expect("a mail");
+        let _ = press(&mut app, Key::E);
+        deliver_mail(&mut app);
+        let undo = app.hint.as_ref().and_then(|hint| hint.undo.clone()).expect("archiving offers undo");
+        let _ = app.update(Message::Undid(Err("boom".into()), Vec::new(), "Something".into()));
+        assert!(app.hint.as_ref().is_some_and(|hint| hint.undo.is_none()));
+        assert_eq!(app.history.last().map(|kept| &kept.undo), Some(&undo), "kept for Ctrl + Z");
+        let _ = app.update(Message::Undo);
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(back_home_of(&undo), None)));
+        assert!(!id.is_empty());
+    }
+
+    fn back_home_of(undo: &Undo) -> MailEdit {
+        match undo {
+            Undo::Mail { edit, .. } => edit.clone(),
+            other => panic!("not a move back: {other:?}"),
+        }
+    }
+
+    /// Issue #992: the history keeps the newest [`HISTORY_LEN`] changes.
+    #[test]
+    fn the_history_keeps_the_newest_twenty() {
+        let mut app = in_folder("f:work-inbox");
+        for n in 0..HISTORY_LEN + 5 {
+            app.hint = Some(Hint {
+                text: format!("change {n}"),
+                undo: Some(Undo::Dismissed(vec![format!("e{n}")])),
+                shown: Instant::now(),
+                folder: None,
+                contact: None,
+            });
+            let _ = app.update(Message::Escape);
+        }
+        assert_eq!(app.history.len(), HISTORY_LEN);
+        assert_eq!(app.history.first().map(|kept| kept.text.as_str()), Some("change 5"), "the oldest went");
+        assert_eq!(app.history.last().map(|kept| kept.text.as_str()), Some("change 24"));
+    }
+
+    /// Issue #992: a failed undo says which change and why in the hint – the mail moved on meanwhile or
+    /// the server out of reach – and leaves the history so that Ctrl + Z goes on with the change before.
+    #[test]
+    fn a_failed_undo_says_so_and_goes_on_with_the_change_before() {
+        for reason in ["not-found: the message is gone", "offline: the server can't be reached"] {
+            let mut app = in_folder("f:work-inbox");
+            let _ = press(&mut app, Key::Down);
+            let first = app.cursor.clone().expect("a mail");
+            let first_back = back_home(&app, &first);
+            let _ = press(&mut app, Key::Hash);
+            deliver_mail(&mut app);
+            let _ = press(&mut app, Key::E);
+            deliver_mail(&mut app);
+            let _ = app.update(Message::Undo);
+            let Some(Sent::Mail(back, None)) = app.sent.last().cloned() else { panic!("the move back") };
+            let _ = app.update(Message::Undid(Err(reason.into()), back.ids().to_vec(), tr("Archived").to_owned()));
+            let said = trf(
+                "Couldn't undo \u{201c}{change}\u{201d}: {reason}",
+                &[("change", &tr("Archived")), ("reason", &reason)],
+            );
+            assert_eq!(hint_text(&app), Some(said.as_str()), "{reason}");
+            assert_eq!(app.failed_hint, app.hint.as_ref().map(|hint| hint.shown), "shown as a failure");
+            assert_eq!(app.history.len(), 1, "the failed change is gone, the one before is there");
+            let _ = app.update(Message::Undo);
+            assert_eq!(app.sent.last(), Some(&Sent::Mail(first_back, None)), "{reason}: the change before");
+        }
+    }
+
+    /// Issue #992: moving mail back is the core's move by the mail's id, which stays when the mail
+    /// moves – so the undo finds it also when it moved on since (here into the trash).
+    #[test]
+    fn undo_brings_mail_back_that_moved_on_since() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        let id = app.cursor.clone().expect("a mail");
+        let back = back_home(&app, &id);
+        let _ = press(&mut app, Key::E);
+        deliver_mail(&mut app);
+        let ids = vec![id.clone()];
+        block_on(MailSource::move_mail(app.inbox.as_ref(), ids, MoveTarget::Role(MoveRole::Trash))).expect("moved on");
+        block_on(back.clone().apply(app.inbox.clone())).expect("the undo's move finds it");
+        let MailEdit::Move { to: MoveTarget::Folder(home), .. } = &back else { panic!("to its folder") };
+        let mail = block_on(MailSource::get_mail(app.inbox.as_ref(), id.clone())).expect("the mail");
+        assert_eq!(&mail.summary.folder, home, "back in its folder");
+    }
+
+    /// Issue #992: "Mark read" on several marked mails says how many and takes back only the mails it
+    /// turned – a mail read before stays read.
+    #[test]
+    fn marking_several_read_takes_back_only_what_it_turned() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let ids: Vec<String> = app.messages.iter().take(3).map(|message| message.id.clone()).collect();
+        let read: Vec<String> = ids.iter().filter(|id| app.mail_has(id, Flag::Seen)).cloned().collect();
+        let unread: Vec<String> = ids.iter().filter(|id| !read.contains(id)).cloned().collect();
+        assert!(!unread.is_empty(), "the demo lists unread mail first");
+        app.selected_mail = ids.clone();
+        let _ = app.update(Message::MarkSelectedMail(MailAction::Read(true)));
+        let Some(Sent::Mail(_, Some(hint))) = app.sent.last().cloned() else { panic!("sent with its hint") };
+        assert_eq!(hint.text, trf("{n} messages marked as read", &[("n", &3)]));
+        let back = MailEdit::Flags { ids: unread, add: Vec::new(), remove: vec![Flag::Seen] };
+        assert_eq!(hint.undo, Some(Undo::Flags(vec![back.clone()])));
+        assert!(ids.iter().all(|id| app.mail_has(id, Flag::Seen)), "shown read at once");
+        deliver_mail(&mut app);
+        let _ = app.update(Message::Undo);
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(back.clone(), None)));
+        assert!(back.ids().iter().all(|id| !app.mail_has(id, Flag::Seen)), "unread again at once");
+        assert!(read.iter().all(|id| app.mail_has(id, Flag::Seen)), "read before, read still");
+    }
+
+    /// Issue #992: marking one mail by hand has a hint with undo; opening it marks it read without one.
+    #[test]
+    fn marking_one_mail_by_hand_has_an_undo() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        let id = app.cursor.clone().expect("a mail");
+        let was = app.mail_has(&id, Flag::Flagged);
+        let _ = app.update(Message::Mail(MailAction::Flag(!was), id.clone()));
+        let Some(Sent::Mail(_, Some(hint))) = app.sent.last().cloned() else { panic!("sent with its hint") };
+        assert_eq!(hint.text, if was { tr("Unflagged") } else { tr("Flagged") });
+        let (add, remove) = if was { (vec![Flag::Flagged], Vec::new()) } else { (Vec::new(), vec![Flag::Flagged]) };
+        assert_eq!(hint.undo, Some(Undo::Flags(vec![MailEdit::Flags { ids: vec![id], add, remove }])));
+    }
+
+    /// Issue #992: filing a mail under a category by hand says so; its undo files it back and removes
+    /// the rule "Always for {sender}" the change made.
+    #[test]
+    fn a_category_set_by_hand_is_undone_with_its_rule() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let message = app.messages.iter().find(|message| message.category.is_some()).cloned().expect("filed mail");
+        let before = message.category.map(|held| held.category).expect("a category");
+        let to = if before == torro_mail::Category::Invoice {
+            torro_mail::Category::Receipt
+        } else {
+            torro_mail::Category::Invoice
+        };
+        let _ = app.update(Message::SetCategory(message.id.clone(), to, true));
+        assert_eq!(app.sent.last(), Some(&Sent::SetCategory(vec![(message.id.clone(), to)], true)));
+        let hint = Hint {
+            text: mail::categorized_text(&app.category_label(to), 1),
+            undo: Some(Undo::Category { back: vec![(message.id.clone(), before)], rule: None, replaced: None }),
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        };
+        let _ = app.update(Message::CategorySet(Ok((Some("rule-7".into()), None)), Box::new(hint)));
+        let shown = app.hint.clone().expect("the hint");
+        assert_eq!(shown.text, trf("Filed under {category}", &[("category", &app.category_label(to))]));
+        let back = vec![(message.id.clone(), before)];
+        let undo = Undo::Category { back: back.clone(), rule: Some("rule-7".into()), replaced: None };
+        assert_eq!(shown.undo, Some(undo));
+        let _ = app.update(Message::Undo);
+        assert_eq!(app.sent.last(), Some(&Sent::Category(back, Some("rule-7".into()))));
+    }
+
+    /// Issue #992: "Category ▸" files every marked mail, without "Always for {sender}"; the undo files
+    /// each back under its own category.
+    #[test]
+    fn marked_mail_is_filed_together_and_back_each_on_its_own() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let filed: Vec<MessageSummary> =
+            app.messages.iter().filter(|message| message.category.is_some()).take(3).cloned().collect();
+        assert_eq!(filed.len(), 3, "three filed mails in the demo");
+        app.selected_mail = filed.iter().map(|message| message.id.clone()).collect();
+        let _ = app.update(Message::AskCategorySelected);
+        assert_eq!(app.menu, Some(Menu::Category));
+        assert!(
+            !app.context_entries(Menu::Category)
+                .iter()
+                .any(|(message, _)| matches!(message, Some(Message::ToggleCategoryAlways))),
+            "no \"Always for\" for several senders"
+        );
+        let to = torro_mail::Category::Invoice;
+        let _ = app.update(Message::PickCategory(to));
+        let ids: Vec<String> = app.selected_ids();
+        assert_eq!(app.sent.last(), Some(&Sent::SetCategory(ids.iter().map(|id| (id.clone(), to)).collect(), false)));
+        assert!(app.category_selection.is_none() && app.menu.is_none());
+    }
+
+    /// Issue #992: deleting marked mails of several folders and accounts has one undo that moves each
+    /// back to its own folder.
+    #[test]
+    fn deleting_mail_of_several_folders_moves_each_back_home() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let marked: Vec<MessageSummary> = app.messages.iter().take(3).cloned().collect();
+        let accounts: std::collections::BTreeSet<&str> =
+            marked.iter().map(|message| message.account.as_str()).collect();
+        assert!(accounts.len() > 1, "the demo's first mails come from several accounts");
+        app.selected_mail = marked.iter().map(|message| message.id.clone()).collect();
+        let _ = app.update(Message::DeleteSelectedMail);
+        let Some(Sent::Mail(_, Some(hint))) = app.sent.last().cloned() else { panic!("the delete") };
+        assert_eq!(hint.text, trf("{n} messages moved to Trash", &[("n", &3)]));
+        let Some(Undo::Filed { back, .. }) = hint.undo else { panic!("one undo for all") };
+        for message in &marked {
+            let home = MoveTarget::Folder(message.folder.clone());
+            assert!(
+                back.iter()
+                    .any(|edit| matches!(edit, MailEdit::Move { ids, to } if *to == home && ids.contains(&message.id))),
+                "{} goes back to its own folder",
+                message.id
+            );
+        }
+    }
+
+    /// Issue #992: the hint with "Undo" stands as long as the setting says (10 s), one without as every
+    /// toast does.
+    #[test]
+    fn the_undo_hint_stands_as_long_as_the_setting_says() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        let _ = press(&mut app, Key::E);
+        deliver_mail(&mut app);
+        let shown = app.hint.as_ref().map(|hint| hint.shown).expect("the hint");
+        assert_eq!(app.look.undo_for.get(), 10);
+        let _ = app.update(Message::HintTick(shown + UNDO_FOR));
+        assert!(app.hint.is_some(), "still there after 5 s");
+        let _ = app.update(Message::HintTick(shown + app.look.undo_for.duration()));
+        assert!(app.hint.is_none(), "gone after 10 s");
+        assert_eq!(app.history.len(), 1, "and kept");
+    }
+
+    /// Issue #992: Ctrl + Z in the search field takes its text back, not the change of mail.
+    #[test]
+    fn ctrl_z_in_the_search_field_takes_its_text_back() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        let _ = press(&mut app, Key::E);
+        deliver_mail(&mut app);
+        let _ = app.update(Message::SearchInput("budget".into()));
+        let sent = app.sent.len();
+        let _ = app.update(Message::UndoKeyChecked(Some(iced::widget::Id::new(search::FIELD))));
+        assert_eq!(app.search, "", "the text a step back");
+        assert_eq!(app.sent.len(), sent, "no mail moved back");
+        assert!(app.hint.as_ref().is_some_and(|hint| hint.undo.is_some()), "the undo of the mail stays");
+        // Another field keeps the key: it has no steps back, and the mail is not its business.
+        let _ = app.update(Message::UndoKeyChecked(Some(iced::widget::Id::new(ask::FIELD))));
+        assert!(app.hint.as_ref().is_some_and(|hint| hint.undo.is_some()));
+    }
+
+    /// Issue #992: typing within a second is one step back; a pause starts the next.
+    #[test]
+    fn text_steps_join_what_is_typed_in_a_burst() {
+        let mut back = TextBack::default();
+        let start = Instant::now();
+        back.note("", start);
+        back.note("b", start + Duration::from_millis(300));
+        back.note("bu", start + Duration::from_millis(600));
+        back.note("bud", start + Duration::from_secs(3));
+        assert_eq!(back.back().as_deref(), Some("bud"));
+        assert_eq!(back.back().as_deref(), Some(""));
+        assert_eq!(back.back(), None);
+    }
+
+    /// Review of #992: a second category before the load starts from the first – its undo goes back
+    /// one step, not two.
+    #[test]
+    fn a_second_category_before_the_load_starts_from_the_first() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let message = app.messages.iter().find(|message| message.category.is_some()).cloned().expect("filed mail");
+        let b = torro_mail::Category::Invoice;
+        let _ = app.update(Message::SetCategory(message.id.clone(), b, false));
+        // What the undo of the next change goes back to.
+        assert_eq!(app.category_of(&message.id), Some(b), "shown at once, before the core's answer");
+        let listed = app.messages.iter().find(|held| held.id == message.id).and_then(|held| held.category);
+        assert_eq!(listed.map(|held| held.category), Some(b), "the row as well");
+    }
+
+    /// Review of #992: the marked mails filed before one failed keep their undo; the error line says
+    /// why the rest did not.
+    #[test]
+    fn filing_several_keeps_the_undo_of_those_filed_before_a_failure() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let filed: Vec<MessageSummary> =
+            app.messages.iter().filter(|message| message.category.is_some()).take(3).cloned().collect();
+        let back: Vec<(String, torro_mail::Category)> = filed
+            .iter()
+            .map(|message| (message.id.clone(), message.category.map(|held| held.category).expect("filed")))
+            .collect();
+        let hint = Hint {
+            text: String::new(),
+            undo: Some(Undo::Category { back: back.clone(), rule: None, replaced: None }),
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        };
+        let done = vec![back[0].0.clone()];
+        let _ = app.update(Message::CategoriesSet(done, Some("offline".into()), Box::new(hint), "Invoice".into()));
+        let shown = app.hint.clone().expect("a hint for the one filed");
+        assert_eq!(shown.text, trf("Filed under {category}", &[("category", &"Invoice")]));
+        assert_eq!(shown.undo, Some(Undo::Category { back: vec![back[0].clone()], rule: None, replaced: None }));
+        assert!(app.error.is_some(), "the error line says why the rest did not");
+    }
+
+    /// Review of #992: "Always for {sender}" that replaced the sender's rule puts that rule back on undo.
+    #[test]
+    fn undo_of_always_puts_the_replaced_rule_back() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let message = app.messages.iter().find(|message| message.category.is_some()).cloned().expect("filed mail");
+        let before = message.category.map(|held| held.category).expect("a category");
+        let hint = Hint {
+            text: String::new(),
+            undo: Some(Undo::Category { back: vec![(message.id.clone(), before)], rule: None, replaced: None }),
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        };
+        let old = torro_mail::Category::Newsletter;
+        let _ = app.update(Message::CategorySet(Ok((Some("r9".into()), Some(old))), Box::new(hint)));
+        let undo = app.hint.as_ref().and_then(|hint| hint.undo.clone());
+        let expected =
+            Undo::Category { back: vec![(message.id.clone(), before)], rule: Some("r9".into()), replaced: Some(old) };
+        assert_eq!(undo, Some(expected));
+    }
+
+    /// Review of #992: in a view of entries a mail read but not listed counts as read, as the menu of
+    /// the marked mail says – "Mark unread" on it has an undo, and only for it.
+    #[test]
+    fn marking_an_entrys_read_mail_unread_has_an_undo() {
+        let mut app = in_folder("f:work-inbox");
+        app.messages.clear();
+        app.seen_mail.insert("m:x1".into());
+        let _ = app.update(Message::Mail(MailAction::Read(false), "m:x1".into()));
+        let Some(Sent::Mail(_, Some(hint))) = app.sent.last().cloned() else { panic!("sent with its hint") };
+        let back = MailEdit::Flags { ids: vec!["m:x1".into()], add: vec![Flag::Seen], remove: Vec::new() };
+        assert_eq!(hint.undo, Some(Undo::Flags(vec![back])));
     }
 }

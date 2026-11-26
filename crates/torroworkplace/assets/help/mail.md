@@ -18,7 +18,7 @@ Filters are in "Categorization", or "Create filter…" on a mail or from the sea
 
 ## Undo
 
-Ctrl + Z (⌘ Z on macOS) or `u` undoes the last archive, delete, move or snooze, within 5 seconds. "Delete permanently" and "Unsubscribe" ask first and cannot be undone. Sending cannot be undone.
+Ctrl + Z (⌘ Z on macOS) or `u` undoes the last change of mail: archive, delete, move, category, read or unread, flag and snooze, also for several marked mails at once. Each press goes one change further back, up to 20, even after the hint at the bottom is gone. In the search field and the reply field Ctrl + Z takes the text back instead. How long the hint with "Undo" stays is set under Reading & writing › Undo (10 seconds unless changed). "Delete permanently" and "Unsubscribe" ask first and cannot be undone. Sending cannot be undone.
 
 ## Attachments
 

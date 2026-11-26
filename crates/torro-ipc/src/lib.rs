@@ -6304,6 +6304,9 @@ pub enum SettingKey {
     /// checks the DKIM signature of new mail and keeps the logo of a sender's domain whose mail
     /// passed; off, it checks and fetches nothing, and mail carries no `logo`.
     MailSenderLogos,
+    /// How long the hint after a change of mail offers "Undo" in the inbox (issue #992): a whole
+    /// number of seconds from 5 to 30, 10 unless changed. Ctrl + Z takes changes back after it too.
+    MailUndoSeconds,
     /// How reminders of events come (task ER1.2), as one object; it changes only the fields it
     /// names, and in `calendars` only the calendars it names (`torro_core::settings::Reminders`);
     /// a calendar the client does not see is `not-found`: `{"enabled": true, "defaultLead": 1 (minutes

@@ -1223,6 +1223,38 @@ impl InboxClient {
         }
     }
 
+    /// `inbox.set_item_category` as [`InboxClient::set_mail_category`] does it, also with the id of
+    /// the lasting rule `remember` made (issue #992): `None` without `remember` and when the same rule
+    /// was there already, so taking the call back removes only a rule it made (`inbox.remove_rule`).
+    pub async fn set_mail_category_ruled(
+        &self,
+        id: String,
+        category: torro_mail::Category,
+        remember: bool,
+    ) -> Result<(Item, Option<String>), InboxError> {
+        match self.ask(Request::SetItemCategory { id, category, remember }).await? {
+            Response::ItemCategory { item, rule, new_rule } => Ok((item, made_rule(rule, new_rule))),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.list_rules`, only the category the rule "Always for {sender}" files mail of `sender`
+    /// under (issue #992): `None` without one. Filing with `remember` replaces such a rule, so taking
+    /// it back puts this one back.
+    pub async fn sender_category(&self, sender: String) -> Result<Option<torro_mail::Category>, InboxError> {
+        match self.ask(Request::ListRules).await? {
+            Response::Rules { rules, .. } => Ok(rules.into_iter().find_map(|rule| match rule.effect {
+                torro_inbox::item::RuleEffect::Category { category }
+                    if rule.sender.as_deref().is_some_and(|held| held.eq_ignore_ascii_case(&sender)) =>
+                {
+                    Some(category)
+                }
+                _ => None,
+            })),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// `inbox.classify_item` (task E12.8): asks the decision model again.
     pub async fn classify_mail(&self, id: String) -> Result<Item, InboxError> {
         match self.ask(Request::ClassifyItem { id }).await? {
@@ -1460,6 +1492,12 @@ fn invitation_text(text: &str) -> String {
         .join(" ")
 }
 
+/// The id of the rule an answer of `inbox.set_item_category` names, only when the call made it
+/// (`new_rule`, issue #992): a rule that was there already is not the call's to take back.
+fn made_rule(rule: Option<torro_inbox::item::Rule>, new_rule: bool) -> Option<String> {
+    rule.filter(|_| new_rule).map(|rule| rule.id)
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::future::Future;
@@ -1471,6 +1509,27 @@ mod tests {
     use super::*;
 
     use crate::{client, server};
+
+    /// Issue #992: taking back filing by hand removes only a rule the call made, never one that was
+    /// there already.
+    #[test]
+    fn only_a_rule_the_call_made_is_named() {
+        let rule = || {
+            Some(torro_inbox::item::Rule {
+                id: "r7".into(),
+                source: SourceRef::script("deploy"),
+                sender: Some("shop@example.org".into()),
+                domain: None,
+                effect: torro_inbox::item::RuleEffect::Muted,
+                created: Utc.timestamp_opt(0, 0).single().unwrap_or_default(),
+                facet: None,
+                until: None,
+            })
+        };
+        assert_eq!(made_rule(rule(), true).as_deref(), Some("r7"));
+        assert_eq!(made_rule(rule(), false), None, "there already: not this call's");
+        assert_eq!(made_rule(None, true), None);
+    }
 
     /// Issue #290: the plans and targets of `mail.list_save_targets` are found by part and id.
     #[test]
