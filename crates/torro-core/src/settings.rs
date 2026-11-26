@@ -1423,8 +1423,8 @@ pub enum SpeechProvider {
     /// graphics card or network (#762); its model is downloaded in the settings.
     #[serde(rename = "pocket")]
     Pocket,
-    /// `qwen`: Qwen3-TTS (0.6B Base) built into the assistant through Crane, on an NVIDIA graphics
-    /// card, cloning the voice templates of the app (#764). Only in builds with [`QWEN_BUILT`]; its
+    /// `qwen`: Qwen3-TTS (0.6B Base) through Crane in the program `torro-qwen-tts` (#808), on an NVIDIA
+    /// graphics card, cloning the voice templates of the app (#764). Only in builds with [`QWEN_BUILT`]; its
     /// model is downloaded in the settings like Pocket's.
     #[serde(rename = "qwen")]
     Qwen,
