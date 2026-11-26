@@ -13,6 +13,17 @@
 //!   as endpoints ([`Naming::Endpoints`]), its latest requests from the audit log (command and
 //!   result, never contents), "Create new key" and "Revoke…", each behind a confirmation. A new key
 //!   is shown once, with a copy button.
+//! - **Tabs** (issue #687, the page of a key and of an MCP client alike, [`Tab`]):
+//!
+//!   ```text
+//!   Access       the access group without the tools ([`rights::Part::Access`]), "Ask first"
+//!   Selections   the calendars, lists, address books … of each area with access, side by side
+//!   Tools        the levels of the built-in tools and MCP servers, the selection of tools
+//!   Connection   MCP's "Notification Hub", "Recent activity", "Key", then "Revoke…" / "Disconnect…"
+//!   ```
+//!
+//!   A tab only changes what is shown; it sends nothing. The page opens from the list at Access and
+//!   keeps its tab while another client of the section opens in its place.
 //!
 //! The assistant, its bots and hook clients are on no page here ([`Home::of`]): the first two are
 //! set in the assistant's window (task S.34), hooks on the page of their agent under MCP.
@@ -42,7 +53,7 @@ use torro_gui::{style, typo};
 use torro_inbox::AgentKind;
 use torro_ipc::api::{ASSISTANT_CLIENT, BOT_CLIENT, HOOK_CLIENT, MCP_CLIENT, SCRIPT_CLIENT, is_mcp_kind};
 use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response};
-use torro_settings_ui::rights::{self, Naming, control_column, in_column, rights_summary};
+use torro_settings_ui::rights::{self, Naming, Part, control_column, in_column, rights_summary};
 
 use super::accounts::{on_axis, relative_time};
 use super::{Action, Data, Header, agent_wizard, chevron, confirm, dialog, pressable, row_frame, setting_row};
@@ -93,6 +104,8 @@ pub struct Page {
     home: Home,
     /// The client whose page is open (its `ClientInfo::id`); `None` shows the section's list.
     pub selected: Option<String>,
+    /// The tab on screen (issue #687); back at Access with the list.
+    pub tab: Tab,
     /// The rights editor: its draft on the way to the core, the typed repository, the open areas.
     rights: rights::State,
     /// The client whose activity was asked for and not answered yet.
@@ -107,6 +120,57 @@ pub struct Page {
     issued: Option<Issued>,
     /// The client whose removal was sent, until the core confirms it.
     removing: Option<String>,
+}
+
+/// The tabs of a client's page (issue #687), the same for a key and an MCP client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Tab {
+    /// What the client may do in each area of the suite, and "Ask first".
+    #[default]
+    Access,
+    /// The calendars, lists, address books, accounts … of each area it may use.
+    Selections,
+    /// The built-in tools and MCP servers with their levels, and which tools.
+    Tools,
+    /// How it is connected: the hooks of an agent, its latest requests, its key, the way to end it.
+    Connection,
+}
+
+impl Tab {
+    /// Every tab, in the order of the row; the index is what [`PageMessage::Tab`] carries.
+    pub const ALL: [Tab; 4] = [Tab::Access, Tab::Selections, Tab::Tools, Tab::Connection];
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::Access => tr("Access"),
+            Tab::Selections => tr("Selections"),
+            Tab::Tools => tr("Tools"),
+            Tab::Connection => tr("Connection"),
+        }
+    }
+
+    /// The message that chooses this tab, as its place in the row does.
+    pub fn select(self) -> PageMessage {
+        PageMessage::Tab(Tab::ALL.iter().position(|tab| *tab == self).unwrap_or(0))
+    }
+
+    /// The title of the access group on the tab: not the tab's own name again (Access, Tools).
+    fn group_title(self) -> &'static str {
+        match self {
+            Tab::Tools => tr("Built-in tools and MCP servers"),
+            _ => tr("Areas"),
+        }
+    }
+
+    /// The part of the rights editor the tab shows; none for Connection.
+    fn part(self) -> Option<Part> {
+        match self {
+            Tab::Access => Some(Part::Access),
+            Tab::Selections => Some(Part::Selections),
+            Tab::Tools => Some(Part::Tools),
+            Tab::Connection => None,
+        }
+    }
 }
 
 /// The confirmations of a client's page.
@@ -136,6 +200,8 @@ pub enum PageMessage {
     Open(String),
     /// Back from the page to the list.
     Back,
+    /// A tab of the row, by its place in [`Tab::ALL`]: shows that part, sends nothing.
+    Tab(usize),
     /// A control of the rights editor, its clock included ([`Page::subscription`]).
     Rights(rights::Message),
     /// "Create new key", then its confirmation.
@@ -161,6 +227,7 @@ impl Page {
         Page {
             home,
             selected: None,
+            tab: Tab::Access,
             rights: rights::State::default(),
             asked: None,
             activity: None,
@@ -185,9 +252,14 @@ impl Page {
             PageMessage::Open(id) => self.open(id),
             PageMessage::Back => {
                 self.selected = None;
+                self.tab = Tab::Access;
                 self.dialog = None;
                 // Leaving the page is a good moment to save; the clock would do it a moment later.
                 from_editor(rights::save_now(&mut self.rights))
+            }
+            PageMessage::Tab(index) => {
+                self.tab = Tab::ALL.get(index).copied().unwrap_or(Tab::Access);
+                Action::None
             }
             PageMessage::Rights(message) => {
                 let client = self.client(data);
@@ -221,6 +293,7 @@ impl Page {
                 self.dialog = None;
                 let Some(id) = self.client(data).map(|client| client.id.clone()) else { return Action::None };
                 self.selected = None;
+                self.tab = Tab::Access;
                 // Its rights need not be saved any more.
                 rights::forget(&mut self.rights, &id);
                 self.remove(id)
@@ -244,8 +317,13 @@ impl Page {
         self.removing.is_some()
     }
 
-    /// Opens the page of the client `id`: its latest requests come with it.
+    /// Opens the page of the client `id`: its latest requests come with it. From the list it opens at
+    /// Access; in place of another client's page (a sibling in the path) it keeps the tab, so the same
+    /// part of two clients can be compared.
     fn open(&mut self, id: String) -> Action {
+        if self.selected.is_none() {
+            self.tab = Tab::Access;
+        }
         self.selected = Some(id.clone());
         self.dialog = None;
         rights::leave(&mut self.rights);
@@ -363,29 +441,28 @@ impl Page {
         heading(client.name.as_str(), about(self.home, client, now))
     }
 
-    /// The rights editor of a client's page ([`rights::groups`], the commands named after the
-    /// section), the controls in `column` ([`control_column`]).
-    pub fn rights_groups<'a>(
+    /// The row of tabs over a client's page.
+    pub fn tab_row<'a>(&self) -> Element<'a, PageMessage> {
+        let labels = Tab::ALL.iter().map(|tab| (tab.label().to_string(), None)).collect();
+        let chosen = Tab::ALL.iter().position(|tab| *tab == self.tab).unwrap_or(0);
+        widgets::tabs(labels, chosen, PageMessage::Tab)
+    }
+
+    /// One part of the rights editor of a client's page ([`rights::part_groups`], the commands named
+    /// after the section), each group or block of groups an element, the controls in `column`
+    /// ([`control_column`]).
+    fn rights_part<'a>(
         &'a self,
         client: &'a ClientInfo,
         data: &'a Data,
+        part: Part,
         column: Option<f32>,
     ) -> Vec<Element<'a, PageMessage>> {
         let rights = rights::shown(&self.rights, client);
-        let editor =
-            rights::groups(&self.rights, rights, &client.kind, &known(data), self.home.naming(), tr("Access"), column);
+        let naming = self.home.naming();
+        let title = self.tab.group_title();
+        let editor = rights::part_groups(&self.rights, rights, &client.kind, &known(data), naming, title, column, part);
         editor.into_iter().map(|group| group.map(PageMessage::Rights)).collect()
-    }
-
-    /// Beside the rights of a client's page (issue #464): its latest requests, then its key with
-    /// "Create new key" – the order of the page before, so one column reads as it did.
-    pub fn activity_and_key<'a>(
-        &'a self,
-        client: &ClientInfo,
-        now: DateTime<Utc>,
-        column: Option<f32>,
-    ) -> Vec<Element<'a, PageMessage>> {
-        vec![self.activity_group(client, now), key_group(self.home, column)]
     }
 
     /// The end of a client's page, under its columns: "Revoke…" (API) or "Disconnect…" (MCP).
@@ -399,7 +476,7 @@ impl Page {
 
     /// The latest requests: command, time and result. The log holds no contents, so neither does
     /// the page.
-    fn activity_group<'a>(&'a self, client: &ClientInfo, now: DateTime<Utc>) -> Element<'a, PageMessage> {
+    pub fn activity_group<'a>(&'a self, client: &ClientInfo, now: DateTime<Utc>) -> Element<'a, PageMessage> {
         let title = tr("Recent activity");
         let entries = match &self.activity {
             Some((id, entries)) if *id == client.id => entries,
@@ -586,7 +663,7 @@ fn activity_row<'a, M: 'a>(home: Home, entry: &'a ActivityEntry, now: DateTime<U
 }
 
 /// The key: where it lives, and "Create new key".
-fn key_group<'a>(home: Home, column: Option<f32>) -> Element<'a, PageMessage> {
+pub fn key_group<'a>(home: Home, column: Option<f32>) -> Element<'a, PageMessage> {
     let create =
         widgets::text_button(None, tr("Create new key"), style::button::secondary, Some(PageMessage::AskNewKey));
     let detail = match home {
@@ -730,12 +807,7 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let now = Utc::now();
     match state.page.client(data) {
-        // The rights' controls line up in the width of their column (issue #464).
-        Some(client) => responsive(move |size| {
-            detail(state, client, data, now, control_column(widgets::page_column_width(size.width, 2)))
-        })
-        .height(Length::Shrink)
-        .into(),
+        Some(client) => detail(&state.page, client, data, now, Message::Page, None),
         None => list(state, data, now),
     }
 }
@@ -753,24 +825,69 @@ fn list<'a>(state: &'a State, data: &'a Data, now: DateTime<Utc>) -> Element<'a,
     widgets::group(tr("Keys"), rows, Some(footer.to_string()))
 }
 
-/// A key's page: the shared parts of [`Page`], the controls in `slot`; the rights beside the key and
-/// its activity where the page is wide (issue #464).
-fn detail<'a>(
-    state: &'a State,
+/// What heads the tab Connection of an MCP client's page, given the width of its controls: the group
+/// "Notification Hub" of an agent with hooks (`mcp.rs`).
+pub type Head<'a, M> = Box<dyn Fn(Option<f32>) -> Element<'a, M> + 'a>;
+
+/// A client's page (issue #687), a key's and an MCP client's alike: its name, the row of tabs, the
+/// tab's part, each wrapped by `wrap` into the section's messages.
+///
+/// - **Access** ("Areas" and "Ask first") and **Tools** ("Built-in tools and MCP servers" and which
+///   tools): one column, the controls lined up across it – the levels stand in the same place on both.
+/// - **Selections:** each selection a block ([`widgets::page_columns`]), side by side where the page is
+///   wide (issue #464), so the address books are not screens down.
+/// - **Connection:** `head` and "Key" beside "Recent activity", then "Revoke…" / "Disconnect…" under
+///   both, the one thing that ends the client.
+pub fn detail<'a, M: 'a>(
+    page: &'a Page,
     client: &'a ClientInfo,
     data: &'a Data,
     now: DateTime<Utc>,
-    slot: Option<f32>,
-) -> Element<'a, Message> {
-    let page = &state.page;
-    let blocks = widgets::page_columns(move || {
-        let rights = page.rights_groups(client, data, slot);
-        let key = page.activity_and_key(client, now, slot);
-        page_blocks([rights, key].map(|parts| parts.into_iter().map(|part| part.map(Message::Page)).collect()))
-    });
-    column![page.title(client, now).map(Message::Page), blocks, page.away().map(Message::Page)]
-        .spacing(layout::section_gap())
-        .into()
+    wrap: fn(PageMessage) -> M,
+    head: Option<Head<'a, M>>,
+) -> Element<'a, M> {
+    let title = page.title(client, now).map(wrap);
+    let tabs = page.tab_row().map(wrap);
+    let body: Element<'a, M> = match page.tab.part() {
+        // The levels in one column on both tabs that have them, so they stand in the same place.
+        Some(part @ (Part::Access | Part::Tools)) => responsive(move |size| {
+            let groups = page.rights_part(client, data, part, control_column(size.width));
+            column(groups.into_iter().map(|group| group.map(wrap))).spacing(layout::section_gap()).into()
+        })
+        .height(Length::Shrink)
+        .into(),
+        // Each selection a block; the controls line up in the width of one column.
+        Some(part) => responsive(move |size| {
+            let count = page.rights_part(client, data, part, None).len();
+            let slot = control_column(widgets::page_column_width(size.width, count));
+            widgets::page_columns(move || {
+                page.rights_part(client, data, part, slot).into_iter().map(|group| group.map(wrap)).collect()
+            })
+        })
+        .height(Length::Shrink)
+        .into(),
+        None => {
+            let head = std::rc::Rc::new(head);
+            let blocks = responsive(move |size| {
+                let slot = control_column(widgets::page_column_width(size.width, 2));
+                let head = head.clone();
+                widgets::page_columns(move || {
+                    let key: Vec<Element<'a, M>> = head
+                        .as_ref()
+                        .as_ref()
+                        .map(|head| head(slot))
+                        .into_iter()
+                        .chain([key_group(page.home, slot).map(wrap)])
+                        .collect();
+                    let activity = vec![page.activity_group(client, now).map(wrap)];
+                    page_blocks([key, activity])
+                })
+            })
+            .height(Length::Shrink);
+            column![blocks, page.away().map(wrap)].spacing(layout::section_gap()).into()
+        }
+    };
+    column![title, tabs, body].spacing(layout::section_gap()).into()
 }
 
 /// The blocks of a client's page for [`widgets::page_columns`]: the groups of each block under each
@@ -905,6 +1022,35 @@ pub(super) mod tests {
         assert!(state.page.client(&data).is_none(), "an MCP client has no page under API");
         let _ = update(&mut state, Message::Page(PageMessage::Open("a1".into())), &data);
         assert!(state.page.client(&data).is_none(), "nor has the assistant");
+    }
+
+    /// Issue #687: a client's page has the tabs Access, Selections, Tools and Connection. A tab only
+    /// changes what is shown and sends nothing; the page opens from the list at Access, keeps its tab
+    /// for a sibling opened in its place and is back at Access with the list.
+    #[test]
+    fn the_tabs_show_a_part_and_send_nothing() {
+        let mut data = data();
+        data.clients.push(client("s2", "second", SCRIPT_CLIENT, Rights::none()));
+        let mut state = opened("s1", &data);
+        assert_eq!(state.page.tab, Tab::Access);
+        assert_eq!(Tab::ALL, [Tab::Access, Tab::Selections, Tab::Tools, Tab::Connection]);
+        for (index, tab) in Tab::ALL.into_iter().enumerate() {
+            assert!(matches!(tab.select(), PageMessage::Tab(i) if i == index));
+            assert!(matches!(update(&mut state, Message::Page(tab.select()), &data), Action::None), "{tab:?}");
+            assert_eq!(state.page.tab, tab);
+            let _ = view(&state, &data);
+        }
+        let _ = update(&mut state, Message::Page(PageMessage::Tab(9)), &data);
+        assert_eq!(state.page.tab, Tab::Access, "an index past the row is Access");
+
+        let _ = update(&mut state, Message::Page(Tab::Selections.select()), &data);
+        let _ = update(&mut state, Message::Page(PageMessage::Open("s2".into())), &data);
+        assert_eq!(state.page.tab, Tab::Selections, "a sibling opens at the same tab");
+        let _ = update(&mut state, Message::Page(PageMessage::Back), &data);
+        assert_eq!(state.page.tab, Tab::Access, "back at Access with the list");
+        let _ = update(&mut state, Message::Page(Tab::Tools.select()), &data);
+        let _ = update(&mut state, Message::Page(PageMessage::Open("s1".into())), &data);
+        assert_eq!(state.page.tab, Tab::Access, "from the list a page opens at Access");
     }
 
     /// Task S.33 in its new place: a key's page edits through the rights editor – a level and a
