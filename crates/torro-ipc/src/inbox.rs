@@ -1233,9 +1233,7 @@ impl InboxClient {
         remember: bool,
     ) -> Result<(Item, Option<String>), InboxError> {
         match self.ask(Request::SetItemCategory { id, category, remember }).await? {
-            Response::ItemCategory { item, rule, new_rule } => {
-                Ok((item, rule.filter(|_| new_rule).map(|rule| rule.id)))
-            }
+            Response::ItemCategory { item, rule, new_rule } => Ok((item, made_rule(rule, new_rule))),
             other => Err(unexpected(other)),
         }
     }
@@ -1477,6 +1475,12 @@ fn invitation_text(text: &str) -> String {
         .join(" ")
 }
 
+/// The id of the rule an answer of `inbox.set_item_category` names, only when the call made it
+/// (`new_rule`, issue #992): a rule that was there already is not the call's to take back.
+fn made_rule(rule: Option<torro_inbox::item::Rule>, new_rule: bool) -> Option<String> {
+    rule.filter(|_| new_rule).map(|rule| rule.id)
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use std::future::Future;
@@ -1488,6 +1492,27 @@ mod tests {
     use super::*;
 
     use crate::{client, server};
+
+    /// Issue #992: taking back filing by hand removes only a rule the call made, never one that was
+    /// there already.
+    #[test]
+    fn only_a_rule_the_call_made_is_named() {
+        let rule = || {
+            Some(torro_inbox::item::Rule {
+                id: "r7".into(),
+                source: SourceRef::script("deploy"),
+                sender: Some("shop@example.org".into()),
+                domain: None,
+                effect: torro_inbox::item::RuleEffect::Muted,
+                created: Utc.timestamp_opt(0, 0).single().unwrap_or_default(),
+                facet: None,
+                until: None,
+            })
+        };
+        assert_eq!(made_rule(rule(), true).as_deref(), Some("r7"));
+        assert_eq!(made_rule(rule(), false), None, "there already: not this call's");
+        assert_eq!(made_rule(None, true), None);
+    }
 
     /// Issue #290: the plans and targets of `mail.list_save_targets` are found by part and id.
     #[test]
