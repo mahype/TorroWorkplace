@@ -117,7 +117,12 @@ async fn a_crash_while_a_mail_is_sent_never_sends_it_twice() {
     let (first, before) = set_up_with(dir.path(), Some(mailer()), Place::Local, script, answers);
     before.hang.lock().expect("lock").push("mail.send_draft");
     let started = start(&first, "Send the draft to Anna").await;
-    until(&first, &started.id, |_, steps| steps.first().is_some_and(|step| step.state == StepState::Dispatched)).await;
+    // The journal marks the step dispatched before the core gets the call: wait until the core has it too, or the
+    // crash may come in between and no mail ever went out.
+    until(&first, &started.id, |_, steps| {
+        steps.first().is_some_and(|step| step.state == StepState::Dispatched) && ran(&before, "mail.send_draft") == 1
+    })
+    .await;
     first.crash().await;
 
     let again = Script::new(vec![calls("mail_send_draft", json!({"id": "d1"})), says("Sent.")]);
