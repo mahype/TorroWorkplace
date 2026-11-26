@@ -179,7 +179,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -654,6 +654,17 @@ CREATE TABLE IF NOT EXISTS category_order (
 DROP TABLE IF EXISTS sorting_order;
 ";
 
+/// From schema version 20 to 21 (issue #946): `source_repos`, the repositories a GitHub source brings
+/// notifications from (`inbox.set_source_repos`), one row per source (`source` its key) with `repos`
+/// a JSON list of `owner/name` and `owner/*`. No row brings every repository, the default; the row
+/// goes with its source ([`Inbox::forget_source`]).
+const SCHEMA_V21: &str = "
+CREATE TABLE IF NOT EXISTS source_repos (
+    source TEXT PRIMARY KEY,
+    repos TEXT NOT NULL
+);
+";
+
 /// How many months the statistics keep the day sums of a source (task E8.8a).
 pub const KEEP_STATS_MONTHS: u32 = 13;
 
@@ -804,6 +815,7 @@ impl Inbox {
             muted: false,
             health: None,
             notice: None,
+            repos: None,
         };
         for (source, health) in health.into_iter().filter(|(source, _)| scope.sees(source)) {
             let info = empty(&source);
@@ -906,6 +918,10 @@ impl Inbox {
                 visible_item(db, id, Some(client)).map(drop)
             }
             Request::MuteSource { source, .. } => changeable_source(source, Some(client)),
+            // Nobody is asked to approve a choice of repositories that is none or for no GitHub account.
+            Request::SetSourceRepos { source, repos } => {
+                checked_source_repos(db, source, repos.as_deref(), Some(client)).map(drop)
+            }
             // Nobody is asked to approve muting by a trait the entry lacks, until a time gone by, or
             // hiding mail (issue #339).
             Request::MuteItem { id, scope, until, effect } => {
@@ -1515,7 +1531,8 @@ impl Inbox {
 
     /// Removes the statistics of the source `source` (task E8.8a), a [`SourceRef::key`]: its day
     /// sums, its rows by trait, what rules caught in it, its counted mail, the mail shown again
-    /// (task E18.2) and the piles of its mail (task E19.2). The core calls it when
+    /// (task E18.2), the piles of its mail (task E19.2) and the repositories chosen for it (issue
+    /// #946). The core calls it when
     /// a mail account (`mail:<address>`) or a client whose source no other client shares is
     /// removed, and for a remote source (task E5.2) when its account is; then also where its module
     /// stopped reading ([`Inbox::cursor`]), its health and which ids of its server were filed, so
@@ -1532,6 +1549,8 @@ impl Inbox {
             db.execute("DELETE FROM mail_piles WHERE account = ?1", params![source])?;
             db.execute("DELETE FROM cursors WHERE source = ?1", params![source])?;
             db.execute("DELETE FROM remote_ids WHERE source = ?1", params![source])?;
+            // The repositories chosen for a GitHub account (issue #946) go with it.
+            db.execute("DELETE FROM source_repos WHERE source = ?1", params![source])?;
             Ok(())
         })
         .map_err(|failure| failure.to_string())
@@ -2695,6 +2714,13 @@ fn answer(
             set_muted(db, &source, muted, now)?;
             Ok(Response::Ok)
         }
+        Request::SetSourceRepos { source, repos } => {
+            let tx = db.transaction()?;
+            let repos = checked_source_repos(&tx, &source, repos.as_deref(), client)?;
+            set_source_repos(&tx, &source, repos, now)?;
+            tx.commit()?;
+            Ok(Response::Ok)
+        }
         Request::SetItemCategory { id, category, remember } => {
             let tx = db.transaction()?;
             let filed = set_item_category(&tx, &id, category, remember, client, now)?;
@@ -2855,6 +2881,18 @@ impl Scope {
             },
             Scope::Only { keys, .. } => keys.contains(&source.key()),
         }
+    }
+
+    /// The caller reaches the GitHub repository `repo` (`owner/name`, or a whole owner `owner/*`,
+    /// issue #946) as [`Rights::reaches_repo`] says for its rights: the app key every one, a caller
+    /// without GitHub none.
+    fn reaches_repo(&self, repo: &str) -> bool {
+        let repos = match self {
+            Scope::All => return true,
+            Scope::AllButSuite { github: None, .. } => return false,
+            Scope::AllButSuite { github: Some(repos), .. } | Scope::Only { repos, .. } => repos,
+        };
+        Rights { github_repos: repos.clone(), ..Rights::none() }.reaches_repo(repo)
     }
 
     /// The caller sees `item`: its source, and for a GitHub entry its repository as
@@ -3200,8 +3238,8 @@ fn lane_column(lane: Lane) -> &'static str {
     }
 }
 
-/// Every source `client` sees that has entries or is muted, with its open entries, in the order
-/// of [`SourceRef`].
+/// Every source `client` sees that has entries, is muted or has repositories chosen (issue #946),
+/// with its open entries, in the order of [`SourceRef`].
 fn list_sources(db: &Connection, client: Option<&ClientInfo>) -> Result<Vec<SourceInfo>, Failure> {
     let scope = Scope::of(client);
     let Some((visible, values)) = scope.condition("items") else {
@@ -3215,7 +3253,10 @@ fn list_sources(db: &Connection, client: Option<&ClientInfo>) -> Result<Vec<Sour
         let (key, open): (String, u32) = row?;
         // A key no version of the core writes is skipped, not shown half.
         if let Ok(source) = key.parse::<SourceRef>() {
-            sources.insert(source.clone(), SourceInfo { source, open, muted: false, health: None, notice: None });
+            sources.insert(
+                source.clone(),
+                SourceInfo { source, open, muted: false, health: None, notice: None, repos: None },
+            );
         }
     }
     // A hidden sender or domain (task E3.10) or a muted trait (task E8.6a) mutes only some of its
@@ -3224,8 +3265,30 @@ fn list_sources(db: &Connection, client: Option<&ClientInfo>) -> Result<Vec<Sour
         let source = rule.source.clone();
         sources
             .entry(source.clone())
-            .or_insert(SourceInfo { source, open: 0, muted: false, health: None, notice: None })
+            .or_insert(SourceInfo { source, open: 0, muted: false, health: None, notice: None, repos: None })
             .muted = true;
+    }
+    // The repositories chosen for a GitHub source (issue #946), of them only the names the client
+    // reaches: the choice must not name private repositories it may not see.
+    let mut statement = db.prepare("SELECT source, repos FROM source_repos")?;
+    let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    for row in rows {
+        let (key, repos) = row?;
+        let Ok(source) = key.parse::<SourceRef>() else { continue };
+        if !scope.sees(&source) {
+            continue;
+        }
+        // A row no version of the core writes is skipped, not shown half, and the source keeps
+        // the rest of the list readable.
+        let Ok(repos) = serde_json::from_str::<Vec<String>>(&repos) else {
+            eprintln!("torroworkplace: inbox: the repositories chosen for {key} cannot be read");
+            continue;
+        };
+        let reached: Vec<String> = repos.into_iter().filter(|name| scope.reaches_repo(name)).collect();
+        sources
+            .entry(source.clone())
+            .or_insert(SourceInfo { source, open: 0, muted: false, health: None, notice: None, repos: None })
+            .repos = Some(reached);
     }
     Ok(sources.into_values().collect())
 }
@@ -3691,6 +3754,79 @@ fn set_muted(db: &Connection, source: &SourceRef, muted: bool, now: DateTime<Utc
         until: None,
     };
     insert_rule(db, rule)
+}
+
+/// The repositories of `inbox.set_source_repos` (issue #946) for `client`, checked: `source` it may
+/// change ([`changeable_source`]), a GitHub account (`unsupported` else) and names of GitHub
+/// ([`rules::source_repos`], `error` else); `None` for every repository.
+///
+/// A key limited to some repositories (`Rights::github_repos`) changes the choice only while it
+/// reaches every name in it, those it sends and those kept (`forbidden` else): it could neither see
+/// nor take back a name beyond its reach, and the person's approval would not show what it keeps.
+fn checked_source_repos(
+    db: &Connection,
+    source: &SourceRef,
+    repos: Option<&[String]>,
+    client: Option<&ClientInfo>,
+) -> Result<Option<Vec<String>>, Failure> {
+    changeable_source(source, client)?;
+    if source.kind != SourceKind::Github {
+        return Err(Failure::Unsupported("only a GitHub account brings notifications of repositories".into()));
+    }
+    let repos = repos.map(rules::source_repos).transpose().map_err(Failure::Invalid)?;
+    let scope = Scope::of(client);
+    if repos.iter().flatten().any(|name| !scope.reaches_repo(name)) {
+        return Err(Failure::Forbidden(InboxForbidden("this key may only choose repositories it reaches")));
+    }
+    if source_repos(db, source)?.iter().flatten().any(|name| !scope.reaches_repo(name)) {
+        return Err(Failure::Forbidden(InboxForbidden(
+            "the repositories chosen hold some this key does not reach; only the person can change them",
+        )));
+    }
+    Ok(repos)
+}
+
+/// The repositories chosen for `source` (issue #946), as kept; `None` for every repository.
+fn source_repos(db: &Connection, source: &SourceRef) -> Result<Option<Vec<String>>, Failure> {
+    let kept: Option<String> = db
+        .query_row("SELECT repos FROM source_repos WHERE source = ?1", params![source.key()], |row| row.get(0))
+        .optional()?;
+    Ok(kept.map(|repos| serde_json::from_str(&repos)).transpose()?)
+}
+
+/// Keeps `repos` as the choice of `source` at `now` (issue #946) – `None` removes it, so every
+/// repository comes again – and marks done the open and snoozed entries of the repositories it
+/// leaves out, as muting a trait with "hide" does ([`mute_by`]), in every repository of the account,
+/// also those the caller does not reach; nothing reaches GitHub. `repos` as
+/// [`checked_source_repos`] made it.
+fn set_source_repos(
+    db: &Connection,
+    source: &SourceRef,
+    repos: Option<Vec<String>>,
+    now: DateTime<Utc>,
+) -> Result<(), Failure> {
+    let Some(repos) = repos else {
+        db.execute("DELETE FROM source_repos WHERE source = ?1", params![source.key()])?;
+        return Ok(());
+    };
+    db.execute(
+        "INSERT INTO source_repos (source, repos) VALUES (?1, ?2)
+         ON CONFLICT (source) DO UPDATE SET repos = excluded.repos",
+        params![source.key(), serde_json::to_string(&repos)?],
+    )?;
+    let waiting = "source = ? AND state IN ('new', 'seen', 'snoozed')";
+    for Stored { item: mut entry, .. } in read_items(db, &Scope::All, waiting, vec![text(source.key())], "")? {
+        let repo = entry.facets.iter().find(|facet| facet.key == FacetKey::Repo).map(|facet| facet.value.as_str());
+        // An entry without a repository is about none of them: it stays.
+        if repo.is_none_or(|repo| rules::repo_chosen(&repos, repo)) {
+            continue;
+        }
+        if rules::mute_entry(&mut entry, MuteEffect::Hide, now).is_some() {
+            update_item(db, &entry)?;
+            count(db, &entry, Count::Muted, now)?;
+        }
+    }
+    Ok(())
 }
 
 /// `inbox.set_item_category` (task E12.4): files the mail of `id` under `category` by hand and,
@@ -4322,6 +4458,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     if version < 20 {
         tx.execute_batch(SCHEMA_V20)?;
         catalogue::reset_model_choice(&tx)?;
+    }
+    if version < 21 {
+        tx.execute_batch(SCHEMA_V21)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -6455,7 +6594,7 @@ pub(crate) mod tests {
         let Response::Sources { sources } = inbox.handle(Request::ListSources, Some(&reader), at(8, 3)) else {
             panic!("sources answer with Sources");
         };
-        assert_eq!(sources, [SourceInfo { source, open: 1, muted: false, health: None, notice: None }]);
+        assert_eq!(sources, [SourceInfo { source, open: 1, muted: false, health: None, notice: None, repos: None }]);
     }
 
     #[test]
@@ -6782,7 +6921,10 @@ pub(crate) mod tests {
         let Response::Sources { sources } = inbox.handle(Request::ListSources, None, at(8, 4)) else {
             panic!("sources answer with Sources");
         };
-        assert_eq!(sources, [SourceInfo { source: source.clone(), open: 1, muted: true, health: None, notice: None }]);
+        assert_eq!(
+            sources,
+            [SourceInfo { source: source.clone(), open: 1, muted: true, health: None, notice: None, repos: None }]
+        );
 
         assert_eq!(inbox.handle(Request::MuteSource { source, muted: false }, Some(&script), at(8, 5)), Response::Ok);
         assert_eq!(posted(inbox.handle(notice("After", Some("t")), Some(&script), at(8, 6))), id);
@@ -9125,6 +9267,98 @@ pub(crate) mod tests {
         client("dd04", "claude-code", rights)
     }
 
+    /// `inbox.set_source_repos` for the test's GitHub account (issue #946).
+    fn choose_repos(repos: Option<&[&str]>) -> Request {
+        Request::SetSourceRepos {
+            source: github(),
+            repos: repos.map(|repos| repos.iter().map(|name| name.to_string()).collect()),
+        }
+    }
+
+    /// What `inbox.list_sources` says `client` of the repositories of the test's GitHub account.
+    fn chosen_repos(inbox: &Inbox, client: Option<&ClientInfo>) -> Option<Vec<String>> {
+        sources_of(inbox, client).into_iter().find(|info| info.source == github()).and_then(|info| info.repos)
+    }
+
+    /// Issue #946: the choice is kept checked and listed, the open and snoozed entries of the
+    /// repositories it leaves out are done (an entry without a repository stays), `null` brings
+    /// every repository again without opening them, and the choice goes with its account.
+    #[test]
+    fn chosen_repositories_are_kept_listed_and_done_the_other_entries() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let ours = filed_remote(&inbox, &in_repo("1", "torro/workplace", at(8, 0)), at(8, 0));
+        let private = filed_remote(&inbox, &in_repo("2", "anna/private", at(8, 0)), at(8, 0));
+        let snoozed = filed_remote(&inbox, &in_repo("3", "anna/notes", at(8, 0)), at(8, 0));
+        let mut bare = in_repo("4", "anna/notes", at(8, 0));
+        bare.facets.retain(|facet| facet.key != FacetKey::Repo);
+        let without = filed_remote(&inbox, &bare, at(8, 0));
+        let snooze =
+            Request::SnoozeItem { id: snoozed.clone(), until: Some(at(18, 0)), unless_reply: false, keep_open: false };
+        inbox.handle(snooze, None, at(8, 1));
+        assert_eq!(chosen_repos(&inbox, None), None, "every repository by default");
+
+        assert_eq!(inbox.handle(choose_repos(Some(&[" Torro/* ", "torro/*"])), None, at(9, 0)), Response::Ok);
+        assert_eq!(chosen_repos(&inbox, None), Some(vec!["Torro/*".to_string()]));
+        assert!(entry(&inbox, &ours).state.is_open(), "chosen");
+        assert!(matches!(entry(&inbox, &private).state, State::Done { .. }), "left out: done in the inbox");
+        assert!(matches!(entry(&inbox, &snoozed).state, State::Done { .. }), "snoozed too");
+        assert!(entry(&inbox, &without).state.is_open(), "about no repository");
+
+        assert_eq!(code(&inbox.handle(choose_repos(Some(&["anna"])), None, at(9, 1))), "error");
+        let script = Request::SetSourceRepos { source: SourceRef::script("ci"), repos: None };
+        assert_eq!(code(&inbox.handle(script, None, at(9, 1))), "unsupported");
+        assert_eq!(chosen_repos(&inbox, None), Some(vec!["Torro/*".to_string()]), "nothing changed");
+
+        assert_eq!(inbox.handle(choose_repos(None), None, at(9, 2)), Response::Ok);
+        assert_eq!(chosen_repos(&inbox, None), None);
+        assert!(matches!(entry(&inbox, &private).state, State::Done { .. }), "stays done");
+
+        assert_eq!(inbox.handle(choose_repos(Some(&[])), None, at(9, 3)), Response::Ok);
+        assert_eq!(chosen_repos(&inbox, None), Some(Vec::new()), "nothing is a choice too");
+        assert!(matches!(entry(&inbox, &ours).state, State::Done { .. }));
+        inbox.forget_source(GITHUB).expect("forgotten");
+        assert_eq!(chosen_repos(&inbox, None), None, "gone with the account");
+    }
+
+    /// Issue #946: a key limited to some repositories sees only the chosen names it reaches and may
+    /// not change a choice that holds others, nor choose a name beyond its reach; a key without
+    /// GitHub sees no choice at all. All of it is refused before anybody is asked to approve it.
+    #[test]
+    fn a_key_limited_to_some_repositories_sees_and_keeps_only_its_names() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        filed_remote(&inbox, &in_repo("1", "torro/workplace", at(8, 0)), at(8, 0));
+        let chosen = ["anna/private", "immo/*", "torro/workplace"];
+        assert_eq!(inbox.handle(choose_repos(Some(&chosen)), None, at(9, 0)), Response::Ok);
+        let torro = with_rights(|rights| rights.github_repos = Selection::Only(vec!["torro".into(), "immo".into()]));
+        let exact = with_rights(|rights| rights.github_repos = Selection::Only(vec!["torro/workplace".into()]));
+        let no_github = with_rights(|rights| {
+            rights.areas.remove(&Area::Github);
+        });
+        assert_eq!(chosen_repos(&inbox, Some(&torro)), Some(vec!["immo/*".to_string(), "torro/workplace".to_string()]));
+        assert_eq!(chosen_repos(&inbox, Some(&exact)), Some(vec!["torro/workplace".to_string()]), "no whole owner");
+        assert!(sources_of(&inbox, Some(&no_github)).iter().all(|info| info.source != github()));
+
+        let mine = choose_repos(Some(&["torro/workplace"]));
+        assert_eq!(code(&inbox.handle(mine.clone(), Some(&exact), at(9, 1))), "forbidden", "anna/private is kept");
+        assert_eq!(inbox.refusal(&choose_repos(None), Some(&exact)).as_ref().map(code), Some("forbidden"));
+        assert_eq!(chosen_repos(&inbox, None).map(|repos| repos.len()), Some(3), "nothing changed");
+
+        assert_eq!(inbox.handle(choose_repos(Some(&["torro/workplace"])), None, at(9, 2)), Response::Ok);
+        assert!(inbox.refusal(&mine, Some(&exact)).is_none(), "every name in reach");
+        let beyond = choose_repos(Some(&["torro/workplace", "torro/site"]));
+        assert_eq!(inbox.refusal(&beyond, Some(&exact)).as_ref().map(code), Some("forbidden"));
+        let owner = choose_repos(Some(&["torro/*"]));
+        assert_eq!(inbox.refusal(&owner, Some(&exact)).as_ref().map(code), Some("forbidden"));
+        assert_eq!(inbox.handle(choose_repos(None), Some(&exact), at(9, 3)), Response::Ok);
+        assert_eq!(chosen_repos(&inbox, None), None);
+        assert_eq!(inbox.refusal(&choose_repos(Some(&["torro"])), Some(&exact)).as_ref().map(code), Some("error"));
+        let script = Request::SetSourceRepos { source: SourceRef::script("ci"), repos: None };
+        assert_eq!(inbox.refusal(&script, Some(&exact)).as_ref().map(code), Some("unsupported"));
+        assert_eq!(inbox.refusal(&choose_repos(None), Some(&no_github)).as_ref().map(code), Some("not-found"));
+    }
+
     #[test]
     fn a_remote_report_is_an_untrusted_entry_of_its_account_and_an_id_counts_once() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -9688,6 +9922,7 @@ pub(crate) mod tests {
             muted: false,
             health: Some(SourceHealth::MissingScope),
             notice: None,
+            repos: None,
         };
         assert_eq!(sources_of(&inbox, None), [quiet], "listed without entries");
         filed_remote(&inbox, &shared("1", &["1"], at(8, 0)), at(8, 0));

@@ -4261,6 +4261,30 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         Request::MuteSource { source, muted: false } => {
             trf("Unmute {source} in the Notification Hub", &[("source", &source_name(source))])
         }
+        // The names as the core checked them (issue #946, `rules::source_repos`): the person sees
+        // what will come, the first few by name.
+        Request::SetSourceRepos { source, repos: None } => trf(
+            "Bring GitHub notifications of {source} from every repository to the Notification Hub",
+            &[("source", &source_name(source))],
+        ),
+        Request::SetSourceRepos { source, repos: Some(repos) } => {
+            let repos = torro_inbox::rules::source_repos(repos).unwrap_or_else(|_| repos.clone());
+            if repos.is_empty() {
+                trf(
+                    "Bring no GitHub notifications of {source} to the Notification Hub",
+                    &[("source", &source_name(source))],
+                )
+            } else {
+                let mut named: Vec<String> = repos.iter().take(5).map(|name| format!("\"{}\"", quote(name))).collect();
+                if repos.len() > 5 {
+                    named.push(trf("{n} more", &[("n", &(repos.len() - 5))]));
+                }
+                trf(
+                    "Bring GitHub notifications of {source} only from {repos} to the Notification Hub",
+                    &[("source", &source_name(source)), ("repos", &named.join(", "))],
+                )
+            }
+        }
         // The trait and its value as the inbox holds them for the entry, never as the client says
         // (task E8.6a): a trait holds for every source of the kind.
         Request::MuteItem { scope, until, effect, .. } => {
@@ -7814,6 +7838,40 @@ pub(crate) mod tests {
             |muted| inbox_summary(&Request::MuteSource { source: source.clone(), muted }, &InboxFacts::default());
         assert_eq!(mute(true), trf("Mute {source} in the Notification Hub", &[("source", &named)]));
         assert_eq!(mute(false), trf("Unmute {source} in the Notification Hub", &[("source", &named)]));
+
+        // Issue #946: the names as the core keeps them, the first five by name.
+        let github = SourceRef::github("anna-berg");
+        let account = "\"GitHub\" (github:anna-berg)";
+        let choose = |repos: Option<Vec<String>>| {
+            inbox_summary(&Request::SetSourceRepos { source: github.clone(), repos }, &InboxFacts::default())
+        };
+        assert_eq!(
+            choose(None),
+            trf(
+                "Bring GitHub notifications of {source} from every repository to the Notification Hub",
+                &[("source", &account)]
+            )
+        );
+        assert_eq!(
+            choose(Some(Vec::new())),
+            trf("Bring no GitHub notifications of {source} to the Notification Hub", &[("source", &account)])
+        );
+        assert_eq!(
+            choose(Some(vec!["torro/*".into(), " anna/notes".into()])),
+            trf(
+                "Bring GitHub notifications of {source} only from {repos} to the Notification Hub",
+                &[("source", &account), ("repos", &"\"anna/notes\", \"torro/*\"")]
+            )
+        );
+        let many: Vec<String> = (1..=7).map(|n| format!("anna/r{n}")).collect();
+        let named_five = "\"anna/r1\", \"anna/r2\", \"anna/r3\", \"anna/r4\", \"anna/r5\"";
+        assert_eq!(
+            choose(Some(many)),
+            trf(
+                "Bring GitHub notifications of {source} only from {repos} to the Notification Hub",
+                &[("source", &account), ("repos", &format!("{named_five}, {}", trf("{n} more", &[("n", &2)])))]
+            )
+        );
 
         let known = InboxFacts { item: Some(inbox_entry("Backup \"done\"")), ..InboxFacts::default() };
         let entry = "\"Backup 'done'\"";

@@ -19,6 +19,11 @@
 //! A thread updated later than filed is new activity: the inbox counts it once more and opens a
 //! done entry again (`Inbox::file_remote`).
 //!
+//! **Chosen repositories** (issue #946, `inbox.set_source_repos`): with a choice kept for the
+//! source, a thread of any other repository is not filed ([`chosen`], [`torro_inbox::rules::repo_chosen`]);
+//! it stays on GitHub as it is. Still one listing per account: GitHub's `/notifications` filters by
+//! no list of repositories, and the cheap `304` stays.
+//!
 //! **Done by itself:** a thread missing from a complete listing was read or done elsewhere, its
 //! entry is resolved (`Inbox::resolve_remote`). Every entry was filed from within the same reach,
 //! and a thread's `updated_at` only grows, so the reach leaves out none of them. A listing that is
@@ -480,14 +485,19 @@ struct Reach {
 }
 
 /// Files the listed `threads` of `source` at `now`, oldest first – those updated since
-/// `reach.since` only, whatever GitHub sent –, and resolves the open entries whose threads are
+/// `reach.since` only, whatever GitHub sent, and of the repositories chosen for the source only
+/// ([`chosen`], issue #946) –, and resolves the open entries whose threads are
 /// missing when the listing is complete and not the first. The cursors move on only when every
 /// thread was filed, so a thread the inbox could not take is listed again instead of hidden behind
 /// a `304`.
 fn file(inbox: &Inbox, source: &SourceRef, threads: Threads, reach: Reach, now: DateTime<Utc>) {
     let account = source.key();
     let mut filed = true;
-    for thread in threads.threads.iter().rev().filter(|thread| thread.updated_at >= reach.since) {
+    // Without the choice nothing is filed and the cursors stay: the threads are listed again,
+    // and none of a repository the person left out comes in meanwhile.
+    let Some(chosen) = chosen(inbox, source, now) else { return };
+    let wanted = |thread: &&Thread| chosen.as_deref().is_none_or(|chosen| rules::repo_chosen(chosen, &thread.repo));
+    for thread in threads.threads.iter().rev().filter(|thread| thread.updated_at >= reach.since).filter(wanted) {
         if let Err(err) = inbox.file_remote(&report(source, thread), now) {
             eprintln!("torroworkplace: inbox: a GitHub notification of {account} was not filed: {err}");
             filed = false;
@@ -557,6 +567,25 @@ fn muted(inbox: &Inbox, source: &SourceRef, now: DateTime<Utc>) -> bool {
     match inbox.handle(Request::ListSources, None, now) {
         Response::Sources { sources } => sources.iter().any(|info| info.source == *source && info.muted),
         _ => false,
+    }
+}
+
+/// The repositories the person chose for `source` (`inbox.set_source_repos`, issue #946), as
+/// `inbox.list_sources` says it: `Some(None)` for every repository, `None` when the inbox could not
+/// say (logged).
+fn chosen(inbox: &Inbox, source: &SourceRef, now: DateTime<Utc>) -> Option<Option<Vec<String>>> {
+    match inbox.handle(Request::ListSources, None, now) {
+        Response::Sources { sources } => {
+            Some(sources.into_iter().find(|info| info.source == *source).and_then(|info| info.repos))
+        }
+        other => {
+            eprintln!(
+                "torroworkplace: inbox: the repositories chosen for {} were not read: {}",
+                source.key(),
+                code(&other)
+            );
+            None
+        }
     }
 }
 
@@ -1116,6 +1145,36 @@ mod tests {
         assert_eq!(world.inbox().handle(unmute, None, at(1)), Response::Ok);
         world.round(1).await;
         assert_eq!(listing.calls_async().await, 1, "asked again once unmuted");
+    }
+
+    /// Issue #946: with repositories chosen, threads of other repositories are not filed and stay on
+    /// GitHub as they are (no `DELETE`); a whole owner (`owner/*`) brings each of its repositories,
+    /// and the choice taken back brings every repository again.
+    #[tokio::test]
+    async fn only_threads_of_the_chosen_repositories_are_filed() {
+        let world = World::new().await;
+        let choose = |repos: Option<&[&str]>| Request::SetSourceRepos {
+            source: source(),
+            repos: repos.map(|repos| repos.iter().map(|name| name.to_string()).collect()),
+        };
+        assert_eq!(world.inbox().handle(choose(Some(&["Torro/workplace"])), None, at(0)), Response::Ok);
+        let deletes = world.deletes().await;
+        let other = thread("104", "anna/private", "Issue", 3, "mention", "Secret plans", -1);
+        let listing = world.lists_always(on(&world.server, json!([review(-5), comment(-20), other])), STAMP).await;
+        world.round(0).await;
+        assert_eq!(listing.calls_async().await, 1, "still one listing per account");
+        let filed: BTreeSet<String> = world.items().into_iter().map(|item| item.thread_key).collect();
+        assert_eq!(filed, BTreeSet::from(["101".to_string()]), "torro/site and anna/private stay out");
+
+        assert_eq!(world.inbox().handle(choose(Some(&["torro/*"])), None, at(1)), Response::Ok);
+        world.round(5).await;
+        let filed: BTreeSet<String> = world.items().into_iter().map(|item| item.thread_key).collect();
+        assert_eq!(filed, BTreeSet::from(["101".to_string(), "103".to_string()]), "the whole owner");
+
+        assert_eq!(world.inbox().handle(choose(None), None, at(6)), Response::Ok);
+        world.round(10).await;
+        assert_eq!(world.items().len(), 3, "every repository again");
+        assert_eq!(deletes.calls_async().await, 0, "nothing reaches GitHub");
     }
 
     /// The statistics of the week up to the fixed clock's day have rows of the source.

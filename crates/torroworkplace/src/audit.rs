@@ -528,6 +528,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         }
         Request::SetActionKind { kind, .. } => vec![action_kind(kind)],
         Request::MuteSource { source, .. } => vec![id("source", &source.to_string())],
+        // Never the repositories: they may be private (issue #946).
+        Request::SetSourceRepos { source, .. } => vec![id("source", &source.to_string())],
         Request::RemoveRule { id: rule } => vec![random("rule", rule)],
         // Mail (security rule 3 of task M2.1): never the address signed in with, nor a search, a
         // subject, a recipient, a file or a folder name. The account as for collections; message,

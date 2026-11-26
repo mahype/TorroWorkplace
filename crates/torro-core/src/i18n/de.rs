@@ -2498,6 +2498,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Mute {source} in the Notification Hub", "{source} in der Mitteilungszentrale stummschalten"),
     ("Unmute {source} in the Notification Hub", "{source} in der Mitteilungszentrale wieder laut schalten"),
+    (
+        "Bring GitHub notifications of {source} from every repository to the Notification Hub",
+        "GitHub-Benachrichtigungen von {source} aus allen Repositories in die Mitteilungszentrale bringen",
+    ),
+    (
+        "Bring GitHub notifications of {source} only from {repos} to the Notification Hub",
+        "GitHub-Benachrichtigungen von {source} nur aus {repos} in die Mitteilungszentrale bringen",
+    ),
+    (
+        "Bring no GitHub notifications of {source} to the Notification Hub",
+        "Keine GitHub-Benachrichtigungen von {source} in die Mitteilungszentrale bringen",
+    ),
     ("Stop sending notices of {source} to {lane}", "Meldungen von {source} nicht mehr nach „{lane}“ schicken"),
     ("Remove an unknown rule of the Notification Hub", "Eine unbekannte Regel der Mitteilungszentrale entfernen"),
     ("an unknown entry of the Notification Hub", "einen unbekannten Eintrag der Mitteilungszentrale"),
