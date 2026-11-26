@@ -529,7 +529,7 @@ pub mod sources {
         }
 
         fn muted(source: SourceRef) -> SourceInfo {
-            SourceInfo { source, open: 0, muted: true, health: None, notice: None }
+            SourceInfo { source, open: 0, muted: true, health: None, notice: None, repos: None }
         }
 
         /// A switch sends `inbox.mute_source` for its own source and nothing else.

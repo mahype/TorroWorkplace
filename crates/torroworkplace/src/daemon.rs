@@ -1226,6 +1226,8 @@ fn describe(request: &Request) -> String {
         Request::SnoozeItem { id, .. } => format!("snooze inbox item {id}"),
         Request::SetItemLane { id, .. } => format!("move inbox item {id}"),
         Request::MuteSource { source, muted } => format!("{} {source}", if *muted { "mute" } else { "unmute" }),
+        // Never the repositories: they may be private (issue #946).
+        Request::SetSourceRepos { source, .. } => format!("choose the repositories of {source}"),
         // Never the trait or its value: they would name who writes to the person.
         Request::ListMuteOptions { id } => format!("mute options of inbox item {id}"),
         Request::MuteItem { id, .. } => format!("mute by inbox item {id}"),

@@ -3129,6 +3129,25 @@ pub enum Request {
         /// `true` mutes, `false` unmutes.
         muted: bool,
     },
+    /// Chooses the repositories a GitHub source brings notifications from (issue #946,
+    /// `docs/github-mitteilungen.md`): `repos` lists `owner/name` and whole owners as `owner/*`
+    /// ([`torro_inbox::rules::source_repos`]); `null` brings every repository the token reaches
+    /// again, the default. A lasting rule like [`Request::MuteSource`]: from then on notifications of
+    /// other repositories are not filed, and the open and snoozed entries of other repositories are
+    /// done in the inbox at once. Nothing reaches GitHub: the notifications stay there as they are.
+    /// `inbox.list_sources` lists the choice ([`torro_inbox::SourceInfo::repos`]). It holds for the
+    /// whole account, also repositories the client does not reach; a client key limited to some
+    /// repositories may only name those and change a choice that holds none beyond them. Answered
+    /// with [`Response::Ok`]; `not-found` for a source the client may not see (rule 1),
+    /// `unsupported` for a source that is no GitHub account, `error` for a name that is no
+    /// repository or owner, `forbidden` for a name or a kept choice beyond the client's reach.
+    #[serde(rename = "inbox.set_source_repos")]
+    SetSourceRepos {
+        /// The GitHub source, as `inbox.list_sources` lists it (`github:<login>`).
+        source: SourceRef,
+        /// `owner/name` or `owner/*` each; `null` (or left out) for every repository, `[]` for none.
+        repos: Option<Vec<String>>,
+    },
     /// Which AI account and model each function of the suite uses ([`Response::AiAssignments`],
     /// task E12.5, `docs/ki.md`): every function, also those nobody set up, with empty fields.
     #[serde(rename = "ai.list_assignments")]

@@ -1406,6 +1406,7 @@ impl PimService {
             | Request::SnoozeItem { .. }
             | Request::SetItemLane { .. }
             | Request::MuteSource { .. }
+            | Request::SetSourceRepos { .. }
             | Request::ListMuteOptions { .. }
             | Request::MuteItem { .. }
             | Request::ListRules

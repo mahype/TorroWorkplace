@@ -2172,6 +2172,7 @@ mod tests {
                 muted: false,
                 health: None,
                 notice: None,
+                repos: None,
             }],
             accounts: vec![
                 account("nextcloud:anna@cloud.example.org", "nextcloud", "anna@cloud.example.org"),
@@ -2812,6 +2813,7 @@ mod tests {
             muted: false,
             health: None,
             notice: None,
+            repos: None,
         });
         let selection = Selection::Only(vec!["script:gone".into()]);
         let keys: Vec<String> =
@@ -2870,6 +2872,7 @@ mod tests {
             muted: false,
             health: None,
             notice: None,
+            repos: None,
         });
         let again = candidates(Pick::InboxSources, &fixture.known(), &Selection::All);
         assert_eq!(again.iter().filter(|c| c.id == "github:anna-dev").count(), 1);
