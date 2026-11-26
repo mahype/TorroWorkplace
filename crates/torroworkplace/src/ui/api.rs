@@ -858,6 +858,7 @@ pub(super) mod tests {
                 muted: false,
                 health: None,
                 notice: None,
+                repos: None,
             }],
             accounts: vec![
                 account("nextcloud:anna@cloud.example.org", "nextcloud", "anna@cloud.example.org"),

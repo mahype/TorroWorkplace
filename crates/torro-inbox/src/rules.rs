@@ -509,6 +509,50 @@ pub fn github_place(reason: &str, kind: &str, result: Option<&str>) -> Lane {
     }
 }
 
+/// The most repositories and owners a GitHub source may be limited to (issue #946,
+/// [`source_repos`]).
+pub const SOURCE_REPOS_MAX: usize = 1000;
+
+/// The choice of repositories for `inbox.set_source_repos` (issue #946) as kept: each `owner/name`
+/// or a whole owner as `owner/*`, trimmed, without doubles (GitHub's names ignore case, the first
+/// spelling stays), in alphabetical order. `Err` with the reason for a name that is no repository
+/// or owner of GitHub (only letters, digits, `-`, `_` and `.`; no `.` or `..` alone) and for more
+/// than [`SOURCE_REPOS_MAX`]. An empty list is a choice too: nothing comes.
+pub fn source_repos(repos: &[String]) -> Result<Vec<String>, String> {
+    let part = |part: &str| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && part.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    };
+    let mut kept: Vec<String> = Vec::new();
+    for name in repos {
+        let name = name.trim();
+        let valid = name.split_once('/').is_some_and(|(owner, repo)| part(owner) && (repo == "*" || part(repo)));
+        if !valid {
+            return Err(format!("\"{name}\" is no repository (owner/name) or owner (owner/*)"));
+        }
+        if !kept.iter().any(|known| known.eq_ignore_ascii_case(name)) {
+            kept.push(name.to_string());
+        }
+    }
+    if kept.len() > SOURCE_REPOS_MAX {
+        return Err(format!("at most {SOURCE_REPOS_MAX} repositories and owners"));
+    }
+    kept.sort_by_key(|name| name.to_ascii_lowercase());
+    Ok(kept)
+}
+
+/// The repository `repo` (`owner/name`, as GitHub wrote it) is among `chosen` (issue #946): named
+/// itself or its owner as `owner/*`, ignoring case as GitHub does.
+pub fn repo_chosen(chosen: &[String], repo: &str) -> bool {
+    let owner = repo.split_once('/').map_or(repo, |(owner, _)| owner);
+    chosen.iter().any(|name| match name.strip_suffix("/*") {
+        Some(whole) => whole.eq_ignore_ascii_case(owner),
+        None => name.eq_ignore_ascii_case(repo),
+    })
+}
+
 /// The lane of a Nextcloud notification (task E5.1) from the app that sent it (`app`, its id) and
 /// what it is about (`object_type`).
 ///
@@ -1138,6 +1182,26 @@ mod tests {
     use torro_mail::CategorySource;
 
     use super::*;
+
+    /// Issue #946: names are checked, kept once and sorted; a repository is chosen by its name or
+    /// its owner, ignoring case.
+    #[test]
+    fn source_repos_are_checked_and_match_by_name_or_owner() {
+        let given = ["  Immo/* ", "mahype/torro", "MAHYPE/Torro", "a-b_c/x.y-z"].map(String::from);
+        assert_eq!(source_repos(&given).expect("valid"), ["a-b_c/x.y-z", "Immo/*", "mahype/torro"]);
+        assert_eq!(source_repos(&[]).expect("valid"), Vec::<String>::new(), "nothing is a choice too");
+        for wrong in ["mahype", "/torro", "mahype/", "a/b/c", "*/torro", "mahype/..", "mahype/to rro", "ä/b"] {
+            assert!(source_repos(&[wrong.to_string()]).is_err(), "{wrong}");
+        }
+        let many: Vec<String> = (0..=SOURCE_REPOS_MAX).map(|n| format!("owner/repo{n}")).collect();
+        assert!(source_repos(&many).is_err(), "too many");
+        let chosen = ["Immo/*".to_string(), "mahype/torro".to_string()];
+        assert!(repo_chosen(&chosen, "mahype/Torro"));
+        assert!(repo_chosen(&chosen, "immo/anything"));
+        assert!(!repo_chosen(&chosen, "mahype/other"));
+        assert!(!repo_chosen(&chosen, "immoticket/x"), "an owner is matched whole");
+        assert!(!repo_chosen(&[], "mahype/torro"));
+    }
 
     /// Task E12.2: the order of the fixed rules, and that a kept category beats every header.
     #[test]

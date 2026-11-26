@@ -1940,6 +1940,7 @@ impl Request {
             Request::SnoozeItem { .. } => &SNOOZE_ITEM,
             Request::SetItemLane { .. } => &SET_ITEM_LANE,
             Request::MuteSource { .. } => &MUTE_SOURCE,
+            Request::SetSourceRepos { .. } => &SET_SOURCE_REPOS,
             Request::ListCategories { .. } => &LIST_CATEGORIES,
             Request::CreateCategoryGroup { .. } => &CREATE_CATEGORY_GROUP,
             Request::UpdateCategoryGroup { .. } => &UPDATE_CATEGORY_GROUP,
@@ -2453,6 +2454,7 @@ pub static CATALOGUE: &[&Command] = &[
     &SNOOZE_ITEM,
     &SET_ITEM_LANE,
     &MUTE_SOURCE,
+    &SET_SOURCE_REPOS,
     &LIST_ASSIGNMENTS,
     &SET_ASSIGNMENT,
     &SET_SLOT,
@@ -5236,6 +5238,22 @@ static MUTE_SOURCE: Command = Command {
                   The source `suite` is the person's and `not-found` for every key.",
 };
 
+// Admin like inbox.mute_source (issue #946): a lasting rule about what reaches the person, so the
+// person approves it.
+static SET_SOURCE_REPOS: Command = Command {
+    name: "inbox.set_source_repos",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Chooses the repositories a GitHub source (`github:<login>`) brings notifications from: `repos` \
+                  lists `owner/name` and whole owners as `owner/*`; `null` or no `repos` brings every repository \
+                  again (the default), `[]` none. It holds for the whole account, also repositories this key \
+                  cannot see: open entries of the others are done in the inbox, nothing changes on GitHub. A key \
+                  limited to some repositories may only name those and is `forbidden` while the choice holds \
+                  others. A lasting rule that needs the person's approval; inbox_list_sources shows the choice, \
+                  to such a key only the names it reaches (`[]` when it reaches none of them).",
+};
+
 // Read access: it counts what is there and changes nothing. The counts cover only the mail
 // accounts the key may read, like inbox.list_items does for mail entries.
 static LIST_CATEGORIES: Command = Command {
@@ -7572,6 +7590,10 @@ mod tests {
             Request::SnoozeItem { id: "i1".into(), until: Some(now), unless_reply: true, keep_open: true },
             Request::SetItemLane { id: "i1".into(), lane: Lane::Info, remember: false },
             Request::MuteSource { source: SourceRef::script("backup"), muted: true },
+            Request::SetSourceRepos {
+                source: SourceRef::github("anna-berg"),
+                repos: Some(vec!["torro/workplace".into(), "immo/*".into()]),
+            },
             Request::AiAssignments,
             Request::SetAiAssignment {
                 function: torro_core::ai::AiFunction::InboxCategorize,
@@ -10132,6 +10154,7 @@ mod tests {
                 "inbox.snooze_item",
                 "inbox.set_item_lane",
                 "inbox.mute_source",
+                "inbox.set_source_repos",
                 "inbox.list_categories",
                 "inbox.create_category_group",
                 "inbox.update_category_group",
@@ -10235,6 +10258,8 @@ mod tests {
         assert_eq!(access(Request::SetItemLane { id: "i".into(), lane: Lane::Info, remember: false }), Access::Write);
         assert_eq!(access(Request::SetItemLane { id: "i".into(), lane: Lane::Info, remember: true }), Access::Admin);
         assert_eq!(access(Request::MuteSource { source: SourceRef::suite(), muted: true }), Access::Admin);
+        let choose = Request::SetSourceRepos { source: SourceRef::github("anna-berg"), repos: None };
+        assert_eq!(access(choose), Access::Admin, "a lasting rule, like muting (issue #946)");
         assert_eq!(access(Request::RemoveRule { id: "r".into() }), Access::Admin);
         // Remembering a lane is a lasting rule: write rights alone do not cover it.
         let rights = RightsTemplate::FullAccess.rights();
@@ -10747,8 +10772,15 @@ mod tests {
             agent: None,
         };
         let listed = [
-            SourceInfo { source: SourceRef::script("nightly"), open: 1, muted: false, health: None, notice: None },
-            SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None, notice: None },
+            SourceInfo {
+                source: SourceRef::script("nightly"),
+                open: 1,
+                muted: false,
+                health: None,
+                notice: None,
+                repos: None,
+            },
+            SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None, notice: None, repos: None },
         ];
         let accounts = [
             account("mail:anna@mailbox.org", "mail"),

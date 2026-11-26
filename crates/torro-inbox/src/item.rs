@@ -791,6 +791,14 @@ pub struct SourceInfo {
     /// memory, never stored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notice: Option<SourceNotice>,
+    /// The repositories a GitHub source brings notifications from (issue #946,
+    /// `inbox.set_source_repos`): `owner/name` or a whole owner as `owner/*`, as the person chose
+    /// them ([`crate::rules::repo_chosen`]). `None` brings every repository the token reaches, the
+    /// default, and is left out of the JSON then, so older clients read the list as before; an empty
+    /// list brings nothing. A client key limited to some repositories sees only the names it
+    /// reaches: an empty list then may also mean the choice holds only names beyond its reach.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repos: Option<Vec<String>>,
 }
 
 /// What a working source still leaves out ([`SourceInfo::notice`], issue #947).
@@ -1228,8 +1236,14 @@ mod tests {
         }
         let foreign: Vec<FacetKey> = keys.iter().map(|(key, _)| *key).filter(|key| key.is_foreign()).collect();
         assert_eq!(foreign, [FacetKey::Repo, FacetKey::App, FacetKey::Person, FacetKey::Tag]);
-        let info =
-            SourceInfo { source: SourceRef::github("mahype"), open: 0, muted: false, health: None, notice: None };
+        let info = SourceInfo {
+            source: SourceRef::github("mahype"),
+            open: 0,
+            muted: false,
+            health: None,
+            notice: None,
+            repos: None,
+        };
         assert!(json(&info).get("health").is_none(), "left out while it works");
         assert!(json(&info).get("notice").is_none(), "left out without a note");
         let noted = SourceInfo { notice: Some(SourceNotice::PublicOnly), ..info.clone() };
@@ -1240,7 +1254,11 @@ mod tests {
         assert_eq!(serde_json::from_value::<SourceInfo>(json(&quiet)).expect("read"), quiet);
         let older = serde_json::json!({ "source": { "kind": "script", "name": "ci" }, "open": 2, "muted": false });
         let older = serde_json::from_value::<SourceInfo>(older).expect("read");
-        assert_eq!((older.health, older.notice), (None, None), "an older core says neither");
+        assert_eq!((older.health, older.notice, older.repos), (None, None, None), "an older core says none");
+        assert!(json(&info).get("repos").is_none(), "left out for every repository");
+        let chosen = SourceInfo { repos: Some(vec!["mahype/torro".into(), "immo/*".into()]), ..info.clone() };
+        assert_eq!(json(&chosen)["repos"], serde_json::json!(["mahype/torro", "immo/*"]));
+        assert_eq!(serde_json::from_value::<SourceInfo>(json(&chosen)).expect("read"), chosen);
         for (health, name) in [
             (SourceHealth::MissingApp, "missing_app"),
             (SourceHealth::SignedOut, "signed_out"),

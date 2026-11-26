@@ -1952,6 +1952,7 @@ impl InboxSource for DemoSource {
                 muted: data.muted.contains(source),
                 health: None,
                 notice: None,
+                repos: None,
             })
             .collect())
     }

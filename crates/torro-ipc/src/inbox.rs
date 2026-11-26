@@ -1559,6 +1559,7 @@ mod tests {
                     muted: false,
                     health: None,
                     notice: None,
+                    repos: None,
                 }],
             },
             // A dismissed entry is titled so, to see the flag arrived.
@@ -1919,7 +1920,14 @@ mod tests {
         let sources = core.client().list_sources().await.expect("listed");
         assert_eq!(
             sources,
-            vec![SourceInfo { source: SourceRef::script("ci"), open: 2, muted: false, health: None, notice: None }]
+            vec![SourceInfo {
+                source: SourceRef::script("ci"),
+                open: 2,
+                muted: false,
+                health: None,
+                notice: None,
+                repos: None
+            }]
         );
     }
 

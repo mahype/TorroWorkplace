@@ -654,7 +654,14 @@ impl Demo {
     /// The sample inbox sources (`inbox.list_sources`, task S.20): Talk is muted, so "Sources"
     /// shows a switch turned off; the others are on.
     fn sources(&self) -> Vec<SourceInfo> {
-        let source = |source: SourceRef, open, muted| SourceInfo { source, open, muted, health: None, notice: None };
+        let source = |source: SourceRef, open, muted| SourceInfo {
+            source,
+            open,
+            muted,
+            health: None,
+            notice: None,
+            repos: None,
+        };
         // The GitHub token of anna-dev is a classic one without `repo` (issue #947), so its row says
         // that only public repositories come.
         let public_only =
