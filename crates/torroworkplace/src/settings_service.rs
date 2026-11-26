@@ -2031,7 +2031,7 @@ mod tests {
                 ai_slots_taken: true,
                 mail_contacts_personal: true,
                 mail_sender_logos: true,
-                mail_undo_seconds: UndoSeconds::DEFAULT,
+                mail_undo_seconds: UndoSeconds::new(20).expect("in range"),
                 reminders: Reminders::from_value(&reminders).expect("valid reminders"),
                 maps: Maps { open_with: torro_core::settings::MapsApp::Apple, ..Maps::default() },
                 ai_assignments: std::collections::BTreeMap::new(),
