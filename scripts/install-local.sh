@@ -98,8 +98,10 @@ process_args() {
     local args comm
     case "$os" in
         Linux)
-            [ -s "$proc/$1/cmdline" ] || return 1
-            { tr '\0' '\n' < "$proc/$1/cmdline"; } 2>/dev/null | sed '1d' || true
+            # procfs reports size 0 for cmdline, so it is read, not sized up; empty means unreadable (a zombie).
+            args="$({ tr '\0' '\n' < "$proc/$1/cmdline"; } 2>/dev/null)" || return 1
+            [ -n "$args" ] || return 1
+            printf '%s\n' "$args" | sed '1d'
             ;;
         *)
             args="$(ps -o args= -p "$1" 2>/dev/null || true)"
@@ -121,40 +123,68 @@ file_id() {
     esac
 }
 
-# Whether `pid` runs the file `file` itself, not only one at the same path: Linux the inode of /proc/<pid>/exe,
-# macOS argv[0] and the inode among the program files lsof lists for it (the first is not always the program).
+# Whether `pid` runs the file `file` itself, not only one at the same path: Linux device and inode of
+# /proc/<pid>/exe; macOS argv[0], and device and inode of one and the same program file lsof lists for it (any of
+# them, the first is not always the program; an inode alone may repeat on another volume).
 runs_file() {
-    local pid="$1" file="$2" inode
+    local pid="$1" file="$2" want dev ino
+    want="$(file_id "$file")"
+    [ -n "$want" ] || return 1
     case "$os" in
-        Linux)
-            [ -n "$(file_id "$file")" ] && [ "$(file_id "$proc/$pid/exe")" = "$(file_id "$file")" ]
-            ;;
+        Linux) [ "$(file_id "$proc/$pid/exe")" = "$want" ] ;;
         *)
             [ "$(process_path "$pid")" = "$file" ] || return 1
-            inode="$(file_id "$file")"
-            inode="${inode#*:}"
-            [ -n "$inode" ] || return 1
-            { lsof -a -p "$pid" -d txt -Fi 2>/dev/null || true; } | grep -qx "i$inode"
+            # One line `<device> <inode>` per file of lsof's field output (`f` starts a file, `D` in hex).
+            { lsof -a -p "$pid" -d txt -FDi 2>/dev/null || true; } | awk '
+                /^f/ { if (seen) print d, i; d = ""; i = ""; seen = 1; next }
+                /^D/ { d = substr($0, 2) } /^i/ { i = substr($0, 2) }
+                END { if (seen) print d, i }' | {
+                while read -r dev ino; do
+                    case "$dev" in 0x[0-9a-fA-F]* | [0-9]*) ;; *) continue ;; esac
+                    [ "$((dev)):$ino" = "$want" ] && exit 0
+                done
+                exit 1
+            }
             ;;
     esac
 }
 
-# Whether `pid` holds the file `lock` open.
-holds_file() {
-    local pid="$1" lock="$2" fd
+# The pids that hold a lock on the file `lock` (Linux, /proc/locks), one per line. The device there may differ
+# from stat's on btrfs, so the inode is compared, together with the open file below.
+lock_holders() {
+    local ino
+    ino="$(file_id "$1")"
+    ino="${ino#*:}"
+    [ -n "$ino" ] || return 0
+    { cat "$proc/locks" 2>/dev/null || true; } | awk -v ino="$ino" '
+        $2 != "->" { n = split($6, dev, ":"); if (n == 3 && dev[3] == ino) print $5 }'
+}
+
+# Whether `pid` holds the service's lock `lock`: Linux, a lock on that inode in /proc/locks for this pid and the
+# file open in it; macOS, the file open (lsof cannot show locks there; `service-lock free` decides afterwards).
+holds_lock() {
+    local pid="$1" lock="$2" fd open=1
     case "$os" in
         Linux)
             for fd in "$proc/$pid/fd/"*; do
-                [ "$(readlink "$fd" 2>/dev/null || true)" = "$lock" ] && return 0
+                [ "$(readlink "$fd" 2>/dev/null || true)" = "$lock" ] && { open=0; break; }
             done
-            return 1
+            [ "$open" = 0 ] && lock_holders "$lock" | grep -qx "$pid"
             ;;
         *) { lsof -a -p "$pid" -t -- "$lock" 2>/dev/null || true; } | grep -qx "$pid" ;;
     esac
 }
 
+# Whether no service holds the lock, asked of the new program `program` (`service-lock free`): 0 free, 3 held,
+# anything else unknown.
+lock_free() {
+    local rc=0
+    "$1" service-lock free >/dev/null 2>&1 || rc=$?
+    return "$rc"
+}
+
 # The identity of the service `pid` (`start|path`) when it is one of this user: its program is `torroworkplace`,
-# its subcommand `daemon`, and it holds the service's lock `lock` open, which only the service does. Fails
+# its subcommand `daemon`, and it holds the service's lock `lock`, which only the service does. Fails
 # otherwise, also when the pid changed hands while it was read.
 service_id() {
     local pid="$1" lock="$2" start path
@@ -165,7 +195,7 @@ service_id() {
     path="${path% (deleted)}"
     [ "${path##*/}" = torroworkplace ] || return 1
     [ "$( (process_args "$pid" || true) | sed -n 1p)" = daemon ] || return 1
-    holds_file "$pid" "$lock" || return 1
+    holds_lock "$pid" "$lock" || return 1
     [ "$(process_start "$pid")" = "$start" ] || return 1
     echo "$start|$path"
 }
@@ -187,35 +217,62 @@ wait_gone() {
 
 # Ends every service of this user that holds `lock` except `keep` (the one systemd or launchd runs): it would make
 # the new service give up as "already running". SIGTERM ends it like `systemctl --user stop` does; its identity is
-# read again right before the signal. A service taking over from another one (`daemon --takeover`) gets the lock
-# once that one ended, so this looks again, up to three rounds. Fails when one is left.
+# read again right before the signal, and a signal that fails is an error. Without `keep` it succeeds only once the
+# new program `program` finds the lock free twice, a pause apart: a service taking over from another one (`daemon
+# --takeover`) asks for the lock every 250 ms and gets it once that one ended, so this looks again, up to five
+# rounds. With `keep` (launchd's own service holds the lock) it succeeds once a round finds nothing to end.
 end_stray_daemons() {
-    local keep="$1" lock="$2" round=0 pid id ended
-    while [ "$round" -lt 3 ]; do
+    local keep="$1" lock="$2" program="$3" round=0 pid id ended rc held
+    while [ "$round" -lt 5 ]; do
         round=$((round + 1))
         ended=""
         for pid in $(pgrep -U "$uid" -f torroworkplace 2>/dev/null || true); do
             [ "$pid" = "$keep" ] && continue
             id="$(service_id "$pid" "$lock")" || continue
             [ "$(service_id "$pid" "$lock" || true)" = "$id" ] || continue
-            kill "$pid" 2>/dev/null && ended="$ended $pid"
+            if ! kill "$pid" 2>/dev/null; then
+                # Gone meanwhile is what was wanted; still there means the signal did not reach it.
+                kill -0 "$pid" 2>/dev/null || continue
+                warn "cannot end the service (pid $pid) that holds $lock"
+                return 1
+            fi
+            ended="$ended $pid"
         done
-        [ -n "$ended" ] || return 0
-        say "ended the service started outside the system's service manager (pid${ended})"
-        # shellcheck disable=SC2086 # one pid per word
-        if ! wait_gone $ended; then
-            warn "the old service (pid${ended}) did not end"
+        if [ -n "$ended" ]; then
+            say "ended the service started outside the system's service manager (pid${ended})"
+            # shellcheck disable=SC2086 # one pid per word
+            if ! wait_gone $ended; then
+                warn "the old service (pid${ended}) did not end"
+                return 1
+            fi
+        fi
+        if [ -n "$keep" ]; then
+            [ -n "$ended" ] || return 0
+            continue
+        fi
+        rc=0
+        lock_free "$program" || rc=$?
+        if [ "$rc" = 0 ]; then
+            sleep "$pause"
+            rc=0
+            lock_free "$program" || rc=$?
+            [ "$rc" = 0 ] && return 0
+        fi
+        if [ "$rc" != 3 ]; then
+            warn "cannot tell whether a service holds $lock ($program service-lock free: $rc)"
             return 1
         fi
+        sleep "$pause"
     done
-    warn "a service outside the system's service manager still holds $lock"
+    held=""
+    [ "$os" != Linux ] || held="$(lock_holders "$lock" | tr '\n' ' ')"
+    warn "a service still holds $lock${held:+ (pid ${held% })}"
     return 1
 }
 
 # The lock the service holds, from the new program `program`; empty with a warning when it cannot tell.
 service_lock() {
-    "$1" service-lock 2>/dev/null || warn "cannot ask $1 for the service's lock; services outside the" \
-        "service manager are not looked for"
+    "$1" service-lock 2>/dev/null || warn "cannot ask $1 for the service's lock"
 }
 
 # --- Linux -----------------------------------------------------------------------------------------------------
@@ -244,14 +301,15 @@ unit_pid() {
 # stops with KillMode=process; says what differs.
 unit_as_wanted() {
     local bin="$1" exec kill
-    exec="$(systemctl --user show -p ExecStart --value "$unit" 2>/dev/null || true)"
+    # The property as D-Bus has it: the number of commands, then per command its path, the number of arguments
+    # and each argument quoted, so no argument can pass for a separator.
+    exec="$(busctl --user get-property org.freedesktop.systemd1 \
+        /org/freedesktop/systemd1/unit/torroworkplace_2eservice org.freedesktop.systemd1.Service ExecStart \
+        2>/dev/null || true)"
     kill="$(systemctl --user show -p KillMode --value "$unit" 2>/dev/null || true)"
     case "$exec" in
-        "{ path=$bin/torroworkplace ; argv[]=$bin/torroworkplace daemon ; "*) ;;
-        *) warn "$unit does not start '$bin/torroworkplace daemon'"; return 1 ;;
-    esac
-    case "${exec#*"argv[]="}" in
-        *"{ path="*) warn "$unit has more than one ExecStart"; return 1 ;;
+        "a(sasbttttuii) 1 \"$bin/torroworkplace\" 2 \"$bin/torroworkplace\" \"daemon\" "*) ;;
+        *) warn "$unit does not start exactly '$bin/torroworkplace daemon' (ExecStart: ${exec:-unknown})"; return 1 ;;
     esac
     if [ "$kill" != process ]; then
         warn "$unit has KillMode=$kill, so a stop would end the apps the service started"
@@ -313,7 +371,7 @@ unit_runs() {
 restart_service_linux() {
     local bin="$1" old="${2:-}" pid out lock
     lock="$(service_lock "$bin/torroworkplace")"
-    if [ -n "$lock" ] && ! end_stray_daemons "" "$lock"; then
+    if [ -z "$lock" ] || ! end_stray_daemons "" "$lock" "$bin/torroworkplace"; then
         warn "the service was not restarted"
         status=1
         return 0
@@ -429,14 +487,26 @@ launchd_pid() {
     { launchctl print "$1" 2>/dev/null || true; } | awk '$1 == "pid" && $2 == "=" { print $3; exit }'
 }
 
-# The definition launchd has loaded for `target`: its `program`, then each of its `arguments`, one per line.
-# Empty when it shows neither.
+# The definition launchd has loaded for `target`, each part marked: `program <path>`, `arg <argument>` per
+# argument and `end` once the argument block closed. A missing program cannot hide behind an argument.
 launchd_definition() {
     { launchctl print "$1" 2>/dev/null || true; } | awk '
-        args && /^[[:space:]]*\}/ { args = 0; next }
-        args { sub(/^[[:space:]]*/, ""); print; next }
-        /^[[:space:]]*program = / { sub(/^[[:space:]]*program = /, ""); print; next }
+        args && /^[[:space:]]*\}/ { args = 0; print "end"; next }
+        args { sub(/^[[:space:]]*/, ""); print "arg " $0; next }
+        /^[[:space:]]*program = / { sub(/^[[:space:]]*program = /, ""); print "program " $0; next }
         /^[[:space:]]*arguments = \{/ { args = 1 }'
+}
+
+# Whether launchd has `target` loaded: prints `loaded`, `unloaded` (launchctl print: 113, no such service) or
+# `error` (any other failure, which tells nothing).
+agent_state() {
+    local rc=0
+    launchctl print "$1" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+        0) echo loaded ;;
+        113) echo unloaded ;;
+        *) echo error ;;
+    esac
 }
 
 # Whether launchd runs the file `program` for `target` in a process other than `old`, and still does a pause
@@ -458,19 +528,22 @@ launchd_runs() {
     return 1
 }
 
-# Unloads the agent `target` and waits until launchd has let it go; on failure says why.
+# Unloads the agent `target` and waits until launchd has let it go; on failure says why. Only `unloaded` counts:
+# a query that fails proves nothing.
 unload_agent() {
-    local target="$1" out tries=0
-    out="$(launchctl bootout "$target" 2>&1)" || true
-    while launchctl print "$target" >/dev/null 2>&1; do
+    local target="$1" out rc=0 tries=0 state
+    out="$(launchctl bootout "$target" 2>&1)" || rc=$?
+    while :; do
+        state="$(agent_state "$target")"
+        [ "$state" = unloaded ] && return 0
         tries=$((tries + 1))
-        if [ "$tries" -ge 5 ]; then
-            warn "launchctl bootout $target did not unload the old agent${out:+: $out}; the service was not restarted"
+        if [ "$state" = error ] || [ "$tries" -ge 5 ]; then
+            warn "launchctl bootout $target ($rc${out:+: $out}) did not unload the old agent (state: $state);" \
+                "the service was not restarted"
             return 1
         fi
         sleep "$pause"
     done
-    return 0
 }
 
 # Makes sure the service's LaunchAgent starts `svc`, the service in the new bundles, and (re)starts it.
@@ -495,18 +568,26 @@ restart_service_macos() {
     lock="$(service_lock "$svc")"
     # What launchd has loaded may differ from the file (an earlier unload failed, the file was replaced by hand, a
     # definition it cannot show): checked on every run, as a whole.
-    wanted="$(printf '%s\n%s\n%s' "$svc" "$svc" daemon)"
-    if launchctl print "$target" >/dev/null 2>&1; then
-        loaded=1
-        [ "$(launchd_definition "$target")" = "$wanted" ] || stale=1
-    fi
+    wanted="$(printf 'program %s\narg %s\narg daemon\nend' "$svc" "$svc")"
+    case "$(agent_state "$target")" in
+        loaded)
+            loaded=1
+            [ "$(launchd_definition "$target")" = "$wanted" ] || stale=1
+            ;;
+        error)
+            warn "cannot ask launchd about $target (launchctl print); the service was not restarted"
+            status=1
+            return 0
+            ;;
+    esac
     if [ "$state" != current ] || [ "$stale" = 1 ]; then
         if [ "$loaded" = 1 ]; then
             [ "$stale" = 0 ] || say "launchd has the agent loaded with another definition; loading it again"
             unload_agent "$target" || { status=1; return 0; }
         fi
-        # The setting changes only once no service runs, so none writes settings.json meanwhile.
-        if [ -z "$lock" ] || ! end_stray_daemons "" "$lock"; then
+        # The setting changes only once the lock is shown free; `login-item enable` then holds it itself while it
+        # changes the setting, so no service starts and writes settings.json meanwhile.
+        if [ -z "$lock" ] || ! end_stray_daemons "" "$lock" "$svc"; then
             warn "cannot make sure no service runs; \"Start at login\" was not changed, the service not restarted"
             status=1
             return 0
@@ -522,7 +603,7 @@ restart_service_macos() {
                 return 0
             fi
         fi
-    elif [ -n "$lock" ] && ! end_stray_daemons "$(launchd_pid "$target")" "$lock"; then
+    elif [ -z "$lock" ] || ! end_stray_daemons "$(launchd_pid "$target")" "$lock" "$svc"; then
         warn "the service was not restarted"
         status=1
         return 0
@@ -531,11 +612,11 @@ restart_service_macos() {
     while [ "$attempt" -le 3 ]; do
         old="$(launchd_pid "$target")"
         rc=0
-        if launchctl print "$target" >/dev/null 2>&1; then
-            out="$(launchctl kickstart -k "$target" 2>&1)" || rc=$?
-        else
-            out="$(launchctl bootstrap "$domain" "$plist" 2>&1)" || rc=$?
-        fi
+        case "$(agent_state "$target")" in
+            loaded) out="$(launchctl kickstart -k "$target" 2>&1)" || rc=$? ;;
+            unloaded) out="$(launchctl bootstrap "$domain" "$plist" 2>&1)" || rc=$? ;;
+            *) out="launchctl print $target failed"; rc=1 ;;
+        esac
         if [ "$rc" = 0 ] && pid="$(launchd_runs "$target" "$svc" "$old")"; then
             say "service restarted: $svc (pid $pid)"
             return 0
