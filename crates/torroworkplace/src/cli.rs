@@ -23,8 +23,9 @@
 //! no core: `enable` switches "Start at login" on like the control centre does and writes the system's
 //! login item for this program (`settings_service`), `status` prints where that item stands
 //! (`current`, `outdated` or `missing`) and its path. Exit codes: 0 done, 1 failed, 64 bad arguments.
-//! `service-lock` prints the file the running service holds open, by which the installer tells the
-//! service from other processes (review of #1004).
+//! `service-lock` prints the file the running service holds locked, by which the installer tells the
+//! service from other processes; `service-lock free` says whether a service holds it now: exit 0 free, 3 held
+//! (review of #1004). `login-item enable` holds that lock itself while it changes the setting.
 //!
 //! `notify` (E1.3) posts a notice to the inbox for scripts: `inbox.post_item` with kind `notice`.
 //! Unlike `ctl` it sends the client key in `TORRO_TOKEN` when there is one, so the entry belongs
@@ -74,7 +75,8 @@ const USAGE: &str = "usage:
                                   relative to here; --wait has no time limit and Ctrl-C does not cancel the job)
   torroworkplace notify --title <text> [--body <text>] [--url <url>] [--for-me] [--thread <key>] [--json]
   torroworkplace login-item enable|status       (for the installer: start this program at login)
-  torroworkplace service-lock                   (for the installer: the file the running service holds)
+  torroworkplace service-lock [free]            (for the installer: the file the running service holds;
+                                                free: exit 0 when no service holds it, 3 when one does)
   torroworkplace hook claude-code|codex|gemini|opencode [--key-file <file>]
                                                  (run by an agent's hooks; reads stdin, prints nothing)";
 
@@ -683,13 +685,41 @@ fn parse_login_item(args: &[String]) -> Result<LoginItemCommand, UsageError> {
     }
 }
 
-/// `torroworkplace service-lock` with `args` after it, which must be none: prints the path of the file the
-/// running service holds locked ([`crate::daemon::service_lock_path`]). Exit codes: 0, 1 without a home
-/// directory, 64 with arguments.
+/// The arguments after `service-lock`: none (the path) or `free` (whether it is free); `true` for `free`.
+fn parse_service_lock(args: &[String]) -> Result<bool, UsageError> {
+    match args {
+        [] => Ok(false),
+        [word] if word == "free" => Ok(true),
+        _ => Err(UsageError::new("service-lock takes nothing or free")),
+    }
+}
+
+/// `torroworkplace service-lock [free]` with `args` after it: prints the path of the file the running service
+/// holds locked ([`crate::daemon::service_lock_path`]), or with `free` whether no service holds it
+/// ([`crate::daemon::service_lock_free`]). Exit codes: 0 (free), 3 held, 1 failed, 64 bad arguments.
 pub fn service_lock_from_args(args: &[String]) -> ExitCode {
-    if !args.is_empty() {
-        eprintln!("{}: service-lock takes no arguments\n\n{}", crate::APP.binary, usage());
-        return ExitCode::from(64);
+    let free = match parse_service_lock(args) {
+        Ok(free) => free,
+        Err(err) => {
+            eprintln!("{}: {err}\n\n{}", crate::APP.binary, usage());
+            return ExitCode::from(64);
+        }
+    };
+    if free {
+        return match crate::daemon::service_lock_free() {
+            Ok(true) => {
+                println!("free");
+                ExitCode::SUCCESS
+            }
+            Ok(false) => {
+                println!("held");
+                ExitCode::from(3)
+            }
+            Err(err) => {
+                eprintln!("{}: {err}", crate::APP.binary);
+                ExitCode::FAILURE
+            }
+        };
     }
     match crate::daemon::service_lock_path() {
         Some(path) => {
@@ -714,11 +744,19 @@ pub fn login_item_from_args(args: &[String]) -> ExitCode {
             return ExitCode::from(64);
         }
     };
-    if command == LoginItemCommand::Enable
-        && let Err(err) = crate::settings_service::SettingsStore::system().enable_login_item()
-    {
-        eprintln!("{}: cannot switch start at login on: {err}", crate::APP.binary);
-        return ExitCode::FAILURE;
+    if command == LoginItemCommand::Enable {
+        // Held until the setting is changed: meanwhile no service can start and write the settings too.
+        let _held = match crate::daemon::hold_service_lock() {
+            Ok(held) => held,
+            Err(err) => {
+                eprintln!("{}: cannot switch start at login on while a service runs ({err})", crate::APP.binary);
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(err) = crate::settings_service::SettingsStore::system().enable_login_item() {
+            eprintln!("{}: cannot switch start at login on: {err}", crate::APP.binary);
+            return ExitCode::FAILURE;
+        }
     }
     match crate::settings_service::login_item_status() {
         Ok((state, path)) => {
@@ -1099,6 +1137,16 @@ mod tests {
     use torro_ipc::Status;
 
     use super::*;
+
+    /// Review of #1004: `service-lock` takes nothing (the path) or `free`.
+    #[test]
+    fn service_lock_takes_nothing_or_free() {
+        let parse = |args: &[&str]| parse_service_lock(&args.iter().map(|arg| (*arg).to_string()).collect::<Vec<_>>());
+        assert_eq!(parse(&[]), Ok(false));
+        assert_eq!(parse(&["free"]), Ok(true));
+        assert!(parse(&["held"]).is_err());
+        assert!(parse(&["free", "now"]).is_err());
+    }
 
     /// Issue #1001: `login-item` takes exactly `enable` or `status`.
     #[test]
