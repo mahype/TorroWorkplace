@@ -10236,7 +10236,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
 
     /// The field as the quick filters read and change it (issues #336, #993): what is typed, or in the
     /// view "Archive" with nothing typed `in:archive` – the archive it lists –, so the menu shows "Only
-    /// archive" there and a quick filter searches the archive, not all mail.
+    /// archive" there and a quick filter searches the archive, not all mail. Words typed there search all
+    /// mail, as the field's placeholder says and as from "Drafts", "Sent" or "Trash": writing `in:archive`
+    /// into the field while the person types would move the text under the cursor; "Only archive" in
+    /// the menu narrows such a search to the archive.
     fn filter_field(&self) -> String {
         if self.archive_unsearched() { search::set_archive("", search::Archive::Only) } else { self.search.clone() }
     }
@@ -16602,7 +16605,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if !self.mail_only && !views.is_empty() {
             sections.push(MenuSection::new(views.into_iter().map(item).collect()));
         }
-        // "Folders" as in the sidebar (task E18.4): Archive, the pinned folders, "Pin folders" ›.
+        // "Folders" as in the sidebar (task E18.4, issue #993): Drafts, Archive, Sent, Trash, the pinned
+        // folders, "Pin folders" ›.
         let filed = self.folder_entries();
         if !filed.is_empty() {
             sections.push(MenuSection::titled(tr("Folders"), filed.into_iter().map(item).collect()));
