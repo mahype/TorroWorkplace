@@ -657,9 +657,15 @@ fn lock_free_at(path: &Path) -> Result<bool, String> {
 
 /// Takes the service's lock for as long as the returned file lives (`login-item enable`, review of #1004):
 /// while the installer changes "Start at login", no service can start and write the settings too. "already
-/// running" while a service holds it; `None` on a file system without locks, like [`claim_service`].
-pub fn hold_service_lock() -> Result<Option<std::fs::File>, String> {
-    claim_service(&AppPaths::for_app(AppId::WORKPLACE).ok_or("no home directory")?.state)
+/// running" while a service holds it. Unlike the service's own start ([`claim_service`]) a lock that cannot be
+/// opened or taken is an error: without it nothing keeps a service from writing at the same time.
+pub fn hold_service_lock() -> Result<std::fs::File, String> {
+    held_lock_in(&AppPaths::for_app(AppId::WORKPLACE).ok_or("no home directory")?.state)
+}
+
+/// [`hold_service_lock`] in the state directory `state`.
+fn held_lock_in(state: &Path) -> Result<std::fs::File, String> {
+    claim_service(state)?.ok_or_else(|| format!("cannot take the lock {}", state.join(SERVICE_LOCK).display()))
 }
 
 /// The locked [`SERVICE_LOCK`] of this process, kept until the process ends (the system then drops the
@@ -1603,8 +1609,22 @@ mod tests {
         let held = claim_service(dir.path()).expect("claimed").expect("a file system with locks");
         assert_eq!(lock_free_at(&path), Ok(false), "held");
         assert!(claim_service(dir.path()).is_err(), "a second claim is refused");
+        assert!(held_lock_in(dir.path()).is_err(), "login-item enable refuses while it is held");
         drop(held);
         assert_eq!(lock_free_at(&path), Ok(true), "let go");
+        let mine = held_lock_in(dir.path()).expect("free, so held");
+        assert_eq!(lock_free_at(&path), Ok(false));
+        drop(mine);
+    }
+
+    /// Review of #1004: a lock that cannot even be opened is an error for `login-item enable`, not a quiet
+    /// "go on without": a file where the state directory belongs makes it fail.
+    #[test]
+    fn a_lock_that_cannot_be_taken_is_an_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let state = dir.path().join("state");
+        std::fs::write(&state, "a file, not a folder").expect("block the folder");
+        assert!(held_lock_in(&state).is_err());
     }
 
     /// Review of #1004: `service-lock` names the file `claim_service` locks, in the core's state directory.

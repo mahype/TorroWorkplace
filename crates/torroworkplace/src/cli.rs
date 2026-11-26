@@ -749,7 +749,7 @@ pub fn login_item_from_args(args: &[String]) -> ExitCode {
         let _held = match crate::daemon::hold_service_lock() {
             Ok(held) => held,
             Err(err) => {
-                eprintln!("{}: cannot switch start at login on while a service runs ({err})", crate::APP.binary);
+                eprintln!("{}: cannot switch start at login on without the service's lock: {err}", crate::APP.binary);
                 return ExitCode::FAILURE;
             }
         };
