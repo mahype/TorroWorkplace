@@ -6900,14 +6900,17 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 let query = search::toggle(&self.filter_field(), filter, today());
                 return self.filter_search(query);
             }
-            // "Without archive" from the view "Archive" (issue #993) leaves nothing to search: the
-            // inboxes, "All", are the mail without the archive.
-            Message::SearchArchive(search::Archive::Without) if self.archive_unsearched() => {
-                self.close_menus();
-                return self.update(Message::Show(View::All));
-            }
             Message::SearchArchive(chosen) => {
                 let query = search::set_archive(&self.filter_field(), chosen);
+                // "Without archive" from the view "Archive" (issue #993), or from a search begun there,
+                // leaves nothing to search: the inboxes, "All", are the mail without the archive – not
+                // the archive the search would end in.
+                let from_archive = self.archive_unsearched() || self.search_from == Some(View::Archive);
+                if chosen == search::Archive::Without && query.trim().is_empty() && from_archive {
+                    self.close_menus();
+                    self.leave_search_state();
+                    return self.update(Message::Show(View::All));
+                }
                 return self.filter_search(query);
             }
             Message::ClearSearchFilters => {
@@ -24204,6 +24207,13 @@ mod tests {
         load(&mut without);
         let _ = without.update(Message::SearchArchive(search::Archive::Without));
         assert_eq!((without.view.clone(), without.search.as_str()), (View::All, ""), "the inboxes");
+        // One after the other in the same window: "With archive", then "Without archive" – "All", not
+        // back to the archive the search began in.
+        let _ = with.update(Message::SearchArchive(search::Archive::Without));
+        assert_eq!((with.view.clone(), with.search.as_str()), (View::All, ""), "the inboxes, not the archive");
+        assert!(with.search_from.is_none(), "the search is over");
+        load(&mut with);
+        assert_eq!(search::archive(&with.filter_field()), search::Archive::Without, "the menu says so");
         // Something typed: the field as it is.
         let mut typed = mail_window(Density::Compact, &["--open", "archive"]);
         load(&mut typed);
