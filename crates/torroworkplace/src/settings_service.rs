@@ -32,8 +32,8 @@ use torro_core::privacy::{ForeignContent, ProviderChange};
 use torro_core::settings::{
     self, AssistantDefault, AttachmentClick, ComponentSwitch, ComposePaper, FocusSlots, FolderChange, Language,
     ListOrderEntry, MailAppearance, MailAttachments, MailFormat, Maps, Night, PdfSettings, PdfTemplate, PdfTemplateId,
-    PostponeRetention, QWEN_BUILT, Recognizer, Reminders, Retention, SearchProviderSwitch, Settings, SetupState, Voice,
-    WebSearch, WorkingHours, Zoom,
+    PostponeRetention, QWEN_BUILT, Recognizer, Reminders, Retention, SearchProviderSwitch, Settings, SetupState,
+    UndoSeconds, Voice, WebSearch, WorkingHours, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -708,6 +708,8 @@ enum Change {
     MailContactsPersonal(bool),
     /// "Logos of known senders" (issue #453).
     MailSenderLogos(bool),
+    /// How long the hint after a change of mail offers "Undo" (issue #992).
+    MailUndoSeconds(UndoSeconds),
     /// Which mail categories the sidebar leaves out (task E12.10).
     HiddenCategories(Vec<torro_mail::Category>),
     /// A change of the reminders of events (task ER1.2): the fields it names, checked against the
@@ -857,6 +859,7 @@ impl Change {
             SettingKey::MailSenderLogos => {
                 Change::MailSenderLogos(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
+            SettingKey::MailUndoSeconds => Change::MailUndoSeconds(UndoSeconds::from_value(value)?),
             // Strict, like the night: the file's reading falls back to the defaults instead.
             SettingKey::HiddenCategories => {
                 Change::HiddenCategories(serde_json::from_value(value.clone()).map_err(invalid)?)
@@ -972,6 +975,7 @@ impl Change {
             Change::MailDownloadsFolder(folder) => settings.mail_attachments.downloads = folder,
             Change::MailContactsPersonal(on) => settings.mail_contacts_personal = on,
             Change::MailSenderLogos(on) => settings.mail_sender_logos = on,
+            Change::MailUndoSeconds(seconds) => settings.mail_undo_seconds = seconds,
             Change::HiddenCategories(hidden) => settings.hidden_categories = hidden,
             // Checked when parsed: what the stored ones hold cannot make the fields it names unfit.
             Change::Reminders(change) => {
@@ -1967,6 +1971,9 @@ mod tests {
         let working = json!({"from": "07:30", "to": "16:00"});
         Change::parse(SettingKey::WorkingHours, &working).expect("valid working hours").apply(&mut settings);
         Change::parse(SettingKey::QuietWhenBusy, &json!(false)).expect("valid flag").apply(&mut settings);
+        Change::parse(SettingKey::MailUndoSeconds, &json!(20)).expect("valid seconds").apply(&mut settings);
+        assert_eq!(settings.mail_undo_seconds.get(), 20);
+        assert!(Change::parse(SettingKey::MailUndoSeconds, &json!(60)).is_err(), "five to thirty");
         Change::parse(SettingKey::FocusSlots, &json!(5)).expect("valid slots").apply(&mut settings);
         assert!(Change::parse(SettingKey::FocusSlots, &json!(0)).is_err(), "one to five");
         Change::parse(SettingKey::Design, &json!("compact")).expect("an id").apply(&mut settings);
@@ -2024,6 +2031,7 @@ mod tests {
                 ai_slots_taken: true,
                 mail_contacts_personal: true,
                 mail_sender_logos: true,
+                mail_undo_seconds: UndoSeconds::DEFAULT,
                 reminders: Reminders::from_value(&reminders).expect("valid reminders"),
                 maps: Maps { open_with: torro_core::settings::MapsApp::Apple, ..Maps::default() },
                 ai_assignments: std::collections::BTreeMap::new(),

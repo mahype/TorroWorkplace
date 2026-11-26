@@ -4382,7 +4382,8 @@ static SET_SETTING: Command = Command {
                   newsletters, invitations and automatic replies, and a model only chooses within that group) or \
                   `mail_sender_logos` (true, the default, or false; while on, the core checks the signature of new \
                   mail and shows the logo of a sender whose mail passed, fetched once per domain from its BIMI record or \
-                  website; off, it checks and fetches nothing) or \
+                  website; off, it checks and fetches nothing) or `mail_undo_seconds` (5 to 30, 10 unless changed: \
+                  how many seconds the inbox's hint after a change of mail offers \"Undo\") or \
                   what a click on a mail attachment does: `mail_attachment_click` (\"open\", the \
                   default, \"downloads\", \"save_as\", \"suggested\" or {\"target\": \"<id from \
                   mail_list_save_targets>\"}) or `mail_downloads_folder` (null to save attachments in the \
@@ -9934,6 +9935,7 @@ mod tests {
                 "mail_sender",
                 "mail_contacts_personal",
                 "mail_sender_logos",
+                "mail_undo_seconds",
                 "reminders",
                 "hidden_categories",
                 "pdf_folder",
