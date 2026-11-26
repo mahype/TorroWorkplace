@@ -128,6 +128,7 @@ fn main() -> ExitCode {
         Some("hook") => hook::from_args(&std::env::args().skip(2).collect::<Vec<_>>()),
         // For the installer (issue #1001): start this program at login, or where that item stands.
         Some("login-item") => cli::login_item_from_args(&std::env::args().skip(2).collect::<Vec<_>>()),
+        Some("service-lock") => cli::service_lock_from_args(&std::env::args().skip(2).collect::<Vec<_>>()),
         Some("mcp") => mcp::run(),
         // The process that reads a PDF attachment's text for the core (issue #893); only the core starts it.
         Some(mail::attachment_text::HELPER) => mail::attachment_text::run_helper(),
@@ -137,7 +138,7 @@ fn main() -> ExitCode {
         }
         Some(other) => {
             eprintln!(
-                "{}: unknown command {other:?}; try daemon, status, ctl, notify, hook, login-item or mcp",
+                "{}: unknown command {other:?}; try daemon, status, ctl, notify, hook, login-item, service-lock or mcp",
                 APP.binary
             );
             ExitCode::from(64)

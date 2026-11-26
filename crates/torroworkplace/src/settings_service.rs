@@ -1206,6 +1206,20 @@ fn write_synced(path: &Path, content: &str) -> io::Result<()> {
     file.sync_all()
 }
 
+/// Writes the login item at `path` (review of #1004): first a hidden file beside it, then renamed over the
+/// item, so a failed write never leaves an empty or half item behind. The directory is made when missing.
+fn replace_login_item(path: &Path, content: &str) -> io::Result<()> {
+    let dir = path.parent().ok_or_else(|| io::Error::other("login item has no directory"))?;
+    let name = path.file_name().ok_or_else(|| io::Error::other("login item has no file name"))?;
+    fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!(".{}.{}.tmp", name.to_string_lossy(), std::process::id()));
+    let written = write_synced(&tmp, content).and_then(|()| fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
+}
+
 /// Turns the start-at-login entry of this system on or off (see the module docs for where it is).
 /// The entry points at the running program, so switching the setting off and on again after the
 /// program moved updates it.
@@ -1268,7 +1282,7 @@ pub fn login_item_status() -> Result<(LoginItemState, PathBuf), String> {
 /// Windows and the rest: the installer that asks (`scripts/install-local.sh`) runs on Linux and macOS only.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn login_item_status() -> Result<(LoginItemState, PathBuf), String> {
-    let _ = (login_item_state, read_login_item);
+    let _ = (login_item_state, read_login_item, replace_login_item);
     Err("the login item's status is not supported on this system yet".into())
 }
 
@@ -1380,9 +1394,7 @@ mod autostart {
     }
 
     fn write_entry(path: &Path, content: &str) -> io::Result<()> {
-        let dir = path.parent().ok_or_else(|| io::Error::other("autostart entry has no directory"))?;
-        fs::create_dir_all(dir)?;
-        fs::write(path, content)
+        super::replace_login_item(path, content)
     }
 
     /// Removing an entry that is not there is fine: the goal is that it is gone.
@@ -1614,9 +1626,7 @@ mod launch_agent {
     }
 
     fn write_plist(path: &Path, content: &str) -> io::Result<()> {
-        let dir = path.parent().ok_or_else(|| io::Error::other("login item has no directory"))?;
-        fs::create_dir_all(dir)?;
-        fs::write(path, content)
+        super::replace_login_item(path, content)
     }
 
     /// Removing a file that is not there is fine: the goal is that it is gone.
@@ -3196,6 +3206,22 @@ mod tests {
             assert_eq!(calls, [true]);
             assert!(daemons.current().start_at_login);
         }
+    }
+
+    /// Review of #1004: the item is replaced whole, through a hidden file that does not stay behind.
+    #[test]
+    fn a_login_item_is_replaced_whole() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("LaunchAgents").join("agent.plist");
+        replace_login_item(&path, "old").expect("first write, with the directory");
+        replace_login_item(&path, "new").expect("replace");
+        assert_eq!(fs::read_to_string(&path).expect("read"), "new");
+        let names: Vec<_> =
+            fs::read_dir(path.parent().expect("dir")).expect("list").flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names, ["agent.plist"], "no temporary file left");
+        fs::create_dir_all(dir.path().join("blocked")).expect("a folder where the item belongs");
+        assert!(replace_login_item(&dir.path().join("blocked"), "x").is_err());
+        assert!(dir.path().join("blocked").is_dir(), "the folder is left as it was");
     }
 
     /// Review of #1004: an item that cannot be written leaves the setting as it was, off stays off.

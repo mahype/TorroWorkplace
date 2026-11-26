@@ -23,6 +23,8 @@
 //! no core: `enable` switches "Start at login" on like the control centre does and writes the system's
 //! login item for this program (`settings_service`), `status` prints where that item stands
 //! (`current`, `outdated` or `missing`) and its path. Exit codes: 0 done, 1 failed, 64 bad arguments.
+//! `service-lock` prints the file the running service holds open, by which the installer tells the
+//! service from other processes (review of #1004).
 //!
 //! `notify` (E1.3) posts a notice to the inbox for scripts: `inbox.post_item` with kind `notice`.
 //! Unlike `ctl` it sends the client key in `TORRO_TOKEN` when there is one, so the entry belongs
@@ -72,6 +74,7 @@ const USAGE: &str = "usage:
                                   relative to here; --wait has no time limit and Ctrl-C does not cancel the job)
   torroworkplace notify --title <text> [--body <text>] [--url <url>] [--for-me] [--thread <key>] [--json]
   torroworkplace login-item enable|status       (for the installer: start this program at login)
+  torroworkplace service-lock                   (for the installer: the file the running service holds)
   torroworkplace hook claude-code|codex|gemini|opencode [--key-file <file>]
                                                  (run by an agent's hooks; reads stdin, prints nothing)";
 
@@ -677,6 +680,26 @@ fn parse_login_item(args: &[String]) -> Result<LoginItemCommand, UsageError> {
         [verb] if verb == "enable" => Ok(LoginItemCommand::Enable),
         [verb] if verb == "status" => Ok(LoginItemCommand::Status),
         _ => Err(UsageError::new("login-item takes enable or status")),
+    }
+}
+
+/// `torroworkplace service-lock` with `args` after it, which must be none: prints the path of the file the
+/// running service holds locked ([`crate::daemon::service_lock_path`]). Exit codes: 0, 1 without a home
+/// directory, 64 with arguments.
+pub fn service_lock_from_args(args: &[String]) -> ExitCode {
+    if !args.is_empty() {
+        eprintln!("{}: service-lock takes no arguments\n\n{}", crate::APP.binary, usage());
+        return ExitCode::from(64);
+    }
+    match crate::daemon::service_lock_path() {
+        Some(path) => {
+            println!("{}", path.display());
+            ExitCode::SUCCESS
+        }
+        None => {
+            eprintln!("{}: no home directory, so no service lock", crate::APP.binary);
+            ExitCode::FAILURE
+        }
     }
 }
 

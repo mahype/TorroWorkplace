@@ -625,6 +625,14 @@ async fn serve(shows: Shows, takeover: bool) -> Result<(), String> {
 /// The file in the core's state directory that the running service holds locked ([`claim_service`]).
 const SERVICE_LOCK: &str = "service.lock";
 
+/// Where the running service holds [`SERVICE_LOCK`] (`torroworkplace service-lock`, issue #1001): the
+/// installer ends a service started outside systemd or launchd by finding the process that holds this file
+/// open, which only the service does (files are opened close-on-exec, so its helpers do not inherit it).
+/// `None` without a home directory.
+pub fn service_lock_path() -> Option<PathBuf> {
+    AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.state.join(SERVICE_LOCK))
+}
+
 /// The locked [`SERVICE_LOCK`] of this process, kept until the process ends (the system then drops the
 /// lock, also when the process is killed).
 static HELD_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
@@ -1556,6 +1564,16 @@ fn log(what: &str, response: &Response) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review of #1004: `service-lock` names the file `claim_service` locks, in the core's state directory.
+    /// Only the path is built; nothing of the user's is read or written.
+    #[test]
+    fn the_service_lock_is_the_claimed_file_in_the_state_directory() {
+        if let (Some(path), Some(paths)) = (service_lock_path(), AppPaths::for_app(AppId::WORKPLACE)) {
+            assert_eq!(path, paths.state.join(SERVICE_LOCK));
+            assert_eq!(path.file_name().and_then(|name| name.to_str()), Some("service.lock"));
+        }
+    }
 
     /// A core over `dir` with nothing of the user's: keys, approvals and inbox in `dir`, no window
     /// manager, no notifications.
