@@ -139,6 +139,12 @@ Repo-Namen verrät.
 **Aufwand:** ein Request mit Katalogeintrag, ein Feld in `SourceInfo`, Filter in `file`, eine Zeile mit Liste in
 `torro-settings-ui`. Das ist mehr als klein und kommt nicht in diesen PR, sondern in #946.
 
+**Stand (#946, Teil a):** Kern, API und MCP sind da: Tabelle `source_repos` (Inbox-Schema 21), Feld
+`SourceInfo::repos`, `inbox.set_source_repos` (Admin) mit MCP-Tool `inbox_set_source_repos`, Filter in `file`. Ein
+Schlüssel, der nur einige Repos erreicht, darf nur Namen in seiner Reichweite setzen und eine Wahl, die fremde Namen
+hält, nicht ändern (`forbidden`). Die Zeile „Repositories“ der Oberfläche folgt in
+[#997](https://github.com/mahype/TorroWorkplace/issues/997), Gestaltung zuerst mit dem Designer.
+
 ## Entschieden durch Projekt-Bot (delegiert von Sven)
 
 Stand: 2026-11-21.
