@@ -9244,7 +9244,7 @@ dependencies = [
  "arboard",
  "base64 0.22.1",
  "chrono",
- "glib",
+ "gdk",
  "iced",
  "iced_test",
  "image",
