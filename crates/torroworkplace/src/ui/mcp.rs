@@ -9,10 +9,10 @@
 //!   CLI, Claude Desktop, Cursor, "Other MCP client"), which opens its page, and a row "Hooks
 //!   without an agent" for every hook client whose agent is gone ([`orphans`]), with "Remove".
 //!   "Connect client" in the header opens the dialog of `agent_wizard.rs` ([`agent_wizard::State::new`]).
-//! - **A client's page:** the shared page of `api.rs` ([`Page`]) with the commands named as MCP
-//!   tools, and for Claude Code, Codex and Gemini CLI the group "Notification Hub" between the
-//!   name and the rights – one switch, which would be screens down below the editor: "Report when
-//!   waiting or done" and where the hooks are.
+//! - **A client's page:** the shared page of `api.rs` ([`Page`]) with its tabs Access, Selections,
+//!   Tools and Connection (issue #687) and the commands named as MCP tools; for Claude Code, Codex and
+//!   Gemini CLI the group "Notification Hub" heads the tab Connection – one switch, "Report when
+//!   waiting or done", and where the hooks are.
 //!
 //! **Hooks** are a client of their own (kind `hook`, `Rights::hook`), but no list shows them: the
 //! switch on the agent's page makes and removes them. On: `clients.create_client` for a hook client
@@ -37,8 +37,8 @@
 //! outcome comes back as [`Message::Setup`].
 
 use chrono::{DateTime, Utc};
-use iced::widget::{Space, column, container, responsive, svg, toggler};
-use iced::{Color, Element, Fill, Length, Subscription, Theme};
+use iced::widget::{Space, column, container, svg, toggler};
+use iced::{Color, Element, Fill, Subscription, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
@@ -47,7 +47,7 @@ use torro_gui::{style, widgets};
 use torro_inbox::AgentKind;
 use torro_ipc::api::{HOOK_CLIENT, RightsTemplate, is_mcp_kind};
 use torro_ipc::{ClientInfo, Request, Response};
-use torro_settings_ui::rights::{control_column, in_column};
+use torro_settings_ui::rights::in_column;
 
 use super::api::{self, Home, Page, PageMessage, add_row, primary};
 use super::{Action, Data, Header, agent_wizard, confirm, dialog, setting_row};
@@ -459,13 +459,7 @@ fn reports(state: &State, client: &ClientInfo, data: &Data) -> bool {
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let now = Utc::now();
     match state.page.client(data) {
-        // The rights' controls line up in the width of their column (issue #464).
-        Some(client) => responsive(move |size| {
-            let wide = widgets::page_column_count(size.width, 2) > 1;
-            detail(state, client, data, now, control_column(widgets::page_column_width(size.width, 2)), wide)
-        })
-        .height(Length::Shrink)
-        .into(),
+        Some(client) => detail(state, client, data, now),
         None => list(state, data, now),
     }
 }
@@ -516,30 +510,12 @@ fn orphan_row(hook: &ClientInfo) -> Element<'_, Message> {
     setting_row(None, tr("Hooks without an agent"), Some(api::kind_label(hook)), remove)
 }
 
-/// A client's page: the shared parts of [`Page`] – for an agent with hooks the group "Notification
-/// Hub" between its name and the rights, so the one switch is not screens down –, then activity and
-/// key; the controls in `slot`. In a `wide` page (issue #464) the rights stand at the left, the
-/// hub heads the column beside them.
-fn detail<'a>(
-    state: &'a State,
-    client: &'a ClientInfo,
-    data: &'a Data,
-    now: DateTime<Utc>,
-    slot: Option<f32>,
-    wide: bool,
-) -> Element<'a, Message> {
-    let page = &state.page;
-    let wrap = |part: Element<'a, PageMessage>| part.map(Message::Page);
-    let blocks = widgets::page_columns(move || {
-        let hub = hook_agent(&client.kind).map(|agent| hub_group(state, client, agent, data, slot));
-        let rights = page.rights_groups(client, data, slot).into_iter().map(wrap);
-        let key = page.activity_and_key(client, now, slot).into_iter().map(wrap);
-        match wide {
-            true => api::page_blocks([rights.collect(), hub.into_iter().chain(key).collect()]),
-            false => api::page_blocks([hub.into_iter().chain(rights).collect(), key.collect()]),
-        }
-    });
-    column![wrap(page.title(client, now)), blocks, wrap(page.away())].spacing(layout::section_gap()).into()
+/// A client's page: the shared page of `api.rs` with its tabs (issue #687); for an agent with hooks
+/// the group "Notification Hub" heads the tab Connection, its one switch on the first screen of it.
+fn detail<'a>(state: &'a State, client: &'a ClientInfo, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
+    let head = hook_agent(&client.kind)
+        .map(|agent| Box::new(move |slot| hub_group(state, client, agent, data, slot)) as api::Head<'a, Message>);
+    api::detail(&state.page, client, data, now, Message::Page, head)
 }
 
 /// "Notification Hub": the switch "Report when waiting or done" – off while a flip is on its way –

@@ -1298,6 +1298,10 @@ pub enum Part {
     /// The built-in tools and the MCP servers, each with a switch and "Show commands"
     /// ([`servers_groups`]).
     Servers,
+    /// The built-in tools and the MCP servers with their levels – the access group of only
+    /// [`Area::Tools`] and [`Area::Extensions`] –, then the selection of tools while they have access
+    /// (issue #687, the page of a key or an MCP client, whose tools have levels, not switches).
+    Tools,
 }
 
 /// One [`Part`] of the editor, laid out as [`view`] lays out the whole: the same groups, the same
@@ -1313,26 +1317,50 @@ pub fn view_part<'a>(
     part: Part,
 ) -> Element<'a, Message> {
     responsive(move |size| {
-        let column_at = control_column(size.width);
-        let groups = match part {
-            Part::Access => {
-                let areas: Vec<Area> =
-                    Area::ALL.into_iter().filter(|area| !matches!(area, Area::Tools | Area::Extensions)).collect();
-                vec![
-                    access_group(state, rights, &known, column_at, kind, naming, title, Some(&areas)),
-                    confirm_group(rights.confirm, column_at),
-                ]
-            }
-            Part::Selections => {
-                let groups: Vec<_> = selection_groups(state, rights, &known, column_at, &[Pick::Tools]);
-                if groups.is_empty() { vec![no_selection_group()] } else { groups }
-            }
-            Part::Servers => servers_groups(state, rights, &known, naming, column_at),
-        };
+        let groups = part_groups(state, rights, kind, &known, naming, title, control_column(size.width), part);
         column(groups).spacing(torro_gui::layout::section_gap()).into()
     })
     .height(Length::Shrink)
     .into()
+}
+
+/// The groups of one [`Part`] of the editor, with the controls in `column` ([`control_column`]), for a
+/// page that lays them out itself (issue #687: side by side in a wide page, `widgets::page_columns`).
+/// Each element is a block of its own: the address books come with "Hidden address books" in one.
+#[expect(clippy::too_many_arguments, reason = "the arguments of `view_part` and the column of its controls")]
+pub fn part_groups<'a>(
+    state: &'a State,
+    rights: &Rights,
+    kind: &str,
+    known: &Known,
+    naming: Naming,
+    title: &'a str,
+    column: Option<f32>,
+    part: Part,
+) -> Vec<Element<'a, Message>> {
+    match part {
+        Part::Access => {
+            let areas: Vec<Area> =
+                Area::ALL.into_iter().filter(|area| !matches!(area, Area::Tools | Area::Extensions)).collect();
+            vec![
+                access_group(state, rights, known, column, kind, naming, title, Some(&areas)),
+                confirm_group(rights.confirm, column),
+            ]
+        }
+        Part::Selections => {
+            let groups: Vec<_> = selection_groups(state, rights, known, column, &[Pick::Tools]);
+            if groups.is_empty() { vec![no_selection_group()] } else { groups }
+        }
+        Part::Servers => servers_groups(state, rights, known, naming, column),
+        Part::Tools => {
+            let areas = [Area::Tools, Area::Extensions];
+            let mut groups = vec![access_group(state, rights, known, column, kind, naming, title, Some(&areas))];
+            if rights.area(Area::Tools).level != Level::NoAccess {
+                groups.push(selection_group(&state.repo_input, Pick::Tools, rights, known, column));
+            }
+            groups
+        }
+    }
 }
 
 /// The selection of each area `rights` reach, in the order of [`Pick::ALL`], but those of `left_out`.
@@ -1348,10 +1376,15 @@ fn selection_groups<'a>(
         .into_iter()
         .filter(|pick| rights.area(pick.area()).level != Level::NoAccess && !left_out.contains(pick))
     {
-        groups.push(selection_group(&state.repo_input, pick, rights, known, column));
-        // Right behind the address books: the ones that are never part of "All" (issue #353).
-        if pick == Pick::AddressBooks {
-            groups.extend(hidden_group(rights, known, column));
+        let group = selection_group(&state.repo_input, pick, rights, known, column);
+        // Right behind the address books: the ones that are never part of "All" (issue #353), in one
+        // block with them, so a page that sets its blocks side by side keeps them together (#687).
+        match (pick == Pick::AddressBooks).then(|| hidden_group(rights, known, column)).flatten() {
+            Some(hidden) => {
+                let block = iced::widget::column(vec![group, hidden]).spacing(torro_gui::layout::section_gap());
+                groups.push(block.into());
+            }
+            None => groups.push(group),
         }
     }
     groups
@@ -2996,11 +3029,32 @@ mod tests {
         let mut rights = Rights::none();
         assert!(selection_groups(&state, &rights, &fixture.known(), None, &[]).is_empty());
         rights.areas.insert(Area::Contacts, AreaRights { level: Level::Read, admin: false });
-        assert_eq!(selection_groups(&state, &rights, &fixture.known(), None, &[]).len(), 2, "books and hidden books");
+        // Books and hidden books are one block (issue #687), so a page with columns keeps them together.
+        assert_eq!(selection_groups(&state, &rights, &fixture.known(), None, &[]).len(), 1, "one block");
+        assert!(hidden_group(&rights, &fixture.known(), None).is_some(), "books and hidden books");
         let bare = Known { address_books: &fixture.address_books[..2], ..fixture.known() };
-        assert_eq!(selection_groups(&state, &rights, &bare, None, &[]).len(), 1, "no hidden book, no group");
+        assert_eq!(selection_groups(&state, &rights, &bare, None, &[]).len(), 1);
+        assert!(hidden_group(&rights, &bare, None).is_none(), "no hidden book, no group");
         rights.hidden_address_books = vec![RECENT.into()];
-        assert_eq!(selection_groups(&state, &rights, &bare, None, &[]).len(), 2, "one that is named but gone");
+        assert!(hidden_group(&rights, &bare, None).is_some(), "one that is named but gone");
+    }
+
+    /// Issue #687: the part Tools holds the levels of the built-in tools and the MCP servers, and the
+    /// selection of tools only while they have access; Selections never holds the tools.
+    #[test]
+    fn the_part_tools_has_the_tool_levels_and_their_selection() {
+        let fixture = fixture();
+        let state = State::default();
+        let known = fixture.known();
+        let mut rights = Rights::none();
+        let part = |rights: &Rights, part| {
+            part_groups(&state, rights, torro_ipc::api::MCP_CLIENT, &known, Naming::Tools, "Access", None, part).len()
+        };
+        assert_eq!(part(&rights, Part::Tools), 1, "the levels alone");
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        assert_eq!(part(&rights, Part::Tools), 2, "the levels and which tools");
+        assert_eq!(part(&rights, Part::Selections), 1, "no tools among the selections: its quiet row");
+        assert_eq!(part(&rights, Part::Access), 2, "access and Ask first");
     }
 
     #[test]

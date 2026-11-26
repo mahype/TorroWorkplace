@@ -917,11 +917,15 @@ impl Ui {
                 self.data.clients.retain(|client| api::Home::of(client) != Some(api::Home::Api));
                 vec![Message::Select(Section::Api)]
             }
-            Open::ApiDetail | Open::ApiNewKey | Open::ApiRevoke => {
+            Open::ApiDetail | Open::ApiConnection | Open::ApiNewKey | Open::ApiRevoke => {
                 let script = self.data.clients.iter().find(|client| client.kind == "script").map(|c| c.id.clone());
                 let page = |message| Message::Api(api::Message::Page(message));
                 let mut messages = vec![Message::Select(Section::Api)];
                 messages.extend(script.map(|id| page(api::PageMessage::Open(id))));
+                // Under the dialogs the tab with their buttons (issue #687).
+                if matches!(open, Open::ApiConnection | Open::ApiNewKey | Open::ApiRevoke) {
+                    messages.push(page(api::Tab::Connection.select()));
+                }
                 match open {
                     Open::ApiNewKey => messages.push(page(api::PageMessage::NewKey)),
                     Open::ApiRevoke => messages.push(page(api::PageMessage::AskRemove)),
@@ -952,13 +956,19 @@ impl Ui {
                 self.data.clients.retain(|client| client.id != launch::DEMO_CLAUDE);
                 vec![Message::Select(Section::Mcp)]
             }
-            Open::McpDetail | Open::McpHooks | Open::McpNewKey | Open::McpDisconnect | Open::McpBots => {
+            Open::McpDetail
+            | Open::McpSelections
+            | Open::McpTools
+            | Open::McpHooks
+            | Open::McpNewKey
+            | Open::McpDisconnect
+            | Open::McpBots => {
                 let kind = if open == Open::McpHooks { "claude-code" } else { "codex" };
                 let client = self.data.clients.iter_mut().find(|client| client.kind == kind).map(|client| {
                     match open {
                         // The rights editor's commands too (task S.33): one switched off. And the
                         // MCP servers (task MA.10): "Time" read, one of its tools switched off.
-                        Open::McpDetail => {
+                        Open::McpDetail | Open::McpSelections | Open::McpTools => {
                             client.rights.denied.insert("calendar.list_reminders".into());
                             client.rights.extensions.insert("time".into(), torro_ipc::api::Level::Read);
                             client.rights.denied.insert(torro_ipc::extensions::denied_name("time", "convert_time"));
@@ -978,10 +988,18 @@ impl Ui {
                 let page = |message| Message::Mcp(mcp::Message::Page(message));
                 let mut messages = vec![Message::Select(Section::Mcp)];
                 messages.extend(client.map(|id| page(api::PageMessage::Open(id))));
+                // The tab of each state (issue #687): the hub, the key and "Disconnect…" are on Connection.
+                let shown = match open {
+                    Open::McpSelections => Some(api::Tab::Selections),
+                    Open::McpTools => Some(api::Tab::Tools),
+                    Open::McpHooks | Open::McpNewKey | Open::McpDisconnect => Some(api::Tab::Connection),
+                    _ => None,
+                };
+                messages.extend(shown.map(|shown| page(shown.select())));
                 match open {
                     Open::McpNewKey => messages.push(page(api::PageMessage::NewKey)),
                     Open::McpDisconnect => messages.push(page(api::PageMessage::AskRemove)),
-                    Open::McpDetail => {
+                    Open::McpDetail | Open::McpSelections | Open::McpTools => {
                         let calendar = torro_settings_ui::rights::Message::Expand(torro_ipc::api::Area::Calendar);
                         messages.push(page(api::PageMessage::Rights(calendar)));
                         let time = torro_settings_ui::rights::Message::ExpandServer("time".into());

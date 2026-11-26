@@ -4612,8 +4612,32 @@ impl<'a, M> ToastAction<'a, M> {
 /// stack![self.window(), toast]
 /// ```
 pub fn toast<'a, M: Clone + 'a>(text: impl IntoFragment<'a>, action: Option<ToastAction<'a, M>>) -> Element<'a, M> {
+    toast_with(text, false, action)
+}
+
+/// [`toast`] for something that failed (issue #992, design review): `CircleX` in the error colour
+/// before the text, so a failure does not read like the change it is about.
+pub fn toast_error<'a, M: Clone + 'a>(
+    text: impl IntoFragment<'a>,
+    action: Option<ToastAction<'a, M>>,
+) -> Element<'a, M> {
+    toast_with(text, true, action)
+}
+
+fn toast_with<'a, M: Clone + 'a>(
+    text: impl IntoFragment<'a>,
+    failed: bool,
+    action: Option<ToastAction<'a, M>>,
+) -> Element<'a, M> {
     let words = typo::text(typo::body(), text).style(theme::text).wrapping(Wrapping::WordOrGlyph);
-    let mut content = row![words].spacing(space::s()).align_y(Alignment::Center);
+    let mut content = row![].spacing(space::s()).align_y(Alignment::Center);
+    if failed {
+        let colour = |t: &Theme| menu_feedback_colour(&palette(t), MenuFeedbackKind::Error);
+        content =
+            content.push(icon(Icon::CircleX, icon::SIZE).style(move |t, _| svg::Style { color: Some(colour(t)) }));
+    }
+    let mut content = content.push(words);
+    let has_action = action.is_some();
     // Room at the right as at the left without a button; with one, its own padding makes up for it.
     let mut right = space::m();
     if let Some(action) = action {
@@ -4624,7 +4648,12 @@ pub fn toast<'a, M: Clone + 'a>(text: impl IntoFragment<'a>, action: Option<Toas
         right = space::s();
     }
     // One line of 28 (the button) and 4 above and below is `control_lg`, the height of a toast.
-    let inset = (size::control_lg() - size::control_sm()) / 2.0;
+    // Without a button the line of text is lower: the same height then, and never closer to the
+    // edge than `space::s()` when the text wraps (issue #992, design review).
+    let inset = match has_action {
+        true => (size::control_lg() - size::control_sm()) / 2.0,
+        false => ((size::control_lg() - typo::line_height(typo::body())) / 2.0).max(space::s()),
+    };
     let card = container(content)
         .max_width(size::content_max())
         .padding(Padding { top: inset, bottom: inset, left: space::m(), right })

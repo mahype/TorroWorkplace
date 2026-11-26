@@ -2320,6 +2320,7 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
         | View::Sent
         | View::Trash
         | View::Drafts
+        | View::Archive
         | View::ReplyLater
         | View::SetAside => (tr("No messages here."), tr("Mail in this folder shows up here.")),
         // Task E12.8: a category the person filtered by holds nothing at the moment.
