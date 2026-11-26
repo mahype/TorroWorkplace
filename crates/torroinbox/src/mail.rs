@@ -191,6 +191,13 @@ pub trait MailSource: Send + Sync {
         remember: bool,
     ) -> impl Future<Output = Result<(Item, Option<String>), InboxError>> + Send;
 
+    /// The category the rule "Always for {sender}" files mail of `sender` under, if there is one
+    /// (issue #992, `inbox.list_rules`): what taking back a replaced rule puts back.
+    fn sender_category(
+        &self,
+        sender: String,
+    ) -> impl Future<Output = Result<Option<torro_mail::Category>, InboxError>> + Send;
+
     /// `inbox.classify_item`: asks the decision model what the mail `id` is, again (task E12.8).
     fn classify_mail(&self, id: String) -> impl Future<Output = Result<Item, InboxError>> + Send;
 
@@ -634,6 +641,10 @@ impl MailSource for InboxClient {
         InboxClient::set_mail_category_ruled(self, id, category, remember).await
     }
 
+    async fn sender_category(&self, sender: String) -> Result<Option<torro_mail::Category>, InboxError> {
+        InboxClient::sender_category(self, sender).await
+    }
+
     async fn classify_mail(&self, id: String) -> Result<Item, InboxError> {
         InboxClient::classify_mail(self, id).await
     }
@@ -903,6 +914,10 @@ impl MailSource for DemoSource {
         _remember: bool,
     ) -> Result<(Item, Option<String>), InboxError> {
         DemoSource::set_mail_category(self, &id, category).map(|item| (item, None))
+    }
+
+    async fn sender_category(&self, _sender: String) -> Result<Option<torro_mail::Category>, InboxError> {
+        Ok(None)
     }
 
     async fn classify_mail(&self, id: String) -> Result<Item, InboxError> {
@@ -1275,6 +1290,10 @@ impl MailSource for crate::empty::EmptySource {
         _remember: bool,
     ) -> Result<(Item, Option<String>), InboxError> {
         Err(InboxError::Unsupported)
+    }
+
+    async fn sender_category(&self, _sender: String) -> Result<Option<torro_mail::Category>, InboxError> {
+        Ok(None)
     }
 
     async fn classify_mail(&self, _id: String) -> Result<Item, InboxError> {

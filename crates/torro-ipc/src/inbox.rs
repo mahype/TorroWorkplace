@@ -1238,6 +1238,23 @@ impl InboxClient {
         }
     }
 
+    /// `inbox.list_rules`, only the category the rule "Always for {sender}" files mail of `sender`
+    /// under (issue #992): `None` without one. Filing with `remember` replaces such a rule, so taking
+    /// it back puts this one back.
+    pub async fn sender_category(&self, sender: String) -> Result<Option<torro_mail::Category>, InboxError> {
+        match self.ask(Request::ListRules).await? {
+            Response::Rules { rules, .. } => Ok(rules.into_iter().find_map(|rule| match rule.effect {
+                torro_inbox::item::RuleEffect::Category { category }
+                    if rule.sender.as_deref().is_some_and(|held| held.eq_ignore_ascii_case(&sender)) =>
+                {
+                    Some(category)
+                }
+                _ => None,
+            })),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// `inbox.classify_item` (task E12.8): asks the decision model again.
     pub async fn classify_mail(&self, id: String) -> Result<Item, InboxError> {
         match self.ask(Request::ClassifyItem { id }).await? {

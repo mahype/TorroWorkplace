@@ -864,9 +864,11 @@ pub enum Undo {
     /// flag back on the mails whose flag the change turned (`mail.set_flags`), and only those.
     Flags(Vec<MailEdit>),
     /// Takes a category set by hand back (issue #992): each mail `back` to the category it had
-    /// (`inbox.set_item_category`), after removing the rule `rule` – only one the change made
-    /// ("Always for {sender}", `inbox.remove_rule`).
-    Category { back: Vec<(String, torro_mail::Category)>, rule: Option<String> },
+    /// (`inbox.set_item_category`), after taking back the rule "Always for {sender}" the change made:
+    /// the one it `replaced` comes back (the core keeps one per sender, so filing the first mail with
+    /// it again replaces the new one), else the new one `rule` is removed (`inbox.remove_rule`; one
+    /// gone already is no reason to leave the mail where it is).
+    Category { back: Vec<(String, torro_mail::Category)>, rule: Option<String>, replaced: Option<torro_mail::Category> },
 }
 
 /// A change taken back with Ctrl + Z after its hint went (issue #992, [`App::history`]): what its
@@ -3782,7 +3784,10 @@ pub enum Message {
     Categorized(Box<Result<Item, String>>),
     /// What came back from filing mail by hand (issue #992): the rule "Always for {sender}" made, if
     /// any, or why it did not work; and the hint to show, whose undo takes that rule along.
-    CategorySet(Result<Option<String>, String>, Box<Hint>),
+    CategorySet(Result<(Option<String>, Option<torro_mail::Category>), String>, Box<Hint>),
+    /// What came back from filing several marked mails (issue #992): those filed, why the next one
+    /// was not, the hint for all of them and the category's name.
+    CategoriesSet(Vec<String>, Option<String>, Box<Hint>, String),
     /// "Category…" in the context menu of the marked mail (issue #992): the categories to file them
     /// all under.
     AskCategorySelected,
@@ -6115,16 +6120,33 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::AskCategorySelected => return self.ask_category_selected(),
             // Filed: the hint with its undo, which also removes the rule this made (issue #992); the list
             // and the sidebar's counts follow.
-            Message::CategorySet(Ok(rule), hint) => {
+            Message::CategorySet(Ok((rule, old)), hint) => {
                 let mut hint = *hint;
-                if let Some(Undo::Category { rule: held, .. }) = hint.undo.as_mut() {
+                if let Some(Undo::Category { rule: held, replaced, .. }) = hint.undo.as_mut() {
                     *held = rule;
+                    *replaced = old;
                 }
                 self.hint = Some(Hint { shown: Instant::now(), ..hint });
                 return self.load();
             }
             Message::CategorySet(Err(err), _) => {
                 self.error = Some(Failure::new(tr("Couldn't change the category."), err));
+                return self.load();
+            }
+            // Several filed (issue #992, review): those that went keep their undo, also when a later
+            // one failed; the error line says why the rest did not.
+            Message::CategoriesSet(done, failed, hint, label) => {
+                let mut hint = *hint;
+                if let Some(Undo::Category { back, .. }) = hint.undo.as_mut() {
+                    back.retain(|(id, _)| done.contains(id));
+                }
+                if !done.is_empty() {
+                    let text = mail::categorized_text(&label, done.len());
+                    self.hint = Some(Hint { text, shown: Instant::now(), ..hint });
+                }
+                if let Some(err) = failed {
+                    self.error = Some(Failure::new(tr("Couldn't change the category."), err));
+                }
                 return self.load();
             }
             Message::Reclassify(id) => {
@@ -9024,12 +9046,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     _ => None,
                 };
                 // An entry's mail (issue #904, review): read as the window marked it or its entry says.
-                let seen = || {
-                    let held = self.items.iter().chain(&self.for_me).chain(&self.snoozed).chain(self.detail.as_ref());
-                    let read = self.seen_mail.contains(&id)
-                        || held.filter(|item| shows_mail(item, &id)).any(|item| matches!(item.state, State::Seen));
-                    Some(if read { vec![Flag::Seen] } else { Vec::new() })
-                };
+                let seen = || Some(if self.flag_known(&id, Flag::Seen) { vec![Flag::Seen] } else { Vec::new() });
                 let flags = listed.or_else(loaded).or_else(seen).unwrap_or_default();
                 let pile = self.mail_pile(&id);
                 let draft = self.in_role(&id, Role::Drafts);
@@ -9059,7 +9076,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if ids.is_empty() {
             return Task::none();
         }
-        let turned: Vec<String> = ids.iter().filter(|id| self.mail_has(id, flag) != set).cloned().collect();
+        let turned: Vec<String> = ids.iter().filter(|id| self.flag_known(id, flag) != set).cloned().collect();
         let back = (!turned.is_empty()).then(|| {
             let (add, remove) = if set { (Vec::new(), vec![flag]) } else { (vec![flag], Vec::new()) };
             Undo::Flags(vec![MailEdit::Flags { ids: turned, add, remove }])
@@ -10169,6 +10186,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
 
     /// Whether the message `id` carries `flag`, as listed or loaded. A mail the window holds neither
     /// way (an entry's, not opened yet) counts as without: the shortcut then reads or flags it.
+    /// Whether the mail `id` has `flag`, as the menu of the marked mail reads it (review of #992): as
+    /// listed or loaded, else – an entry's mail – read when the window marked it so or its entry says
+    /// so; no other flag is known then.
+    fn flag_known(&self, id: &str, flag: Flag) -> bool {
+        let listed = self.messages.iter().any(|message| message.id == id);
+        let loaded = matches!(&self.letter, Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id);
+        if listed || loaded || flag != Flag::Seen {
+            return self.mail_has(id, flag);
+        }
+        let held = self.items.iter().chain(&self.for_me).chain(&self.snoozed).chain(self.detail.as_ref());
+        self.seen_mail.contains(id)
+            || held.filter(|item| shows_mail(item, id)).any(|item| matches!(item.state, State::Seen))
+    }
+
     fn mail_has(&self, id: &str, flag: Flag) -> bool {
         let listed = self.messages.iter().find(|message| message.id == id).map(|message| message.flags.contains(&flag));
         let loaded = || match &self.letter {
@@ -11969,49 +12000,96 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
     /// Mail filed under none has no undo: the core can set a category, not take it away (decision 3).
     fn categorize(&mut self, id: String, category: torro_mail::Category, remember: bool) -> Task<Message> {
         let before = self.category_of(&id);
+        let sender = self.subject.as_ref().filter(|item| item.id == id).and_then(Self::mail_sender_of);
         let hint = Hint {
             text: mail::categorized_text(&self.category_label(category), 1),
-            undo: before.map(|before| Undo::Category { back: vec![(id.clone(), before)], rule: None }),
+            undo: before.map(|before| Undo::Category { back: vec![(id.clone(), before)], rule: None, replaced: None }),
             shown: Instant::now(),
             folder: None,
             contact: None,
         };
         #[cfg(test)]
         self.sent.push(Sent::SetCategory(vec![(id.clone(), category)], remember));
+        // Shown at once (review of #992): a second change before the load must start from this one.
+        self.show_category(std::slice::from_ref(&id), category);
         let inbox = Arc::clone(&self.inbox);
         let filed = async move {
+            // The sender's rule this one replaces, so its undo can put it back (review of #992).
+            let replaced = match (remember, sender) {
+                (true, Some(sender)) => {
+                    inbox.sender_category(sender).await.ok().flatten().filter(|old| *old != category)
+                }
+                _ => None,
+            };
             let (_, rule) =
                 inbox.set_mail_category_ruled(id, category, remember).await.map_err(|err| err.to_string())?;
-            Ok(rule)
+            Ok((rule, replaced))
         };
         Task::perform(filed, move |result| Message::CategorySet(result, Box::new(hint.clone())))
     }
 
     /// Files the marked mails `ids` under `category` (issue #992), one `inbox.set_item_category` each;
     /// the first that fails stops the rest. The hint's undo files each back under its own category –
-    /// only when the window knows one for each (decision 3, [`App::categorize`]).
+    /// only when the window knows one for each (decision 3, [`App::categorize`]) – and, when one
+    /// failed, those filed before it ([`Message::CategoriesSet`]).
     fn categorize_mails(&mut self, ids: Vec<String>, category: torro_mail::Category) -> Task<Message> {
         self.close_menus();
         let back: Vec<(String, torro_mail::Category)> =
             ids.iter().filter_map(|id| Some((id.clone(), self.category_of(id)?))).collect();
         let known = back.len() == ids.len();
+        let label = self.category_label(category);
         let hint = Hint {
-            text: mail::categorized_text(&self.category_label(category), ids.len()),
-            undo: known.then_some(Undo::Category { back, rule: None }),
+            text: mail::categorized_text(&label, ids.len()),
+            undo: known.then_some(Undo::Category { back, rule: None, replaced: None }),
             shown: Instant::now(),
             folder: None,
             contact: None,
         };
         #[cfg(test)]
         self.sent.push(Sent::SetCategory(ids.iter().map(|id| (id.clone(), category)).collect(), false));
+        self.show_category(&ids, category);
         let inbox = Arc::clone(&self.inbox);
+        // Those filed are kept apart (review of #992): when one fails, the undo still knows them.
         let filed = async move {
+            let mut done = Vec::new();
             for id in ids {
-                inbox.set_mail_category(id, category, false).await.map_err(|err| err.to_string())?;
+                if let Err(err) = inbox.set_mail_category(id.clone(), category, false).await {
+                    return (done, Some(err.to_string()));
+                }
+                done.push(id);
             }
-            Ok(None)
+            (done, None)
         };
-        Task::perform(filed, move |result| Message::CategorySet(result, Box::new(hint.clone())))
+        Task::perform(filed, move |(done, failed)| {
+            Message::CategoriesSet(done, failed, Box::new(hint.clone()), label.clone())
+        })
+    }
+
+    /// The mails and entries `ids` show `category`, set by hand, at once (review of #992): in the list,
+    /// the entries that show them and the reader, so the next change starts from it. The load after
+    /// the core's answer has them as the core keeps them.
+    fn show_category(&mut self, ids: &[String], category: torro_mail::Category) {
+        let filed = Some(torro_mail::MailCategory::by_person(category));
+        let mut mails: Vec<String> = ids.to_vec();
+        let items = self.items.iter_mut().chain(&mut self.for_me).chain(&mut self.info).chain(&mut self.snoozed);
+        for item in items.chain(self.detail.as_mut()).chain(self.subject.as_mut()) {
+            if ids.contains(&item.id) || ids.iter().any(|id| shows_mail(item, id)) {
+                item.category = filed;
+                if let Some(Link::Mail { message }) = &item.link
+                    && !mails.contains(message)
+                {
+                    mails.push(message.clone());
+                }
+            }
+        }
+        for message in self.messages.iter_mut().filter(|message| mails.contains(&message.id)) {
+            message.category = filed;
+        }
+        if let Some(Letter { loaded: Some(Ok(mail)), .. }) = self.letter.as_mut()
+            && mails.contains(&mail.summary.id)
+        {
+            mail.summary.category = filed;
+        }
     }
 
     fn ask_lane(&mut self, id: &str) -> Task<Message> {
@@ -13927,13 +14005,26 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             // The rule first, then each mail back in its category (issue #992): else the rule could
             // file one of them again.
-            Undo::Category { back, rule } => {
+            Undo::Category { back, rule, replaced } => {
                 #[cfg(test)]
                 self.sent.push(Sent::Category(back.clone(), rule.clone()));
+                for (id, category) in &back {
+                    self.show_category(std::slice::from_ref(id), *category);
+                }
                 let inbox = self.inbox.clone();
                 let undone = async move {
-                    if let Some(id) = rule {
-                        inbox.remove_rule(id).await.map_err(|err| err.to_string())?;
+                    match (replaced, back.first()) {
+                        (Some(old), Some((id, _))) => {
+                            inbox.set_mail_category(id.clone(), old, true).await.map_err(|err| err.to_string())?;
+                        }
+                        _ => {
+                            if let Some(id) = rule {
+                                match inbox.remove_rule(id).await {
+                                    Ok(()) | Err(InboxError::NotFound) => {}
+                                    Err(err) => return Err(err.to_string()),
+                                }
+                            }
+                        }
                     }
                     for (id, category) in back {
                         inbox.set_mail_category(id, category, false).await.map_err(|err| err.to_string())?;
@@ -31096,16 +31187,17 @@ mod tests {
         assert_eq!(app.sent.last(), Some(&Sent::SetCategory(vec![(message.id.clone(), to)], true)));
         let hint = Hint {
             text: mail::categorized_text(&app.category_label(to), 1),
-            undo: Some(Undo::Category { back: vec![(message.id.clone(), before)], rule: None }),
+            undo: Some(Undo::Category { back: vec![(message.id.clone(), before)], rule: None, replaced: None }),
             shown: Instant::now(),
             folder: None,
             contact: None,
         };
-        let _ = app.update(Message::CategorySet(Ok(Some("rule-7".into())), Box::new(hint)));
+        let _ = app.update(Message::CategorySet(Ok((Some("rule-7".into()), None)), Box::new(hint)));
         let shown = app.hint.clone().expect("the hint");
         assert_eq!(shown.text, trf("Filed under {category}", &[("category", &app.category_label(to))]));
         let back = vec![(message.id.clone(), before)];
-        assert_eq!(shown.undo, Some(Undo::Category { back: back.clone(), rule: Some("rule-7".into()) }));
+        let undo = Undo::Category { back: back.clone(), rule: Some("rule-7".into()), replaced: None };
+        assert_eq!(shown.undo, Some(undo));
         let _ = app.update(Message::Undo);
         assert_eq!(app.sent.last(), Some(&Sent::Category(back, Some("rule-7".into()))));
     }
@@ -31206,5 +31298,79 @@ mod tests {
         assert_eq!(back.back().as_deref(), Some("bud"));
         assert_eq!(back.back().as_deref(), Some(""));
         assert_eq!(back.back(), None);
+    }
+
+    /// Review of #992: a second category before the load starts from the first – its undo goes back
+    /// one step, not two.
+    #[test]
+    fn a_second_category_before_the_load_starts_from_the_first() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let message = app.messages.iter().find(|message| message.category.is_some()).cloned().expect("filed mail");
+        let b = torro_mail::Category::Invoice;
+        let _ = app.update(Message::SetCategory(message.id.clone(), b, false));
+        // What the undo of the next change goes back to.
+        assert_eq!(app.category_of(&message.id), Some(b), "shown at once, before the core's answer");
+        let listed = app.messages.iter().find(|held| held.id == message.id).and_then(|held| held.category);
+        assert_eq!(listed.map(|held| held.category), Some(b), "the row as well");
+    }
+
+    /// Review of #992: the marked mails filed before one failed keep their undo; the error line says
+    /// why the rest did not.
+    #[test]
+    fn filing_several_keeps_the_undo_of_those_filed_before_a_failure() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let filed: Vec<MessageSummary> =
+            app.messages.iter().filter(|message| message.category.is_some()).take(3).cloned().collect();
+        let back: Vec<(String, torro_mail::Category)> = filed
+            .iter()
+            .map(|message| (message.id.clone(), message.category.map(|held| held.category).expect("filed")))
+            .collect();
+        let hint = Hint {
+            text: String::new(),
+            undo: Some(Undo::Category { back: back.clone(), rule: None, replaced: None }),
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        };
+        let done = vec![back[0].0.clone()];
+        let _ = app.update(Message::CategoriesSet(done, Some("offline".into()), Box::new(hint), "Invoice".into()));
+        let shown = app.hint.clone().expect("a hint for the one filed");
+        assert_eq!(shown.text, trf("Filed under {category}", &[("category", &"Invoice")]));
+        assert_eq!(shown.undo, Some(Undo::Category { back: vec![back[0].clone()], rule: None, replaced: None }));
+        assert!(app.error.is_some(), "the error line says why the rest did not");
+    }
+
+    /// Review of #992: "Always for {sender}" that replaced the sender's rule puts that rule back on undo.
+    #[test]
+    fn undo_of_always_puts_the_replaced_rule_back() {
+        let mut app = mail_window(Density::Compact, &[]);
+        let message = app.messages.iter().find(|message| message.category.is_some()).cloned().expect("filed mail");
+        let before = message.category.map(|held| held.category).expect("a category");
+        let hint = Hint {
+            text: String::new(),
+            undo: Some(Undo::Category { back: vec![(message.id.clone(), before)], rule: None, replaced: None }),
+            shown: Instant::now(),
+            folder: None,
+            contact: None,
+        };
+        let old = torro_mail::Category::Newsletter;
+        let _ = app.update(Message::CategorySet(Ok((Some("r9".into()), Some(old))), Box::new(hint)));
+        let undo = app.hint.as_ref().and_then(|hint| hint.undo.clone());
+        let expected =
+            Undo::Category { back: vec![(message.id.clone(), before)], rule: Some("r9".into()), replaced: Some(old) };
+        assert_eq!(undo, Some(expected));
+    }
+
+    /// Review of #992: in a view of entries a mail read but not listed counts as read, as the menu of
+    /// the marked mail says – "Mark unread" on it has an undo, and only for it.
+    #[test]
+    fn marking_an_entrys_read_mail_unread_has_an_undo() {
+        let mut app = in_folder("f:work-inbox");
+        app.messages.clear();
+        app.seen_mail.insert("m:x1".into());
+        let _ = app.update(Message::Mail(MailAction::Read(false), "m:x1".into()));
+        let Some(Sent::Mail(_, Some(hint))) = app.sent.last().cloned() else { panic!("sent with its hint") };
+        let back = MailEdit::Flags { ids: vec!["m:x1".into()], add: vec![Flag::Seen], remove: Vec::new() };
+        assert_eq!(hint.undo, Some(Undo::Flags(vec![back])));
     }
 }
