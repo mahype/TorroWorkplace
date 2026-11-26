@@ -858,7 +858,8 @@ Knöpfen „Save“/„Cancel“/„Discard“. Die Felder und alle Schaltfläch
 ### Sonderfälle
 
 - **Mehrere Mails auf einmal (#904, #992):** Das Kontextmenü markierter Mails bietet Archivieren, Später
-  beantworten, Beiseitelegen, „Move to folder ▸“, Löschen, „Category ▸“, gelesen/ungelesen und Flagge. Jede
+  beantworten, Beiseitelegen, „Move to folder…“, Löschen, „Category…“, gelesen/ungelesen und Flagge („…“: die
+  Liste öffnet an Stelle des Menüs). Jede
   Sammelaktion hat **ein** Rückgängig für alle; es merkt sich je Mail den Ursprungsordner bzw. den alten Wert,
   auch über mehrere Ordner und Konten (beim Löschen fehlte es früher bei verschiedenen Ordnern). Eine Mail ohne
   bekannten Ordner (Mail eines Eintrags) liegt im Posteingang ihres Kontos und kommt dorthin zurück. Mails im

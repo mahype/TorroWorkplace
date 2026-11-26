@@ -3373,6 +3373,9 @@ pub struct App<S> {
     history: Vec<Kept>,
     /// Set by [`App::undo`] while a message is handled: the hint's undo was taken, not lost.
     undid: bool,
+    /// When the hint that says an undo failed appeared (issue #992): that hint, and only while it
+    /// stands, shows as a failure ([`widgets::toast_error`]); any later hint has another time.
+    failed_hint: Option<Instant>,
     /// The steps back of the search field (issue #992): Ctrl + Z there takes the text back.
     search_back: TextBack,
     /// The messages archived or deleted here whose move is on its way or not yet seen in a load
@@ -3780,7 +3783,7 @@ pub enum Message {
     /// What came back from filing mail by hand (issue #992): the rule "Always for {sender}" made, if
     /// any, or why it did not work; and the hint to show, whose undo takes that rule along.
     CategorySet(Result<Option<String>, String>, Box<Hint>),
-    /// "Category ▸" in the context menu of the marked mail (issue #992): the categories to file them
+    /// "Category…" in the context menu of the marked mail (issue #992): the categories to file them
     /// all under.
     AskCategorySelected,
     /// From the hide menu: mute the source of the entry with this id, or unmute it – at once,
@@ -5141,6 +5144,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             hint: None,
             history: Vec::new(),
             undid: false,
+            failed_hint: None,
             search_back: TextBack::default(),
             leaving: Vec::new(),
             deciding: None,
@@ -6015,6 +6019,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     "Couldn't undo \u{201c}{change}\u{201d}: {reason}",
                     &[("change", &change), ("reason", &err)],
                 ));
+                self.failed_hint = self.hint.as_ref().map(|hint| hint.shown);
                 return self.load();
             }
             Message::SendTick(now) => return self.send_tick(now),
@@ -11925,7 +11930,7 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         Task::none()
     }
 
-    /// "Category ▸" for the marked mail (issue #992): the categories to file them under, at their context
+    /// "Category…" for the marked mail (issue #992): the categories to file them under, at their context
     /// menu, without "Always for {sender}" – they may come from several senders.
     fn ask_category_selected(&mut self) -> Task<Message> {
         self.close_menus();
@@ -14974,7 +14979,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             }
             (None, None, None) => None,
         };
-        widgets::toast(hint.text.as_str(), action)
+        match self.failed_hint == Some(hint.shown) {
+            true => widgets::toast_error(hint.text.as_str(), action),
+            false => widgets::toast(hint.text.as_str(), action),
+        }
     }
 
     /// Mini or strip: loading and the error of a first load as in every layout, then the glance at
@@ -17902,6 +17910,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                         folder: None,
                         contact: None,
                     });
+                    if open == Open::MailUndoError {
+                        self.failed_hint = self.hint.as_ref().map(|hint| hint.shown);
+                    }
                 }
             }
             Some(Open::MailMarkedSeveral) => {
@@ -27870,7 +27881,8 @@ mod tests {
         };
         let both = [mail(&work, vec![Flag::Seen], None), mail(&work, Vec::new(), None)];
         let words = labels(&both, &app.folders);
-        for word in [trc("action", "Archive"), tr("Reply later"), tr("Set aside"), tr("Move to folder"), tr("Delete")] {
+        for word in [trc("action", "Archive"), tr("Reply later"), tr("Set aside"), tr("Move to folder…"), tr("Delete")]
+        {
             assert!(words.iter().any(|held| held == word), "{word} in {words:?}");
         }
         assert!(words.iter().any(|held| held == tr("Mark read")), "one unread: Mark read");
@@ -27889,7 +27901,7 @@ mod tests {
         assert!(labels(&piled, &app.folders).iter().any(|held| held == tr("Remove from Reply later")));
 
         let accounts = [mail(&work, Vec::new(), None), mail(&other, Vec::new(), None)];
-        assert!(!labels(&accounts, &app.folders).iter().any(|held| held == tr("Move to folder")), "two accounts");
+        assert!(!labels(&accounts, &app.folders).iter().any(|held| held == tr("Move to folder…")), "two accounts");
 
         let no_archive: Vec<Folder> =
             app.folders.iter().filter(|f| !(f.account == work && f.role == Some(Role::Archive))).cloned().collect();
@@ -31006,6 +31018,7 @@ mod tests {
                 &[("change", &tr("Archived")), ("reason", &reason)],
             );
             assert_eq!(hint_text(&app), Some(said.as_str()), "{reason}");
+            assert_eq!(app.failed_hint, app.hint.as_ref().map(|hint| hint.shown), "shown as a failure");
             assert_eq!(app.history.len(), 1, "the failed change is gone, the one before is there");
             let _ = app.update(Message::Undo);
             assert_eq!(app.sent.last(), Some(&Sent::Mail(first_back, None)), "{reason}: the change before");

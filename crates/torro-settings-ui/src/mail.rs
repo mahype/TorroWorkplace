@@ -3669,10 +3669,11 @@ pub mod reading {
             "{key} takes back up to 20 actions, even after the hint is gone.",
             &[("key", &widgets::undo_hint())],
         );
+        // The sentence is about the whole group, not the time: under it (design review of #992).
         blocks.push(widgets::group(
             tr("Undo"),
-            vec![setting_row(None, tr("Show hint for"), Some(history), undo_for)],
-            None,
+            vec![setting_row(None, tr("Show hint for"), None, undo_for)],
+            Some(history),
         ));
         blocks
     }

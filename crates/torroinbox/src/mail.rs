@@ -4760,7 +4760,7 @@ pub struct SelectedMail {
 
 /// The context menu of several marked mails (issue #904): what goes for every one of `mails`, each
 /// acting on all of them. "File" holds Archive, Reply later, Set aside, "Move to folder…" and Delete;
-/// "Torro" "Category ▸" (issue #992; not for drafts, which have none); "Mark" Mark read or unread and
+/// "Torro" "Category…" (issue #992; not for drafts, which have none); "Mark" Mark read or unread and
 /// Flag or Unflag. An item is there only when it works for each mail –
 /// Archive needs an archive folder for each, "Move to folder…" mail of one account (the server moves
 /// within one), a pile mail outside the trash and spam and no draft, "Remove from …" mail that all lie
@@ -4791,7 +4791,9 @@ pub fn selection_groups<'a>(mails: &[SelectedMail], folders: &[Folder]) -> Vec<R
     }
     if mails.iter().all(|mail| mail.account == mails[0].account) {
         let ask = Some(Message::AskMoveSelected);
-        file.push(RailItem::new(Icon::Folder, tr("Move to folder"), "", ask).opens_menu());
+        // It opens its folders in place of this menu, not beside it: "…", no chevron (#906, design
+        // review of #992).
+        file.push(RailItem::new(Icon::Folder, tr("Move to folder…"), "", ask));
     }
     if filings.iter().all(|filing| filing.delete) {
         file.push(RailItem::new(Icon::Trash2, tr("Delete"), "#", Some(Message::DeleteSelectedMail)).danger());
@@ -4808,9 +4810,10 @@ pub fn selection_groups<'a>(mails: &[SelectedMail], folders: &[Folder]) -> Vec<R
     let flagged = has(Flag::Flagged);
     let flag = if flagged { tr("Unflag") } else { tr("Flag") };
     let flag = RailItem::new(Icon::Flag, flag, "", Some(Message::MarkSelectedMail(MailAction::Flag(!flagged))));
-    // "Category ▸" in its own group between File and Mark, as Torro stands for one mail (issue #992,
+    // "Category…" in its own group between File and Mark, as Torro stands for one mail (issue #992,
     // design): without "Always for {sender}", the mails may come from several senders.
-    let category = RailItem::new(Icon::Tag, tr("Category"), "", Some(Message::AskCategorySelected)).opens_menu();
+    // Like "Move to folder…" it opens its list in place of this menu (design review of #992).
+    let category = RailItem::new(Icon::Tag, tr("Category…"), "", Some(Message::AskCategorySelected));
     let torro = if drafts { Vec::new() } else { vec![category] };
     [
         RailGroup::new(Icon::Check, tr("File"), file),
