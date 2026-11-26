@@ -698,14 +698,18 @@ pub fn mail_bar<'a>(bar: Bar<'a>, text_left: f32) -> Element<'a, Message> {
         .center_y(Fill)
         .padding(Padding::new(0.0).right(edge));
     let field: Element<'a, Message> = stack![input, tools].width(Fill).into();
+    // The field is always the first child of this column, with or without the lines under it: were
+    // it returned alone while there are none, the first key (which brings the suggestions) would
+    // move it in the widget tree, and Iced would drop its state – the focus with it (issue #991).
     let rest = rest(bar);
-    if rest.is_empty() {
-        return field;
+    let mut head = column![field];
+    if !rest.is_empty() {
+        let margin = Padding::new(space::s()).left(space::l()).right(space::l());
+        let lines = column![column(rest).spacing(space::s()), rule::horizontal(size::HAIRLINE).style(style::rule)]
+            .spacing(space::s());
+        head = head.push(container(lines).width(Fill).padding(margin.bottom(0.0)));
     }
-    let margin = Padding::new(space::s()).left(space::l()).right(space::l());
-    let lines = column![column(rest).spacing(space::s()), rule::horizontal(size::HAIRLINE).style(style::rule)]
-        .spacing(space::s());
-    column![field, container(lines).width(Fill).padding(margin.bottom(0.0))].into()
+    head.into()
 }
 
 /// The field with "Clear search" and the filter icon.

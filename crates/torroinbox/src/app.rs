@@ -21951,6 +21951,137 @@ mod tests {
         assert_eq!(format!("{under:?}"), format!("{row:?}"), "the whole row");
     }
 
+    /// Whether the search field ([`search::FIELD`]) holds the keyboard in the view built.
+    #[derive(Default)]
+    struct SearchFocus(bool);
+
+    impl iced::advanced::widget::Operation for SearchFocus {
+        fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+            operate(self);
+        }
+
+        fn focusable(
+            &mut self,
+            id: Option<&iced::widget::Id>,
+            _bounds: iced::Rectangle,
+            state: &mut dyn iced::advanced::widget::operation::Focusable,
+        ) {
+            if id == Some(&iced::widget::Id::new(search::FIELD)) && state.is_focused() {
+                self.0 = true;
+            }
+        }
+    }
+
+    /// Whether the search field holds the keyboard in `ui`.
+    fn search_focused(
+        ui: &mut iced_test::runtime::UserInterface<'_, Message, iced::Theme, iced::Renderer>,
+        renderer: &iced::Renderer,
+    ) -> bool {
+        let mut focus = SearchFocus::default();
+        ui.operate(renderer, &mut focus);
+        focus.0
+    }
+
+    /// The keys that type `text`, one per letter.
+    fn letters(text: &str) -> Vec<iced::keyboard::Key> {
+        text.chars().map(|letter| iced::keyboard::Key::Character(letter.to_string().into())).collect()
+    }
+
+    /// Presses `keys` in the search field of `app`'s window of `size` one at a time, as a person would: each key builds
+    /// the view anew from `cache`, hands its messages to `update` and lets the pause of
+    /// [`search::DEBOUNCE`] pass, so the list is searched and shown again between the keys. Whether the
+    /// search field still held the keyboard after each key.
+    fn type_keys(
+        app: &mut App<DemoSource>,
+        renderer: &mut iced::Renderer,
+        size: Size,
+        keys: &[iced::keyboard::Key],
+    ) -> Vec<bool> {
+        use iced::keyboard::{self, key};
+        use iced::{Event, mouse};
+        use iced_test::runtime::{UserInterface, user_interface};
+
+        let mut cache = user_interface::Cache::default();
+        let mut ui = UserInterface::build(app.view(), size, cache, renderer);
+        ui.operate(renderer, &mut iced::advanced::widget::operation::focusable::focus(search::FIELD.into()));
+        cache = ui.into_cache();
+        let mut held = Vec::new();
+        for typed in keys {
+            let text = match typed {
+                keyboard::Key::Character(letter) => Some(letter.clone()),
+                _ => None,
+            };
+            let event = Event::Keyboard(keyboard::Event::KeyPressed {
+                key: typed.clone(),
+                modified_key: typed.clone(),
+                physical_key: key::Physical::Unidentified(key::NativeCode::Unidentified),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::empty(),
+                text,
+                repeat: false,
+            });
+            let mut messages = Vec::new();
+            let mut ui = UserInterface::build(app.view(), size, cache, renderer);
+            let _ = ui.update(
+                &[event],
+                mouse::Cursor::Unavailable,
+                renderer,
+                &mut iced::advanced::clipboard::Null,
+                &mut messages,
+            );
+            cache = ui.into_cache();
+            for message in messages {
+                let _ = app.update(message);
+            }
+            // The view the key brought (the suggestions under the field), then the search after the pause.
+            let ui = UserInterface::build(app.view(), size, cache, renderer);
+            cache = ui.into_cache();
+            if let Some(due) = app.search_due {
+                let _ = app.update(Message::SearchTick(due));
+                load(app);
+            }
+            let mut ui = UserInterface::build(app.view(), size, cache, renderer);
+            held.push(search_focused(&mut ui, renderer));
+            cache = ui.into_cache();
+        }
+        held
+    }
+
+    /// Issue #991: a word types into the search field in one go – the field keeps the keyboard while
+    /// the suggestions come under it and the list is searched live, in every size of the mail window
+    /// (wide, rail, narrow) and in the window with folders beside the hub.
+    #[test]
+    fn the_search_field_keeps_the_keyboard_while_typing() {
+        // Several renderers at once crash the test process: the crate's one lock for them.
+        let _one = crate::one_renderer();
+        let mut renderer = block_on(<iced::Renderer as iced::advanced::renderer::Headless>::new(
+            iced::Font::with_name("Fira Sans"),
+            iced::Pixels(16.0),
+            None,
+        ))
+        .expect("a renderer without a window");
+        for name in ["mail", "folder"] {
+            for (size, rail) in [(WIDE, false), (WIDE, true), (MEDIUM, false), (NARROW, false)] {
+                let mut app =
+                    if name == "mail" { mail_window(Density::Compact, &[]) } else { in_folder("f:work-inbox") };
+                let _ = app.update(Message::Resized(size));
+                if rail {
+                    let _ = app.update(Message::UiState(UiState { sidebar: SidebarMode::Rail }));
+                }
+                // "budget", then three steps back into the word and "xy": the cursor stays where it
+                // was put, key after key.
+                let left = iced::keyboard::Key::Named(iced::keyboard::key::Named::ArrowLeft);
+                let mut keys = letters("budget");
+                keys.extend([left.clone(), left.clone(), left]);
+                keys.extend(letters("xy"));
+                let held = type_keys(&mut app, &mut renderer, size, &keys);
+                assert_eq!(app.search, "budxyget", "{name} {size:?} rail {rail}: every key in its place");
+                assert!(held.iter().all(|held| *held), "{name} {size:?} rail {rail}: focus after each key {held:?}");
+                assert_eq!(app.view.search().map(|search| search.query.as_str()), Some("budxyget"), "searched live");
+            }
+        }
+    }
+
     /// Issue #136: typing searches once the keys pause, not at every key; a blank field goes back.
     #[test]
     fn typing_searches_after_a_pause() {
