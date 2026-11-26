@@ -121,6 +121,7 @@ use crate::backend::{Backend, Refusal};
 use crate::bots::{BotDraft, DraftEdit, Proposal};
 use crate::chat::{self, Choice, Transcript};
 use crate::demo;
+use crate::job::{self, JobAction, JobView};
 use crate::launch::{Launch, Open, Window};
 use crate::stream::{self, Smoother};
 
@@ -227,6 +228,8 @@ pub enum Menu {
     Archive,
     /// The engine and model picker of the bot editor.
     BotPicker,
+    /// The models to go on with of a job whose model is gone (issue #962): a pick resumes the job with it.
+    JobModel,
 }
 
 /// The microphone of the composer (issue #699).
@@ -262,6 +265,8 @@ pub enum Dialog {
     DeleteMany { ids: Vec<String>, archive: bool },
     /// Archive the conversations `ids` under "Recent", after asking ("Archive all…", issue #697).
     ArchiveMany { ids: Vec<String> },
+    /// Cancel the job `id` for good, after asking (issue #962).
+    CancelJob { id: String },
 }
 
 /// What the window knows of the assistant's own client (kind `assistant`).
@@ -421,6 +426,25 @@ pub enum Message {
     CardPicture(String, u64, Result<torro_ipc::chat::ChatPicture, Refusal>),
     /// The core's answer to the decision.
     Decided(String, Result<ApprovalInfo, Refusal>),
+    /// "Run as job" in the composer was pressed (issue #962): on or off.
+    ToggleJob,
+    /// The jobs of the conversation came (`assistant.list_jobs`): its newest, if any.
+    JobListed(String, Result<Option<torro_ipc::assistant::JobInfo>, Refusal>),
+    /// The newest job of the conversation with its steps came (`assistant.get_job`).
+    JobLoaded(String, Result<JobView, Refusal>),
+    /// A button of the job card: Pause, Resume, a model to go on with, "It happened" / "It didn't happen";
+    /// [`JobAction::Cancel`] asks first.
+    Job(JobAction),
+    /// "Cancel job" in the question.
+    ConfirmCancelJob,
+    /// The core answered a button of the job card in the conversation; the number is the request's
+    /// ([`App::job_ticket`]), so a late answer to an earlier one changes nothing.
+    JobAnswered(String, u64, JobAction, Result<JobView, Refusal>),
+    /// The core started the job of "Send" with "Run as job" (`assistant.start_job`); first the conversation that
+    /// was open when it was sent (`None` for a new chat).
+    JobStarted(Option<String>, Result<JobView, Refusal>),
+    /// Every job of the assistant came (`assistant.list_jobs`), for the marks in the sidebar.
+    WaitingJobs(Result<Vec<torro_ipc::assistant::JobInfo>, Refusal>),
     /// From the sidebar: show the conversation with this id.
     Select(String),
     /// "New chat".
@@ -644,6 +668,18 @@ pub struct App {
     pub(crate) approvals: HashMap<String, ApprovalInfo>,
     /// The approval whose decision is on its way: its buttons are disabled until the core answered.
     pub(crate) deciding: Option<String>,
+    /// "Run as job" in the composer (issue #962): "Send" starts a job with the text as its goal.
+    pub(crate) as_job: bool,
+    /// The newest job of the open conversation with its steps (issue #962); `None` without one.
+    pub(crate) job: Option<JobView>,
+    /// A request for the open conversation's job is out; the timer does not send another.
+    pub(crate) job_fetching: bool,
+    /// The button of the job card whose request is on its way: it shows busy, the others take no click.
+    pub(crate) job_busy: Option<JobAction>,
+    /// The number of the newest request of the job card: only its answer frees the card again.
+    pub(crate) job_ticket: u64,
+    /// The jobs that wait for the person, by conversation (issue #962): their rows in the sidebar carry a mark.
+    pub(crate) waiting_jobs: HashMap<String, torro_ipc::assistant::JobInfo>,
     /// The cards of the open conversation as the core resolved them last (`assistant.get_cards`,
     /// task WZ.8), by the number of their entry; a card not resolved yet is not drawn.
     pub(crate) cards: HashMap<u64, Card>,
@@ -819,6 +855,12 @@ impl App {
             following: false,
             approvals: HashMap::new(),
             deciding: None,
+            as_job: open == Some(Open::JobStart),
+            job: None,
+            job_fetching: false,
+            job_busy: None,
+            job_ticket: 0,
+            waiting_jobs: HashMap::new(),
             cards: HashMap::new(),
             card_pictures: HashMap::new(),
             card_pictures_asked: HashSet::new(),
@@ -828,7 +870,11 @@ impl App {
             stream: None,
             follow_bottom: true,
             history_seen: None,
-            editor: Content::new(),
+            // `--open job-start` (issue #962): a goal typed, "Run as job" on.
+            editor: match open {
+                Some(Open::JobStart) => Content::with_text(tr(demo::START_GOAL)),
+                _ => Content::new(),
+            },
             mini: String::new(),
             choice: None,
             effort: None,
@@ -1274,6 +1320,26 @@ impl App {
                 return self.fetch_cards();
             }
             Message::Decided(id, result) => return self.decided(id, result),
+            Message::ToggleJob => {
+                self.close_menus();
+                self.as_job = !self.as_job && self.offers_job();
+                return operation::focus(EDITOR);
+            }
+            Message::WaitingJobs(result) => {
+                // A core without jobs, or one that did not answer: the marks stay as they were.
+                if let Ok(jobs) = result {
+                    self.waiting_jobs = job::waiting_by_conversation(jobs);
+                }
+            }
+            Message::JobListed(id, result) => return self.job_listed(id, result),
+            Message::JobLoaded(id, result) => self.job_loaded(id, result),
+            Message::Job(action) => return self.job_action(action),
+            Message::ConfirmCancelJob => {
+                let Some(Dialog::CancelJob { id }) = self.dialog.take() else { return Task::none() };
+                return self.run_job_action(&id, JobAction::Cancel);
+            }
+            Message::JobAnswered(id, ticket, action, result) => return self.job_answered(id, ticket, action, result),
+            Message::JobStarted(origin, result) => return self.job_started(origin, result),
             Message::Select(id) => {
                 self.marked = None;
                 return self.select(id);
@@ -1677,7 +1743,17 @@ impl App {
                 other => Err(Refusal::unexpected(&other)),
             }))
         });
-        Task::batch([self.load_list(), engines, client, profile, settings, self.load_bots()])
+        // The jobs that wait for the person (issue #962), for the marks of their rows; not in mini and strip.
+        let jobs = match self.is_glance() {
+            true => Task::none(),
+            false => self.ask(Request::ListJobs { conversation: None }, |result| {
+                Message::WaitingJobs(result.and_then(|response| match response {
+                    Response::Jobs { jobs } => Ok(jobs),
+                    other => Err(Refusal::unexpected(&other)),
+                }))
+            }),
+        };
+        Task::batch([self.load_list(), engines, client, profile, settings, self.load_bots(), jobs])
     }
 
     /// The assistant's name as the window shows it: the profile's, else the default.
@@ -1738,7 +1814,9 @@ impl App {
             .map(str::to_owned)
             .collect();
         let approvals: Vec<Task<Message>> = pending.into_iter().map(|id| self.fetch_approval(id)).collect();
-        Task::batch(approvals.into_iter().chain([follow]))
+        // The job of the conversation (issue #962) changes without an entry too: paused elsewhere, its step decided.
+        let job = self.fetch_job();
+        Task::batch(approvals.into_iter().chain([follow, job]))
     }
 
     fn fetch_approval(&mut self, id: String) -> Task<Message> {
@@ -1908,7 +1986,7 @@ impl App {
                 }
                 self.choose_default();
                 let scroll = self.scroll_to_hit(&id).unwrap_or_else(|| self.scroll_to_newest());
-                Task::batch([self.fetch_approvals(), self.fetch_cards(), scroll, stopped])
+                Task::batch([self.fetch_approvals(), self.fetch_cards(), self.fetch_job(), scroll, stopped])
             }
             Err(refusal) if refusal.code == "not-found" => self.gone(),
             Err(refusal) => {
@@ -2321,6 +2399,10 @@ impl App {
         self.following = false;
         self.approvals.clear();
         self.deciding = None;
+        self.as_job = false;
+        self.job = None;
+        self.job_fetching = false;
+        self.job_busy = None;
         self.cards.clear();
         self.expanded.clear();
         self.answers.clear();
@@ -2349,6 +2431,15 @@ impl App {
         } else {
             (self.without.clone(), self.mode)
         };
+        // "Run as job" (issue #962): the text is the goal of a job, never a message as well.
+        if self.as_job && self.offers_job() {
+            let without = self.without.clone();
+            let request = job::start_request(self.current.as_deref(), self.choice.as_ref(), &self.draft(), &without);
+            let Some(request) = request else { return Task::none() };
+            self.sending = true;
+            let origin = self.current.clone();
+            return self.ask(request, move |result| Message::JobStarted(origin.clone(), job_of(result)));
+        }
         let effort = self.offered_effort();
         let Some(mut request) = chat::send_request(
             self.current.as_deref(),
@@ -2672,6 +2763,194 @@ impl App {
                 };
                 self.note_failure(what, &refusal);
                 self.fetch_approval(id)
+            }
+        }
+    }
+
+    // -- Jobs (issue #962) ----------------------------------------------------------------------
+
+    /// Whether the composer offers "Run as job": in the main or a chat window with an AI account chosen, not in a
+    /// bot's chat or one about a mail (the core refuses both), not while an answer runs or the conversation has an
+    /// open job, and not in mini and strip, which only ask quickly.
+    pub(crate) fn offers_job(&self) -> bool {
+        let ai = self.choice.as_ref().is_some_and(|choice| {
+            self.engines.iter().any(|engine| engine.id == choice.engine && engine.kind == EngineKind::Ai)
+        });
+        let about_mail = self.transcript.summary.as_ref().is_some_and(|summary| summary.about.is_some());
+        ai && !self.is_glance()
+            && self.chat_bot().is_none()
+            && !about_mail
+            && !self.transcript.running()
+            && !self.job.as_ref().is_some_and(JobView::is_open)
+    }
+
+    /// Whether "Stop" pauses the conversation's job: one of it runs, waits in the queue or for an approval. With a
+    /// paused job a normal answer stops as any other.
+    pub(crate) fn stop_pauses_job(&self) -> bool {
+        self.job.as_ref().is_some_and(JobView::can_pause)
+    }
+
+    /// Asks for the jobs of the open conversation, unless a request for them is out already.
+    fn fetch_job(&mut self) -> Task<Message> {
+        let Some(id) = self.current.clone() else { return Task::none() };
+        if self.job_fetching || self.launch.open == Some(Open::Loading) {
+            return Task::none();
+        }
+        self.job_fetching = true;
+        let request = Request::ListJobs { conversation: Some(id.clone()) };
+        self.ask(request, move |result| {
+            Message::JobListed(
+                id.clone(),
+                result.and_then(|response| match response {
+                    Response::Jobs { jobs } => Ok(job::newest(jobs)),
+                    other => Err(Refusal::unexpected(&other)),
+                }),
+            )
+        })
+    }
+
+    /// The conversation's newest job came: its steps next (they tell an unclear step), nothing without a job.
+    fn job_listed(
+        &mut self,
+        id: String,
+        result: Result<Option<torro_ipc::assistant::JobInfo>, Refusal>,
+    ) -> Task<Message> {
+        if self.current.as_ref() != Some(&id) {
+            return Task::none();
+        }
+        match result {
+            Ok(Some(found)) => {
+                let request = Request::GetJob { id: found.id };
+                self.ask(request, move |result| Message::JobLoaded(id.clone(), job_of(result)))
+            }
+            Ok(None) => {
+                self.job_fetching = false;
+                self.job = None;
+                Task::none()
+            }
+            // A core without jobs, or one that did not answer: the card keeps what it showed.
+            Err(_) => {
+                self.job_fetching = false;
+                Task::none()
+            }
+        }
+    }
+
+    fn job_loaded(&mut self, id: String, result: Result<JobView, Refusal>) {
+        if self.current.as_ref() != Some(&id) {
+            return;
+        }
+        self.job_fetching = false;
+        if let Ok(view) = result {
+            // With a job open the switch goes off: the next "Send" is a message to it again.
+            if view.is_open() {
+                self.as_job = false;
+            }
+            // `--open job-cancel`: the question before cancelling, once the job is in.
+            if self.launch.open == Some(Open::JobCancel)
+                && self.job.is_none()
+                && self.dialog.is_none()
+                && view.can_cancel()
+            {
+                self.dialog = Some(Dialog::CancelJob { id: view.job.id.clone() });
+            }
+            self.job = Some(view);
+        }
+    }
+
+    /// A button of the job card: "Cancel job…" asks first, everything else goes to the core at once. Only one
+    /// request at a time; a press while one is on its way does nothing.
+    fn job_action(&mut self, action: JobAction) -> Task<Message> {
+        self.close_menus();
+        let Some(view) = &self.job else { return Task::none() };
+        if self.job_busy.is_some() {
+            return Task::none();
+        }
+        if action == JobAction::Cancel {
+            if view.can_cancel() {
+                self.dialog = Some(Dialog::CancelJob { id: view.job.id.clone() });
+            }
+            return Task::none();
+        }
+        let id = view.job.id.clone();
+        self.run_job_action(&id, action)
+    }
+
+    /// Sends `action` for the job `id`, only while it is still the job the card shows: a question answered after
+    /// the conversation's job changed never reaches another job.
+    fn run_job_action(&mut self, id: &str, action: JobAction) -> Task<Message> {
+        let (Some(view), Some(conversation)) = (&self.job, self.current.clone()) else { return Task::none() };
+        if self.job_busy.is_some() || view.job.id != id {
+            return Task::none();
+        }
+        let request = action.request(id);
+        self.job_busy = Some(action.clone());
+        self.job_ticket += 1;
+        let ticket = self.job_ticket;
+        self.ask(request, move |result| {
+            Message::JobAnswered(conversation.clone(), ticket, action.clone(), job_of(result))
+        })
+    }
+
+    fn job_answered(
+        &mut self,
+        id: String,
+        ticket: u64,
+        action: JobAction,
+        result: Result<JobView, Refusal>,
+    ) -> Task<Message> {
+        // Another conversation's or an earlier request's answer: the card's own request still runs.
+        if self.current.as_ref() != Some(&id) || ticket != self.job_ticket {
+            return Task::none();
+        }
+        self.job_busy = None;
+        match result {
+            Ok(view) => {
+                self.job = Some(view);
+                // A resumed job answers again, a paused or cancelled one stopped: the history follows.
+                self.follow()
+            }
+            Err(refusal) => {
+                self.note_failure(action.failure(&refusal.code), &refusal);
+                self.fetch_job()
+            }
+        }
+    }
+
+    fn job_started(&mut self, origin: Option<String>, result: Result<JobView, Refusal>) -> Task<Message> {
+        self.sending = false;
+        // The person went elsewhere meanwhile: what they write there stays; the job shows in the list.
+        if self.current != origin {
+            if let Err(refusal) = &result {
+                self.note_failure(tr("Couldn't start the job."), refusal);
+            }
+            return self.load_list();
+        }
+        match result {
+            Ok(view) => {
+                self.editor = Content::new();
+                self.as_job = false;
+                let conversation = view.job.conversation.clone();
+                if self.current.as_ref() != Some(&conversation) {
+                    let (without, mode) = (std::mem::take(&mut self.without), self.mode);
+                    self.reset_chat(Some(conversation));
+                    (self.without, self.mode) = (without, mode);
+                    self.take_without = false;
+                    self.job = Some(view);
+                    let stopped = self.leave_reading();
+                    return Task::batch([self.open_current(), self.load_list(), stopped]);
+                }
+                self.job = Some(view);
+                Task::batch([self.follow(), self.load_list(), self.scroll_to_newest()])
+            }
+            Err(refusal) => {
+                let what = match refusal.code.as_str() {
+                    "busy" => tr("The assistant is still answering in this conversation."),
+                    "conflict" => tr("This conversation already has a job."),
+                    _ => tr("Couldn't start the job."),
+                };
+                self.note_failure(what, &refusal);
+                Task::none()
             }
         }
     }
@@ -3181,6 +3460,10 @@ fn start_conversation(open: Option<Open>) -> Option<String> {
         Some(Open::BotGone) => Some(demo::GONE.into()),
         Some(Open::BotProposal) => Some(demo::PROPOSAL.into()),
         Some(Open::Cards) => Some(demo::CONTENT.into()),
+        Some(Open::JobRunning | Open::JobCancel) => Some(demo::JOB_RUNNING.into()),
+        Some(Open::JobPaused) => Some(demo::JOB_PAUSED.into()),
+        Some(Open::JobUncertain) => Some(demo::JOB_UNCERTAIN.into()),
+        Some(Open::JobModel) => Some(demo::JOB_MODEL.into()),
         _ => None,
     }
 }
@@ -3189,6 +3472,14 @@ fn start_conversation(open: Option<Open>) -> Option<String> {
 fn conversation_of(result: Result<Response, Refusal>) -> Loaded {
     match result? {
         Response::Conversation { conversation, entries } => Ok((conversation, entries)),
+        other => Err(Refusal::unexpected(&other)),
+    }
+}
+
+/// A job with its steps from an answer of the job commands (`assistant.get_job`, `assistant.start_job` …).
+fn job_of(result: Result<Response, Refusal>) -> Result<JobView, Refusal> {
+    match result? {
+        Response::Job { job, steps } => Ok(JobView { job, steps }),
         other => Err(Refusal::unexpected(&other)),
     }
 }

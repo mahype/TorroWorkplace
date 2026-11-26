@@ -1327,9 +1327,18 @@ laufen unverändert.
 - **Pause, Stopp, Abbruch:** `assistant.pause_job` und „Stop“ im Chat (`assistant.cancel`) pausieren den Auftrag,
   `assistant.cancel_job` beendet ihn. Ein laufender Schritt, der etwas ändert, wird dabei `uncertain`, bis sein
   Ergebnis kommt; danach startet nichts mehr.
-- **Im Chat:** Warum ein Auftrag wartet, steht als Fehlerzeile (`paused`) in seiner Unterhaltung; dazu sagt
-  `assistant.get_job` Zustand, Grund und Schritte. Knöpfe für Pause, Fortsetzen und das Entscheiden eines unklaren
-  Schritts kommen mit #962 (Regel 5 der Entscheidungsregeln).
+- **Im Chat (#962):** Einen Auftrag startet man bewusst: im Plus-Menü des Eingabefelds „Run as job“, dann steht
+  „As job ×“ im Feld und „Send“ heißt „Start job“ (`assistant.start_job`); danach ist der Schalter wieder aus. Es gibt
+  ihn nicht im Chat eines Bots, in einem Chat über eine Mail, in Mini und Leiste und solange die Unterhaltung einen
+  offenen Auftrag hat. Unter dem letzten Eintrag steht die **Auftragskarte**: das Ziel als Titel, der Zustand als
+  Pille, Modell und erledigte Schritte, bei einer Pause der Grund; dazu „Pause“, „Resume“, bei `model_unavailable`
+  „Choose another model“ (die Wahl setzt mit `engine`/`model` fort) und „Cancel job…“ mit Rückfrage. Ein unklarer
+  Schritt zeigt „It happened“ / „It didn't happen“ (`assistant.resolve_job_step`); „Resume“ bleibt bis dahin aus.
+  Ist der Auftrag vorbei, bleibt eine ruhige Zeile („Job done“, „Job failed · …“, „Job cancelled“). Die Zeile
+  `paused` des Kerns erscheint ruhig mit dem Pause-Zeichen, nicht als Fehler. Der runde Knopf des Eingabefelds heißt
+  im laufenden Auftrag „Pause job“, weil „Stop“ ihn pausiert; beendet wird er nur über „Cancel job…“. Wartet ein
+  Auftrag auf die Person (Freigabe, unklarer Schritt, Modell, Zugriff), trägt seine Unterhaltung in der Seitenleiste
+  das Zeichen. Normale Nachrichten in der Unterhaltung bleiben möglich.
 - **Wer darf:** wie bei Unterhaltungen jeder Client mit dem Bereich `assistant` (Read zum Lesen, Write zum Starten,
   Pausieren, Fortsetzen, Abbrechen); der eigene Client des Assistenten und Bots nie (`loops_back`). Einen unklaren
   Schritt entscheidet nur ein Mensch: `assistant.resolve_job_step` ist Admin, für Clients also immer mit Freigabe, und

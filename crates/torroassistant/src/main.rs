@@ -45,6 +45,7 @@ mod backend;
 mod bots;
 mod chat;
 mod demo;
+mod job;
 mod launch;
 mod stream;
 mod view;

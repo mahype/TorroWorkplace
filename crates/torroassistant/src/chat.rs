@@ -152,6 +152,41 @@ pub fn send_request(
     })
 }
 
+/// What a step of a job would do, for a step whose outcome is unclear (issue #962): "Send mail", never the past
+/// tense of [`tool_title`], which would claim it happened. A command not named here by its catalogue name, so
+/// nothing is hidden.
+pub fn step_title(name: &str) -> String {
+    let known = match name {
+        "calendar.save_event" => tr("Save event"),
+        "calendar.delete_event" => tr("Delete event"),
+        "calendar.create_event_from_mail" => tr("Make an event from a mail"),
+        "tasks.save_todo" => tr("Save task"),
+        "tasks.delete_todo" => tr("Delete task"),
+        "tasks.move_todo" => tr("Move task"),
+        "tasks.create_todo_from_mail" => tr("Make a task from a mail"),
+        "contacts.create_contact" => tr("Create contact"),
+        "contacts.update_contact" => tr("Change contact"),
+        "contacts.delete_contact" => tr("Delete contact"),
+        "inbox.post_item" => tr("Post to the Notification Hub"),
+        "inbox.create_task_from_item" => tr("Make a task"),
+        "mail.send_draft" => tr("Send mail"),
+        "mail.save_draft" => tr("Save draft"),
+        "mail.move_messages" => tr("Move mails"),
+        "mail.delete_messages" => tr("Delete mails"),
+        "mail.set_flags" => tr("Mark mails"),
+        "mail.respond_to_invitation" => tr("Answer invitation"),
+        "mail.unsubscribe" => tr("Unsubscribe"),
+        "mail.save_attachments" => tr("Save attachments"),
+        "tools.create_pdf" => tr("Create PDF"),
+        "tools.create_folder" => tr("Create folder"),
+        "tools.copy_file" => tr("Copy file"),
+        "tools.move_file" => tr("Move file"),
+        "tools.trash_file" => tr("Move file to the trash"),
+        _ => return name.to_owned(),
+    };
+    known.to_owned()
+}
+
 /// What the person pressed on the approval card: "Deny", "Allow", or for a command of the terminal (issue #754)
 /// "Allow once", "In this conversation" or "Always".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

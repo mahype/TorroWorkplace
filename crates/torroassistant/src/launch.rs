@@ -141,11 +141,23 @@ pub enum Open {
     /// "What came in today": a content card of every kind (issue #784) – a page, the question about a provider, a
     /// mail, an event, a task, a draft, a contact, a group of short forms, a group with its total – and one gone.
     Cards,
+    /// A new chat with "Run as job" on in the composer (issue #962).
+    JobStart,
+    /// "Sort this month's invoices": a job that runs, its card with "Pause" and "Cancel job…" (issue #962).
+    JobRunning,
+    /// "Answer the offers of the week": a job paused by "Stop", its card with "Resume" (issue #962).
+    JobPaused,
+    /// "Send the monthly report": a job paused on a step that may have sent a mail, "Did this happen?" (issue #962).
+    JobUncertain,
+    /// "Collect the dates of the trip": a job whose model does not answer, "Continue with another model" (issue #962).
+    JobModel,
+    /// The question before cancelling the running job (issue #962).
+    JobCancel,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 43] = [
+    pub const ALL: [(&'static str, Open); 49] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -189,6 +201,12 @@ impl Open {
         ("recent-menu", Open::RecentMenu),
         ("delete-all", Open::DeleteAll),
         ("cards", Open::Cards),
+        ("job-start", Open::JobStart),
+        ("job-running", Open::JobRunning),
+        ("job-paused", Open::JobPaused),
+        ("job-uncertain", Open::JobUncertain),
+        ("job-model", Open::JobModel),
+        ("job-cancel", Open::JobCancel),
     ];
 }
 
