@@ -3404,6 +3404,17 @@ pub mod reading {
     pub enum Menu {
         /// "Default sender address".
         Sender,
+        /// "Show hint for" of "Undo" (issue #992).
+        UndoFor,
+    }
+
+    /// The times "Show hint for" offers (issue #992, design): seconds, from
+    /// [`UndoSeconds::MIN`](torro_core::settings::UndoSeconds::MIN) to its `MAX`.
+    pub const UNDO_CHOICES: [u8; 5] = [5, 10, 15, 20, 30];
+
+    /// "{n} seconds" for a choice of "Show hint for".
+    fn seconds(n: u8) -> String {
+        torro_core::i18n::trf("{n} seconds", &[("n", &n)])
     }
 
     fn account<'a>(state: &State, data: &'a Data) -> Option<&'a torro_ipc::AccountInfo> {
@@ -3447,6 +3458,9 @@ pub mod reading {
         Logos(bool),
         /// Account used for a new message without an explicit account choice.
         Sender(String),
+        /// "Show hint for" of "Undo" (issue #992): how many seconds the inbox's hint after a change
+        /// offers "Undo" (`mail_undo_seconds`).
+        UndoFor(u8),
         Compose(ComposeFormat),
         Signature(text_editor::Action),
         FormatSignature(SignatureStyle),
@@ -3474,6 +3488,10 @@ pub mod reading {
             }),
             Message::Logos(on) => {
                 Action::send(Request::SetSetting { key: SettingKey::MailSenderLogos, value: serde_json::json!(on) })
+            }
+            Message::UndoFor(n) => {
+                state.menus.close();
+                Action::send(Request::SetSetting { key: SettingKey::MailUndoSeconds, value: serde_json::json!(n) })
             }
             Message::Sender(id) => {
                 state.menus.close();
@@ -3644,6 +3662,18 @@ pub mod reading {
             }
             blocks.push(widgets::group(tr("Writing"), rows, None));
         }
+        // Issue #992: how long the inbox's hint offers "Undo"; the sentence says that Ctrl + Z goes on
+        // after it, which is where one looks for it.
+        let undo_for = state.menus.button(Menu::UndoFor, seconds(settings.mail_undo_seconds.get()), Message::Menus);
+        let history = torro_core::i18n::trf(
+            "{key} takes back up to 20 actions, even after the hint is gone.",
+            &[("key", &widgets::undo_hint())],
+        );
+        blocks.push(widgets::group(
+            tr("Undo"),
+            vec![setting_row(None, tr("Show hint for"), Some(history), undo_for)],
+            None,
+        ));
         blocks
     }
 
@@ -3688,6 +3718,15 @@ pub mod reading {
                         let current = chosen.as_deref() == Some(choice.id.as_str());
                         MenuItem::plain(choice.label, Message::Sender(choice.id)).current(current)
                     })
+                    .collect();
+                let sections = vec![MenuSection::new(items)];
+                Some(state.menus.view(key, sections, widgets::menu_width(), Align::End, Message::Menus))
+            }
+            Menu::UndoFor => {
+                let now = data.settings.mail_undo_seconds.get();
+                let items = UNDO_CHOICES
+                    .into_iter()
+                    .map(|n| MenuItem::plain(seconds(n), Message::UndoFor(n)).current(n == now))
                     .collect();
                 let sections = vec![MenuSection::new(items)];
                 Some(state.menus.view(key, sections, widgets::menu_width(), Align::End, Message::Menus))
