@@ -19,6 +19,11 @@
 //! like the control centre (A.3b): a way to decide on systems without notification buttons and
 //! before the control centre has its approvals page (A.8).
 //!
+//! `login-item enable|status` (issue #1001) is for the installer (`scripts/install-local.sh`) and talks to
+//! no core: `enable` switches "Start at login" on like the control centre does and writes the system's
+//! login item for this program (`settings_service`), `status` prints where that item stands
+//! (`current`, `outdated` or `missing`) and its path. Exit codes: 0 done, 1 failed, 64 bad arguments.
+//!
 //! `notify` (E1.3) posts a notice to the inbox for scripts: `inbox.post_item` with kind `notice`.
 //! Unlike `ctl` it sends the client key in `TORRO_TOKEN` when there is one, so the entry belongs
 //! to that script's source; without, it sends the app key and the core files it under
@@ -66,6 +71,7 @@ const USAGE: &str = "usage:
                                   --file: a plain name is in the managed folder, ./x.zip or sub/x.zip is
                                   relative to here; --wait has no time limit and Ctrl-C does not cancel the job)
   torroworkplace notify --title <text> [--body <text>] [--url <url>] [--for-me] [--thread <key>] [--json]
+  torroworkplace login-item enable|status       (for the installer: start this program at login)
   torroworkplace hook claude-code|codex|gemini|opencode [--key-file <file>]
                                                  (run by an agent's hooks; reads stdin, prints nothing)";
 
@@ -658,6 +664,51 @@ fn show(response: &Response, json: bool) -> ExitCode {
     }
 }
 
+/// What `login-item` does (issue #1001): switch the login item on for this program, or tell where it stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoginItemCommand {
+    Enable,
+    Status,
+}
+
+/// The arguments after `login-item`: exactly `enable` or `status`.
+fn parse_login_item(args: &[String]) -> Result<LoginItemCommand, UsageError> {
+    match args {
+        [verb] if verb == "enable" => Ok(LoginItemCommand::Enable),
+        [verb] if verb == "status" => Ok(LoginItemCommand::Status),
+        _ => Err(UsageError::new("login-item takes enable or status")),
+    }
+}
+
+/// `torroworkplace login-item enable|status` with `args` after `login-item` (see the module docs). Both
+/// print the item's state and path as one line, `<state> <path>`, which the installer reads; `enable`
+/// prints the state after it switched the item on.
+pub fn login_item_from_args(args: &[String]) -> ExitCode {
+    let command = match parse_login_item(args) {
+        Ok(command) => command,
+        Err(err) => {
+            eprintln!("{}: {err}\n\n{}", crate::APP.binary, usage());
+            return ExitCode::from(64);
+        }
+    };
+    if command == LoginItemCommand::Enable
+        && let Err(err) = crate::settings_service::SettingsStore::system().enable_login_item()
+    {
+        eprintln!("{}: cannot switch start at login on: {err}", crate::APP.binary);
+        return ExitCode::FAILURE;
+    }
+    match crate::settings_service::login_item_status() {
+        Ok((state, path)) => {
+            println!("{} {}", state.word(), path.display());
+            ExitCode::SUCCESS
+        }
+        Err(err) => {
+            eprintln!("{}: {err}", crate::APP.binary);
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// `torroworkplace notify …` with `args` after `notify`: parses ([`parse_notify`]), takes the key
 /// from [`crate::mcp::TOKEN_VAR`] ([`token_from`]) and posts ([`run_notify`]). Exit codes: 0
 /// posted (or dropped because the source is muted), 1 refused or core not running, 64 bad
@@ -1025,6 +1076,17 @@ mod tests {
     use torro_ipc::Status;
 
     use super::*;
+
+    /// Issue #1001: `login-item` takes exactly `enable` or `status`.
+    #[test]
+    fn login_item_takes_enable_or_status() {
+        let parse = |args: &[&str]| parse_login_item(&args.iter().map(|arg| (*arg).to_string()).collect::<Vec<_>>());
+        assert_eq!(parse(&["enable"]), Ok(LoginItemCommand::Enable));
+        assert_eq!(parse(&["status"]), Ok(LoginItemCommand::Status));
+        for wrong in [&[][..], &["disable"], &["enable", "status"], &["--json"]] {
+            assert!(parse(wrong).is_err(), "{wrong:?}");
+        }
+    }
 
     fn mail(args: &[&str]) -> Result<MailCommand, UsageError> {
         parse_mail(&args.iter().map(|arg| (*arg).to_string()).collect::<Vec<_>>())
