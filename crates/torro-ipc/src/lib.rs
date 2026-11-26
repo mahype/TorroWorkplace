@@ -1844,6 +1844,30 @@ pub enum Request {
         /// Which of its addresses, 0 for the first.
         address: usize,
     },
+    /// Sets the pin of a contact by hand (issue #854, [`Response::Contact`]): writes `lat`/`lon` as the
+    /// vCard's `GEO` (only that line changes) and syncs it to the server. `GEO` is the point of the
+    /// first address, so `address` is 0; a contact without an address takes the point as it is. A
+    /// `GEO` there already is replaced only with `replace: true`, which makes the command `Delete`
+    /// (the old point is gone for good). The point is never logged.
+    ///
+    /// Codes: `not-found` (contact, or an address it does not have), `conflict` (the contact changed
+    /// meanwhile, or it has a `GEO` and `replace` is not set), `unsupported` (read-only book, an
+    /// address after the first, a contact in conflict), `error` (a point off the map).
+    #[serde(rename = "contacts.set_location")]
+    SetContactLocation {
+        /// The contact's id.
+        id: String,
+        /// The version the client showed (`contacts.get_contact`).
+        etag: String,
+        /// Which of its addresses the pin is for: 0, the first (the vCard's `GEO` belongs to it).
+        address: usize,
+        /// Where the pin goes: `lat` -90 to 90, `lon` -180 to 180.
+        #[serde(flatten)]
+        geo: Geo,
+        /// Replace the vCard's `GEO` when it has one; without it a `GEO` there answers `conflict`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        replace: bool,
+    },
     /// Imports the cards of a `.vcf` file into `book` (issue #725, [`Response::ContactsImported`]):
     /// the file's text in `data`, or the file at `path` (an absolute path to a file, no link, at most
     /// [`contacts::MAX_IMPORT_BYTES`]; only the suite's own apps, for files larger than a request). A

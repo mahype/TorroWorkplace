@@ -1586,6 +1586,7 @@ impl PimService {
             | Request::LocateContact { .. }
             | Request::ListLocations { .. }
             | Request::OpenContactInMaps { .. }
+            | Request::SetContactLocation { .. }
             | Request::ImportVCards { .. }
             | Request::ExportVCards { .. }
             | Request::FindDuplicates { .. }

@@ -8,7 +8,8 @@
 //!
 //! Under each address stands a small map ([`AddressMap`], issue #355): the picture with its pin, a
 //! click on it or ↗ opens the maps app; or, where there is no map, one quiet line saying why with
-//! "Open in Maps" beside it. The core looks the address up; the window only asks.
+//! "Open in Maps" beside it; under the first one "Set location on map" sets its pin by hand (issue #854).
+//! The core looks the address up; the window only asks.
 //!
 //! The marks of the contact stand above its fields: "Read-only address book" (and no "Edit"), "Saved on
 //! this device, not yet on the server", and for a conflict "Changed elsewhere" with both versions
@@ -124,6 +125,9 @@ pub struct Look<'a> {
     pub error: Option<&'a str>,
     /// The map under each address, by its place in `addresses`; an address without one shows none.
     pub maps: &'a [AddressMap],
+    /// "Set location on map" under the first address (issue #854); `None` hides it (maps off, a
+    /// contact that cannot be written).
+    pub place: Option<Message>,
 }
 
 /// The panel's title: the picture, the name and under it position · company.
@@ -247,6 +251,16 @@ pub fn body<'a>(contact: &'a Contact, look: Look<'a>) -> Element<'a, Message> {
         addresses.push(field_line(kind_word(&address.kind), &address.value.one_line(), None));
         if let Some(map) = look.maps.get(index) {
             addresses.push(torro_gui::panel::inset(address_map(map, index, look.colours.text)));
+        }
+        // The vCard's `GEO` is the point of the first address: only it can be set by hand.
+        if let (0, Some(place)) = (index, &look.place) {
+            let button = widgets::text_button(
+                Some(Icon::MapPin),
+                tr("Set location on map"),
+                style::button::ghost,
+                Some(place.clone()),
+            );
+            addresses.push(torro_gui::panel::inset(container(button).width(Fill).align_right(Fill)));
         }
     }
     let mut dates = Vec::new();

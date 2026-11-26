@@ -85,11 +85,15 @@ pub enum Open {
     MapCluster,
     /// The map while addresses wait to be looked up.
     MapLookup,
+    /// Anna Berg's pin set by hand (issue #854): the map with her pin in the middle and the bar.
+    MapPlace,
+    /// The same after "Save" was refused: the reason under the bar.
+    MapPlaceError,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 32] = [
+    pub const ALL: [(&'static str, Open); 34] = [
         ("list", Open::List),
         ("by-city", Open::ByCity),
         ("by-book", Open::ByBook),
@@ -122,6 +126,8 @@ impl Open {
         ("map-pin", Open::MapPin),
         ("map-cluster", Open::MapCluster),
         ("map-lookup", Open::MapLookup),
+        ("map-place", Open::MapPlace),
+        ("map-place-error", Open::MapPlaceError),
     ];
 
     /// The uid of the demo contact this state opens in the side panel, if it opens one.
