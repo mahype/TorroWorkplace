@@ -105,6 +105,8 @@ pub enum Open {
     ApiEmpty,
     /// The page of the demo script's key: the rights editor with endpoints, its activity.
     ApiDetail,
+    /// The same page on its tab Connection (issue #687): activity, key and "Revoke…".
+    ApiConnection,
     /// The dialog with a new key for the demo script, shown once.
     ApiNewKey,
     /// The "Revoke this key?" confirmation of the demo script.
@@ -118,8 +120,13 @@ pub enum Open {
     /// The page of the demo agent Codex with rights of its own (levels, admin switch, selections)
     /// and its calendar area open with one command switched off (task S.33).
     McpDetail,
-    /// The page of Claude Code with its hooks on: the group "Notification Hub" with where they are.
+    /// The page of Claude Code with its hooks on, on its tab Connection: the group "Notification Hub"
+    /// with where they are.
     McpHooks,
+    /// The page of Codex as [`Open::McpDetail`], on its tab Selections (issue #687).
+    McpSelections,
+    /// The page of Codex as [`Open::McpDetail`], on its tab Tools with the server "Time" open.
+    McpTools,
     /// The dialog with a new key of the demo agent, shown once.
     McpNewKey,
     /// The "Disconnect this client?" confirmation.
@@ -246,7 +253,7 @@ impl Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 148] = [
+    pub const ALL: [(&'static str, Open); 151] = [
         ("setup-ai-form", Open::AiSetup("form")),
         ("setup-ai-download", Open::AiSetup("download")),
         ("setup-ai-warning", Open::AiSetup("warning")),
@@ -325,6 +332,7 @@ impl Open {
         ("approvals-empty", Open::ApprovalsEmpty),
         ("api-empty", Open::ApiEmpty),
         ("api-detail", Open::ApiDetail),
+        ("api-connection", Open::ApiConnection),
         ("api-new-key", Open::ApiNewKey),
         ("api-revoke", Open::ApiRevoke),
         ("create-key", Open::CreateKey),
@@ -332,6 +340,8 @@ impl Open {
         ("mcp-empty", Open::McpEmpty),
         ("mcp-detail", Open::McpDetail),
         ("mcp-hooks", Open::McpHooks),
+        ("mcp-selections", Open::McpSelections),
+        ("mcp-tools", Open::McpTools),
         ("mcp-new-key", Open::McpNewKey),
         ("mcp-disconnect", Open::McpDisconnect),
         ("mcp-bots", Open::McpBots),

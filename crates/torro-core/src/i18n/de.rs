@@ -7829,6 +7829,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("is not an object", "ist kein Objekt"),
     // Control centre › MCP servers, and the assistant's Tools that moved there (MA.7, #302)
     ("Built-in tools", "Eingebaute Werkzeuge"),
+    // Control centre: the tab Tools of a client's page (issue #687)
+    ("Built-in tools and MCP servers", "Eingebaute Werkzeuge und MCP-Server"),
     ("Built-in", "Eingebaut"),
     ("PDF templates", "PDF-Vorlagen"),
     ("Catalog", "Katalog"),
