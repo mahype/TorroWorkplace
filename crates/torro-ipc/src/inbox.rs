@@ -1223,6 +1223,23 @@ impl InboxClient {
         }
     }
 
+    /// `inbox.set_item_category` as [`InboxClient::set_mail_category`] does it, also with the id of
+    /// the lasting rule `remember` made (issue #992): `None` without `remember` and when the same rule
+    /// was there already, so taking the call back removes only a rule it made (`inbox.remove_rule`).
+    pub async fn set_mail_category_ruled(
+        &self,
+        id: String,
+        category: torro_mail::Category,
+        remember: bool,
+    ) -> Result<(Item, Option<String>), InboxError> {
+        match self.ask(Request::SetItemCategory { id, category, remember }).await? {
+            Response::ItemCategory { item, rule, new_rule } => {
+                Ok((item, rule.filter(|_| new_rule).map(|rule| rule.id)))
+            }
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// `inbox.classify_item` (task E12.8): asks the decision model again.
     pub async fn classify_mail(&self, id: String) -> Result<Item, InboxError> {
         match self.ask(Request::ClassifyItem { id }).await? {
