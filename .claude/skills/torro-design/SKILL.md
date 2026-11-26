@@ -907,8 +907,8 @@ due error empty loading` (`pr`: Detail des ersten offenen Pull Requests, `more`:
 offenem „…“-Menü); Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
 Speicher, kein Dienst, nichts wird gespeichert): `wizard-nextcloud wizard-mail wizard-mail-certificate
 wizard-mail-certificate-public wizard-ai wizard-torromail account-detail account-detail-ai menu drawer remove delete-template rename-template design
-design-schemes design-switched design-fonts design-fonts-search api-empty api-detail api-new-key api-revoke create-key create-key-done mcp-empty
-mcp-detail mcp-hooks mcp-new-key mcp-disconnect mcp-bots mcp-orphans connect-client
+design-schemes design-switched design-fonts design-fonts-search api-empty api-detail api-connection api-new-key api-revoke create-key create-key-done mcp-empty
+mcp-detail mcp-selections mcp-tools mcp-hooks mcp-new-key mcp-disconnect mcp-bots mcp-orphans connect-client
 connect-client-rights connect-client-done connect-client-other connections connections-builtin connections-own
 connections-empty search-providers catalog-install
 catalog-install-tools extension-detail extension-review extension-crashed extension-folder extension-unbounded
@@ -934,7 +934,8 @@ der Stufe, die `--design` nennt, sonst im Standard); `design-schemes`: dieselbe 
 Auswahl der Farbschemata; `design-fonts`: dieselbe Seite mit offenem Dropdown der Schriften (#299: Schriften von Torro, Linie, Schriften des
 Systems), `design-fonts-search`: dasselbe mit „mo“ im Suchfeld; `design-switched`: die Seite nach der Wahl von Dense,
 das ganze Fenster in dieser Stufe, sonst nichts umgestellt (#484); `mcp-hooks`: Seite von Claude Code mit
-„Notification Hub“; `mcp-orphans`: „Hooks without an agent“; alle Wörter nennt die Fehlermeldung zu
+„Notification Hub“ (seit #687 auf dem Reiter Connection; `mcp-detail`, `mcp-selections`, `mcp-tools`: Codex auf den
+Reitern Access, Selections, Tools; `api-detail`/`api-connection`: der Key auf Access bzw. Connection); `mcp-orphans`: „Hooks without an agent“; alle Wörter nennt die Fehlermeldung zu
 einem unbekannten) und `--section overview|accounts|ai|api|mcp|connections|approvals|workspaces|appearance|general`.
 `menu` ist das Menü der mittleren/schmalen Kopfleiste – in der Größe ohne dieses Menü zeigt der Zustand es
 nicht. `--appearance

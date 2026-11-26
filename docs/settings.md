@@ -546,7 +546,8 @@ Bis #665 hieß der Abschnitt „API“; `--section api` bleibt.
   Kopfleiste; darunter der Satz, dass Programme Torro Workplace nur auf diesem Rechner erreichen. „Create key“ fragt Name und Vorlage (Read only, Read and write, Full access) und zeigt den Key
   einmal mit „Copy“ (der bisherige Weg „Script“ des Agent-Dialogs).
 - **Seite eines Keys:** der Rechte-Editor (unten) mit den Endpunkten (`calendar.list_events`), die letzten
-  Aufrufe, „Create new key“, „Revoke…“.
+  Aufrufe, „Create new key“, „Revoke…“. Seit #687 in den Reitern wie die Seite eines MCP-Clients (unten), auf
+  Connection ohne „Notification Hub“.
 
 ### MCP clients
 
@@ -561,7 +562,12 @@ Bis zur Nacharbeit von #302 hieß der Abschnitt „MCP“; `--section mcp` bleib
 - **Seite eines Clients:** der Rechte-Editor mit den MCP-Tools (`calendar_list_events`); Gruppe **„Notification
   Hub“** mit dem Schalter „Report when waiting or done“ (Claude Code, Codex, Gemini CLI und OpenCode) und dem Stand der
   Hooks (eingerichtet; bei Codex „Trust the hooks in Codex' /hooks“; Fehler mit Grund); die letzten Aufrufe,
-  „Create new key“, „Disconnect…“.
+  „Create new key“, „Disconnect…“. Seit #687 unter dem Namen in vier Reitern: **Access** (Gruppe „Areas“: Stufen der
+  Bereiche ohne Werkzeuge; „Ask first“), **Selections** (Kalender, Listen, Adressbücher … je Bereich mit Zugriff, auf
+  breiter Seite nebeneinander), **Tools** (Gruppe „Built-in tools and MCP servers“ mit ihren Stufen, welche Werkzeuge;
+  einspaltig wie Access) und **Connection**
+  („Notification Hub“, „Key“, „Recent activity“, darunter „Disconnect…“). Aus der Liste öffnet die Seite auf Access;
+  beim Wechsel zu einem anderen Client bleibt der Reiter.
 - **Hooks** sind technisch weiter ein eigener Client der Art `hook` mit festen, kleinen Rechten
   (`Rights::hook`). Sie erscheinen nirgends mehr als eigene Zeile: Der Schalter auf der Seite des Agenten legt
   den Hook-Client an und schreibt die Hooks, bzw. nimmt beides heraus. Wie die Meldungen der Agenten im
