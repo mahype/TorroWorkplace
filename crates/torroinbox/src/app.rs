@@ -16,7 +16,7 @@
 //! Its sidebar (issues #337, #445, #455 and #559) starts with "All"
 //! (the mail of every inbox, with the unread mail it holds, [`App::top_entries`]) right above the groups
 //! of categories without a title; after a gap Reply later and Set aside (the piles, with the mail they hold) and Follow up (tasks E18.4 and E19.4,
-//! [`App::nav_entries`]); then "Folders" with Archive, pinned folders and an on-demand
+//! [`App::nav_entries`]); then "Folders" with Drafts, Archive (issue #993), Sent, Trash, pinned folders and an on-demand
 //! folder browser grouped by account ([`App::folder_entries`]); no sources. At the foot, "New email"
 //! stands directly above the account field, which chooses the accounts shown (issue #559). In the
 //! comfortable density mail shows as cards with their buttons always shown ([`App::look`],
@@ -1360,14 +1360,18 @@ pub enum View {
     Sent,
     /// "Trash" under "Folders" of the mail window (issue #455): the mail in the trash folders of every
     /// account shown ([`Role::Trash`]), as "Sent" lists its role, without a number. Deleting there
-    /// is refused as for any mail in the trash. `mail.*` only. (The archive has no view of its own
-    /// since issue #476: the search's filter "Only archive" lists it.)
+    /// is refused as for any mail in the trash. `mail.*` only.
     Trash,
     /// "Drafts", the first row under "Folders" of the mail window (issue #502): the mail in the
     /// drafts folders of every account shown ([`Role::Drafts`]), as "Trash" lists its role, without
     /// a number. A draft opens in the reader, "Continue writing" in the compose window. `mail.*`
     /// only.
     Drafts,
+    /// "Archive" under "Folders" of the mail window (issue #993, back after issue #476 took it out): the
+    /// mail in the archive folders of every account shown ([`Role::Archive`]), as "Trash" lists its
+    /// role, without a number. The search's filter "Only archive" (issue #476) stays beside it.
+    /// `mail.*` only.
+    Archive,
     /// The pile "Reply later" of the mail window (task E19.4, decisions 1 and 3 of E19): the mail put
     /// there, from every folder but the trash and spam of every account shown, newest first, a page
     /// at a time (`MailSource::mail_in_pile`). `mail.*` only.
@@ -1395,6 +1399,7 @@ impl View {
             | View::Sent
             | View::Trash
             | View::Drafts
+            | View::Archive
             | View::ReplyLater
             | View::SetAside => return None,
         };
@@ -1421,6 +1426,7 @@ impl View {
             View::Sent => tr("Sent").into(),
             View::Trash => tr("Trash").into(),
             View::Drafts => tr("Drafts").into(),
+            View::Archive => tr("Archive").into(),
             View::ReplyLater => tr("Reply later").into(),
             // The pile, not the action (decision 11 of E19): "Beiseitegelegt", not "Beiseitelegen".
             View::SetAside => trc("pile", "Set aside").into(),
@@ -1443,6 +1449,7 @@ impl View {
             View::Sent => Icon::Send,
             View::Trash => Icon::Trash2,
             View::Drafts => Icon::FilePenLine,
+            View::Archive => mail::folder_icon(Some(Role::Archive)),
             View::ReplyLater => Icon::MessageSquareReply,
             View::SetAside => Icon::Bookmark,
         }
@@ -1469,6 +1476,7 @@ impl View {
                 | View::Sent
                 | View::Trash
                 | View::Drafts
+                | View::Archive
                 | View::ReplyLater
                 | View::SetAside
         )
@@ -1511,21 +1519,22 @@ impl View {
             View::Sent => Some("sent".to_owned()),
             View::Trash => Some("trash".to_owned()),
             View::Drafts => Some("drafts".to_owned()),
+            View::Archive => Some("archive".to_owned()),
             View::ReplyLater => Some("reply-later".to_owned()),
             View::SetAside => Some("set-aside".to_owned()),
             _ => None,
         }
     }
 
-    /// The folder role and snoozed mail of "All", "Sent", "Trash" and "Drafts" (task E18.4, issues
-    /// #445, #455, #502),
-    /// as `MailSource::mail_by_role` asks for them; `None` for every other view.
+    /// The folder role and snoozed mail of "All", "Sent", "Trash", "Drafts" and "Archive" (task E18.4,
+    /// issues #445, #455, #502, #993), as `MailSource::mail_by_role` asks for them; `None` for every other view.
     pub fn by_role(&self) -> Option<(Role, Option<bool>)> {
         match self {
             View::All => Some((Role::Inbox, Some(false))),
             View::Sent => Some((Role::Sent, None)),
             View::Trash => Some((Role::Trash, None)),
             View::Drafts => Some((Role::Drafts, None)),
+            View::Archive => Some((Role::Archive, None)),
             _ => None,
         }
     }
@@ -1840,8 +1849,8 @@ pub enum Open {
     Caught,
     /// The mail window's "Sent" below "All" (issue #445): the mail of every sent folder.
     Sent,
-    /// The archive of every account (task E18.4; since issue #476 the search's "Only archive"): "All"
-    /// with `in:archive` in the field.
+    /// "Archive" of the mail window (task E18.4, issue #993): the archived mail of every account. In
+    /// another window the search's "Only archive" (issue #476), `in:archive` in the field.
     Archive,
     /// "All" of the mail window with the filter menu open and the field empty (issue #476): the group
     /// "Archive" at its default "Without archive".
@@ -4467,9 +4476,9 @@ async fn fetch_with_accounts<S: InboxSource + MailSource + HubSource>(
                 category_selected(&*inbox, view.categories(), limit, None, order, mail_accounts.as_deref()).await?;
             Some(page)
         }
-        // "All", "Sent", "Trash" and "Drafts" (task E18.4, issues #445, #455, #502): the mail of one
-        // folder role of every account shown, as the core leaves out what is snoozed.
-        View::All | View::Sent | View::Trash | View::Drafts => {
+        // "All", "Sent", "Trash", "Drafts" and "Archive" (task E18.4, issues #445, #455, #502, #993): the
+        // mail of one folder role of every account shown, as the core leaves out what is snoozed.
+        View::All | View::Sent | View::Trash | View::Drafts | View::Archive => {
             Some(role_selected(&*inbox, &view, limit, None, order, mail_accounts.as_deref()).await?)
         }
         // A pile (task E19.4): its mail from every folder of the accounts shown.
@@ -4868,8 +4877,11 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 Some(Open::Snoozed) => View::Snoozed,
                 Some(Open::Done) => View::Done,
                 Some(Open::Sent) => View::Sent,
-                // The archive is a search of "All" since issue #476 (the field is filled once the list
-                // is in, `open_launched`); a pinned folder shows beside "All".
+                // "Archive" under "Folders" (issue #993).
+                Some(Open::Archive) if mail_window => View::Archive,
+                // The filter "Only archive" is a search of "All" (issue #476; the field is filled once
+                // the list is in, `open_launched`); a pinned folder shows beside "All". ("archive" stays
+                // in the pattern, though the row above takes it: shorter, rustfmt re-indents this block.)
                 Some(
                     Open::Archive
                     | Open::ArchiveMenu
@@ -6885,11 +6897,20 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             Message::ClearSearch => return self.clear_search(),
             Message::ToggleSearchFilters => self.toggle_menu(Menu::SearchFilters),
             Message::SearchFilter(filter) => {
-                let query = search::toggle(&self.search, filter, today());
+                let query = search::toggle(&self.filter_field(), filter, today());
                 return self.filter_search(query);
             }
             Message::SearchArchive(chosen) => {
-                let query = search::set_archive(&self.search, chosen);
+                let query = search::set_archive(&self.filter_field(), chosen);
+                // "Without archive" from the view "Archive" (issue #993), or from a search begun there,
+                // leaves nothing to search: the inboxes, "All", are the mail without the archive – not
+                // the archive the search would end in.
+                let from_archive = self.archive_unsearched() || self.search_from == Some(View::Archive);
+                if chosen == search::Archive::Without && query.trim().is_empty() && from_archive {
+                    self.close_menus();
+                    self.leave_search_state();
+                    return self.update(Message::Show(View::All));
+                }
                 return self.filter_search(query);
             }
             Message::ClearSearchFilters => {
@@ -10222,6 +10243,21 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         Task::none()
     }
 
+    /// Whether the view "Archive" (issue #993) shows with nothing typed in the search field.
+    fn archive_unsearched(&self) -> bool {
+        self.view == View::Archive && self.search.trim().is_empty()
+    }
+
+    /// The field as the quick filters read and change it (issues #336, #993): what is typed, or in the
+    /// view "Archive" with nothing typed `in:archive` – the archive it lists –, so the menu shows "Only
+    /// archive" there and a quick filter searches the archive, not all mail. Words typed there search all
+    /// mail, as the field's placeholder says and as from "Drafts", "Sent" or "Trash": writing `in:archive`
+    /// into the field while the person types would move the text under the cursor; "Only archive" in
+    /// the menu narrows such a search to the archive.
+    fn filter_field(&self) -> String {
+        if self.archive_unsearched() { search::set_archive("", search::Archive::Only) } else { self.search.clone() }
+    }
+
     /// A quick filter changed the field to `query` (issue #336): searched at once, as if `Enter` was
     /// pressed, in the scope shown (all mail from a folder). Without a word left the search ends
     /// as it does when the field is emptied by hand.
@@ -10417,8 +10453,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                     category_selected(&*inbox, categories, mail::PAGE, Some(cursor), order, selected.as_deref()).await
                 })
             }
-            // "All", "Sent", "Trash" and "Drafts" (task E18.4): the next page of the same role and fields.
-            View::All | View::Sent | View::Trash | View::Drafts => {
+            // "All", "Sent", "Trash", "Drafts" and "Archive" (task E18.4): the next page of the same role
+            // and fields.
+            View::All | View::Sent | View::Trash | View::Drafts | View::Archive => {
                 let (shown, selected, cursor) = (view.clone(), accounts.clone(), cursor.clone());
                 Box::pin(async move {
                     role_selected(&*inbox, &shown, mail::PAGE, Some(cursor), order, selected.as_deref()).await
@@ -16101,13 +16138,14 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             .collect()
     }
 
-    /// The rows of "Folders" in the mail window (task E18.4, issues #455, #502), in this order:
-    /// "Drafts" ([`View::Drafts`]) while an account shown has a drafts folder, "Sent" – the sent mail
-    /// of every account ([`View::Sent`]), always –, "Trash" ([`View::Trash`]) while an account shown
-    /// has a trash folder, the pinned folders, and "Pin folders" ([`Target::OpenFolders`], with its
-    /// chevron) while there is a mail account. Empty in the other windows; a window of mail only has
-    /// no "Drafts", "Sent" and "Trash". The archive is no row here since issue #476: the filter menu
-    /// of the search has it ("Only archive").
+    /// The rows of "Folders" in the mail window (task E18.4, issues #455, #502, #993), in this order:
+    /// "Drafts" ([`View::Drafts`]) while an account shown has a drafts folder, "Archive"
+    /// ([`View::Archive`], beside "Drafts" as asked in issue #993) while an account shown has an archive
+    /// folder, "Sent" – the sent mail of every account ([`View::Sent`]), always –, "Trash"
+    /// ([`View::Trash`]) while an account shown has a trash folder, the pinned folders, and "Pin
+    /// folders" ([`Target::OpenFolders`], with its chevron) while there is a mail account. Empty in the
+    /// other windows; a window of mail only has no "Drafts", "Archive", "Sent" and "Trash". The search's
+    /// filter "Only archive" (issue #476) stays beside the row.
     fn folder_entries(&self) -> Vec<NavEntry> {
         if self.launch.kind != Kind::Mail && !self.mail_only {
             return Vec::new();
@@ -16136,9 +16174,10 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         };
         let whole = self.launch.kind == Kind::Mail && !self.mail_only;
         let drafts = (whole && has_role(Role::Drafts)).then(|| entry(View::Drafts));
+        let archive = (whole && has_role(Role::Archive)).then(|| entry(View::Archive));
         let sent = whole.then(|| entry(View::Sent));
         let trash = (whole && has_role(Role::Trash)).then(|| entry(View::Trash));
-        drafts.into_iter().chain(sent).chain(trash).chain(self.pinned_entries()).chain(browse).collect()
+        drafts.into_iter().chain(archive).chain(sent).chain(trash).chain(self.pinned_entries()).chain(browse).collect()
     }
 
     /// The pinned folders of "Folders" (task E18.4): the folder's name, and under it the address of
@@ -16363,7 +16402,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
             list = list.push(widgets::menu_item(item));
         }
         // The archive (issue #476): a radio point, not a tick, since exactly one of the three holds.
-        let (chosen, default) = (search::archive(&self.search), search::archive_default(&self.search));
+        // The view "Archive" (issue #993) with nothing typed is "Only archive", as its list shows.
+        let field = self.filter_field();
+        let (chosen, default) = (search::archive(&field), search::archive_default(&self.search));
         list = list.push(menu_line()).push(menu_caption(tr("Archive")));
         for choice in search::Archive::ALL {
             let point = if choice == chosen { Icon::CircleDot } else { Icon::Circle };
@@ -16578,7 +16619,8 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
         if !self.mail_only && !views.is_empty() {
             sections.push(MenuSection::new(views.into_iter().map(item).collect()));
         }
-        // "Folders" as in the sidebar (task E18.4): Archive, the pinned folders, "Pin folders" ›.
+        // "Folders" as in the sidebar (task E18.4, issue #993): Drafts, Archive, Sent, Trash, the pinned
+        // folders, "Pin folders" ›.
         let filed = self.folder_entries();
         if !filed.is_empty() {
             sections.push(MenuSection::titled(tr("Folders"), filed.into_iter().map(item).collect()));
@@ -17267,7 +17309,9 @@ impl<S: InboxSource + MailSource + StatsSource + NewsSource + HubSource + Sugges
                 return self.run_search();
             }
             // The archive as the search's filter shows it (issue #476): "Only archive" for the archive
-            // of every account, the two choices with the filter menu open.
+            // of every account, the two choices with the filter menu open. The mail window's "archive"
+            // is its view "Archive" (issue #993), nothing to search.
+            Some(Open::Archive) if self.view == View::Archive => {}
             Some(open @ (Open::Archive | Open::ArchiveWith | Open::ArchiveOnly)) => {
                 let chosen = if open == Open::ArchiveWith { search::Archive::With } else { search::Archive::Only };
                 self.search = search::set_archive("", chosen);
@@ -23953,18 +23997,17 @@ mod tests {
         };
         let browse = (tr("Pin folders").to_owned(), Target::OpenFolders, Trail::Icon(Icon::ChevronRight));
         let drafts = (tr("Drafts").to_owned(), Target::View, Trail::None);
+        let archive = (tr("Archive").to_owned(), Target::View, Trail::None);
         let sent = (tr("Sent").to_owned(), Target::View, Trail::None);
         let trash = (tr("Trash").to_owned(), Target::View, Trail::None);
-        // Issue #476: the archive is no row of its own; the search's filter has it. Issue #502:
-        // "Drafts" comes first.
-        let roles = [drafts.clone(), sent.clone(), trash.clone()];
+        // Issue #502: "Drafts" comes first. Issue #993: "Archive" beside it (the rail and the menu of
+        // the narrow windows draw these rows too).
+        let roles = [drafts.clone(), archive.clone(), sent.clone(), trash.clone()];
         assert_eq!(folders(&app), [roles.to_vec(), vec![browse.clone()]].concat(), "nothing pinned yet");
-        let views: Vec<View> = app.folder_entries().into_iter().take(3).map(|entry| entry.view).collect();
-        assert_eq!(views, [View::Drafts, View::Sent, View::Trash]);
-        let marks: Vec<Mark> = app.folder_entries().into_iter().take(3).map(|entry| entry.mark).collect();
-        assert_eq!(marks, [Icon::FilePenLine, Icon::Send, Icon::Trash2].map(Mark::Icon));
-        // The rail and the menu of the narrow windows draw these rows too.
-        assert!(!app.folder_entries().iter().any(|entry| entry.label == tr("Archive")), "no Archive under Folders");
+        let views: Vec<View> = app.folder_entries().into_iter().take(4).map(|entry| entry.view).collect();
+        assert_eq!(views, [View::Drafts, View::Archive, View::Sent, View::Trash]);
+        let marks: Vec<Mark> = app.folder_entries().into_iter().take(4).map(|entry| entry.mark).collect();
+        assert_eq!(marks, [Icon::FilePenLine, Icon::Archive, Icon::Send, Icon::Trash2].map(Mark::Icon));
         let pin = app.folders.iter().find(|folder| folder.role == Some(Role::Sent)).expect("a sent folder").clone();
         let _ = app.update(Message::ToggleFolderPin(pin.id.clone()));
         // Issue #398: the folder's name, and its account's address as the second line – the demo
@@ -23972,7 +24015,7 @@ mod tests {
         let pinned = mail::folder_name(&pin);
         let pinned_row = (pinned.clone(), Target::View, Trail::None);
         assert_eq!(folders(&app), [roles.to_vec(), vec![pinned_row, browse.clone()]].concat());
-        assert_eq!(app.folder_entries()[3].detail.as_deref(), Some(mail::address(&pin.account)));
+        assert_eq!(app.folder_entries()[4].detail.as_deref(), Some(mail::address(&pin.account)));
         assert!(
             app.folder_entries()
                 .iter()
@@ -23980,9 +24023,9 @@ mod tests {
                 .all(|entry| entry.detail.is_none())
         );
         assert_eq!(app.folder_entries()[0].detail, None, "only a pinned folder has a second line");
-        assert!(matches!(app.folder_entries()[4].message(), Message::OpenFolders), "the browser opens beside it");
-        // No account with a trash or drafts folder: no row; Sent always stands.
-        app.folders.retain(|folder| !matches!(folder.role, Some(Role::Trash | Role::Drafts)));
+        assert!(matches!(app.folder_entries()[5].message(), Message::OpenFolders), "the browser opens beside it");
+        // No account with a trash, drafts or archive folder: no row; Sent always stands.
+        app.folders.retain(|folder| !matches!(folder.role, Some(Role::Trash | Role::Drafts | Role::Archive)));
         let labels: Vec<String> = folders(&app).into_iter().map(|row| row.0).collect();
         assert_eq!(labels[..2], [tr("Sent").to_owned(), pinned.clone()]);
         // Folders of one account only: the address says nothing, the row keeps one line.
@@ -24279,6 +24322,85 @@ mod tests {
         let entry = app.folder_entries().into_iter().find(|entry| entry.view == View::Trash).expect("a row");
         assert_eq!(entry.count, None, "no number");
         assert!(entry.active, "chosen while it shows");
+    }
+
+    /// Issue #993: "Archive" lists the archived mail of every account shown, as "Trash" lists its role,
+    /// without a number, beside "Drafts"; the account field narrows it, and without an archive folder of
+    /// an account shown the row is gone. Its mail is not offered for archiving again.
+    #[test]
+    fn the_archive_lists_the_mail_of_every_archive_folder() {
+        assert_eq!(View::Archive.by_role(), Some((Role::Archive, None)));
+        assert!(View::Archive.is_mail() && View::Archive.filter().is_none());
+        assert_eq!((View::Archive.name(), View::Archive.icon()), (tr("Archive").to_owned(), Icon::Archive));
+        assert_eq!(View::Archive.listing().as_deref(), Some("archive"));
+        assert!(!View::Archive.leaves_out_piles() && !mail::names_recipient(&View::Archive));
+        let mut app = mail_window(Density::Compact, &["--open", "archive"]);
+        load(&mut app);
+        assert_eq!(app.view, View::Archive);
+        let archives: Vec<String> = app
+            .folders
+            .iter()
+            .filter(|folder| folder.role == Some(Role::Archive))
+            .map(|folder| folder.id.clone())
+            .collect();
+        assert!(!app.messages.is_empty(), "the demo's archive");
+        assert!(app.messages.iter().all(|message| archives.contains(&message.folder)), "archived mail only");
+        let accounts: std::collections::BTreeSet<&str> =
+            app.messages.iter().map(|message| message.account.as_str()).collect();
+        assert!(accounts.len() > 1, "of every account");
+        let dates: Vec<_> = app.messages.iter().map(|message| message.date).collect();
+        assert!(dates.windows(2).all(|pair| pair[0] >= pair[1]), "newest first");
+        let entry = app.folder_entries().into_iter().find(|entry| entry.view == View::Archive).expect("a row");
+        assert_eq!((entry.count, entry.active), (None, true), "no number, chosen while it shows");
+        let first = app.messages[0].id.clone();
+        assert!(app.in_role(&first, Role::Archive), "Archive is not offered for it (mail.rs, by role)");
+        let _ = app.view();
+        // One account chosen: its archive only.
+        let private = torro_inbox::demo::MAIL_ACCOUNTS[1].to_owned();
+        app.mail_accounts = Some(vec![private.clone()]);
+        load(&mut app);
+        assert!(app.messages.iter().all(|message| message.account == private), "that account's archive");
+        // No archive folder among the accounts shown: no row.
+        app.folders.retain(|folder| folder.role != Some(Role::Archive));
+        // ("Pin folders" carries the view shown, as it opens a menu.)
+        assert!(!app.folder_entries().iter().any(|entry| entry.target == Target::View && entry.view == View::Archive));
+    }
+
+    /// Issue #993: in the view "Archive" with nothing typed the filter menu reads the field as the archive
+    /// it lists – "Only archive" chosen –, a quick filter searches the archive, "With archive" the inboxes
+    /// and archives, and "Without archive" goes to "All".
+    #[test]
+    fn the_filter_menu_in_the_archive_reads_it_as_only_archive() {
+        let mut app = mail_window(Density::Compact, &["--open", "archive"]);
+        load(&mut app);
+        assert_eq!(app.filter_field(), "in:archive");
+        assert_eq!(search::archive(&app.filter_field()), search::Archive::Only);
+        let _ = app.update(Message::ToggleSearchFilters);
+        let _ = app.view();
+        let _ = app.update(Message::SearchFilter(QuickFilter::Unread));
+        assert_eq!(search::archive(&app.search), search::Archive::Only, "the archive stays: {}", app.search);
+        assert!(search::active(&app.search, today()).contains(&QuickFilter::Unread));
+        assert_eq!(app.search_from, Some(View::Archive), "from the archive");
+        let mut with = mail_window(Density::Compact, &["--open", "archive"]);
+        load(&mut with);
+        let _ = with.update(Message::SearchArchive(search::Archive::With));
+        assert_eq!(search::archive(&with.search), search::Archive::With);
+        let mut without = mail_window(Density::Compact, &["--open", "archive"]);
+        load(&mut without);
+        let _ = without.update(Message::SearchArchive(search::Archive::Without));
+        assert_eq!((without.view.clone(), without.search.as_str()), (View::All, ""), "the inboxes");
+        // One after the other in the same window: "With archive", then "Without archive" – "All", not
+        // back to the archive the search began in.
+        let _ = with.update(Message::SearchArchive(search::Archive::Without));
+        assert_eq!((with.view.clone(), with.search.as_str()), (View::All, ""), "the inboxes, not the archive");
+        assert!(with.search_from.is_none(), "the search is over");
+        load(&mut with);
+        assert_eq!(search::archive(&with.filter_field()), search::Archive::Without, "the menu says so");
+        // Something typed: the field as it is.
+        let mut typed = mail_window(Density::Compact, &["--open", "archive"]);
+        load(&mut typed);
+        typed.search = "budget".to_owned();
+        assert_eq!(typed.filter_field(), "budget");
     }
 
     /// Issue #502: "Drafts" lists the drafts of every account shown, newest first, as "Trash" lists its
@@ -26139,13 +26261,17 @@ mod tests {
             assert!(app.detail.is_none() && app.reading, "{open}: a mail, no entry");
             assert_eq!(app.cursor.as_deref(), app.messages.first().map(|message| message.id.as_str()), "{open}");
         }
-        // The archive is "Only archive" of a search from All (issue #476).
+        // The archive is its view under "Folders" (issue #993), no search; "archive-only" is the
+        // search's filter "Only archive" from All (issue #476).
         let mut archive = mail_window(Density::Compact, &["--open", "archive"]);
         load(&mut archive);
-        assert_eq!(archive.view, View::Search(SearchView::new("in:archive", Scope::All, Sort::Relevance)));
-        assert_eq!(search::archive(&archive.search), search::Archive::Only);
-        assert_eq!(archive.search_from, Some(View::All), "from All");
+        assert_eq!(archive.view, View::Archive);
+        assert!(archive.search.is_empty() && archive.search_from.is_none(), "no search");
         assert!(!archive.messages.is_empty(), "the archived mail");
+        let mut only = mail_window(Density::Compact, &["--open", "archive-only"]);
+        load(&mut only);
+        assert_eq!(only.view, View::Search(SearchView::new("in:archive", Scope::All, Sort::Relevance)));
+        assert_eq!(only.search_from, Some(View::All), "from All");
         assert_eq!(overview_at(&["--view", "hub"]).view, View::Overview, "the hub keeps its overview");
         assert_eq!(overview_at(&["--view", "notifications"]).view, View::Overview);
         assert_eq!(overview_at(&["--view", "hub", "--open", "info"]).view, View::Info);
