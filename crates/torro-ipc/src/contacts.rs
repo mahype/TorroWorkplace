@@ -80,6 +80,13 @@ pub enum LocationSource {
     Lookup,
 }
 
+/// The point `contacts.set_location` writes for `geo` (issue #854): six places, about 10 cm, what a
+/// dragged pin means without the noise of the pixels. The approval shows the same.
+pub fn written_point(geo: Geo) -> Geo {
+    let round = |value: f64| (value * 1e6).round() / 1e6;
+    Geo { lat: round(geo.lat), lon: round(geo.lon) }
+}
+
 /// The most pins `contacts.list_locations` answers, and the most addresses it names as pending
 /// (issue #357); more are cut and the answer says `truncated`.
 pub const MAX_PINS: usize = 5_000;
@@ -225,6 +232,17 @@ impl ContactsClient {
             Ok(Response::Image { png }) => base64::engine::general_purpose::STANDARD.decode(png).ok(),
             _ => None,
         }
+    }
+
+    /// `contacts.set_location` for the first address (issue #854): the contact as written.
+    pub async fn set_location(
+        &self,
+        id: String,
+        etag: String,
+        geo: Geo,
+        replace: bool,
+    ) -> Result<Contact, ContactsError> {
+        self.contact(Request::SetContactLocation { id, etag, address: 0, geo, replace }).await
     }
 
     /// `contacts.open_in_maps`; the error is the core's message, or the failed call's.

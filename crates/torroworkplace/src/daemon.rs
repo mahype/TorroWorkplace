@@ -1461,6 +1461,7 @@ fn describe(request: &Request) -> String {
         Request::LocateContact { .. } => "find a contact's address on the map".into(),
         Request::ListLocations { .. } => "list contacts on the map".into(),
         Request::OpenContactInMaps { .. } => "open a contact's address in maps".into(),
+        Request::SetContactLocation { .. } => "set a contact's pin".into(),
         Request::SetContactPhoto { .. } => "change a contact's picture".into(),
         Request::MoveContact { .. } => "move a contact".into(),
         Request::DeleteContact { .. } => "delete a contact".into(),

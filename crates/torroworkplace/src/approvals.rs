@@ -2348,6 +2348,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::DeleteContact { .. }
         | Request::ResolveContactConflict { .. }
         | Request::OpenContactInMaps { .. }
+        | Request::SetContactLocation { .. }
         | Request::ImportVCards { .. }
         | Request::MergeContacts { .. }
         | Request::DismissDuplicates { .. }) => contact_summary(request, facts.contact.as_deref()),
@@ -2753,6 +2754,33 @@ fn contact_summary(request: &Request, facts: Option<&ContactFacts>) -> String {
         }
         Request::MarkContactUsed { .. } => trf("Note {name} as used", &[("name", &name)]),
         Request::OpenContactInMaps { .. } => trf("Open the address of {name} in Maps", &[("name", &name)]),
+        // Issue #854: the address and the old point from the store, the new point as it will be written.
+        Request::SetContactLocation { address, geo, .. } => {
+            let point = |lat: f64, lon: f64| format!("{lat:.6}, {lon:.6}");
+            let line = facts
+                .contact
+                .as_ref()
+                .and_then(|contact| contact.addresses.get(*address))
+                .map(|labeled| labeled.value.one_line())
+                .filter(|line| !line.trim().is_empty());
+            let at = match line {
+                Some(line) => format!("\"{}\"", quote(&line)),
+                None => tr("no address").to_string(),
+            };
+            // The point as the core writes it, not the client's digits.
+            let written = torro_ipc::contacts::written_point(*geo);
+            let new = point(written.lat, written.lon);
+            match facts.contact.as_ref().and_then(|contact| contact.geo) {
+                Some(old) => trf(
+                    "Move the pin of {name} at {address}: {old} → {new}",
+                    &[("name", &name), ("address", &at), ("old", &point(old.lat, old.lon)), ("new", &new)],
+                ),
+                None => trf(
+                    "Set the pin of {name} at {address} to {new}",
+                    &[("name", &name), ("address", &at), ("new", &new)],
+                ),
+            }
+        }
         Request::SetContactPhoto { data: Some(_), .. } => trf("{name}: photo replaced", &[("name", &name)]),
         Request::SetContactPhoto { data: None, .. } => trf("{name}: photo removed", &[("name", &name)]),
         Request::MoveContact { .. } => trf(
@@ -6848,6 +6876,51 @@ pub(crate) mod tests {
         let text = "Unsubscribe {account} from {sender}: nothing is sent, only the address {target} is given";
         assert_eq!(web, filled(text, "https://shop.example/u", None));
         assert_eq!(summary(&request, &Facts::default()), tr("Unsubscribe from an unknown mailing list"));
+    }
+
+    /// Issue #854: a pin by hand names the contact and its address from the store, and when it moves the
+    /// vCard's `GEO` the old point and the new.
+    #[test]
+    fn a_pin_by_hand_says_name_address_and_old_to_new() {
+        use torro_contacts::model::{Geo, Labeled, PostalAddress};
+        let pin = Request::SetContactLocation {
+            id: "a/b/c".into(),
+            etag: "\"1\"".into(),
+            address: 0,
+            geo: torro_pim::model::Geo { lat: 48.137_154_4, lon: 11.576_123_9 },
+            replace: true,
+        };
+        let address = PostalAddress { street: "Ringstr. 3".into(), locality: "Leipzig".into(), ..Default::default() };
+        let stored = |geo: Option<Geo>| torro_contacts::Contact {
+            display_name: "Anna Berg".into(),
+            addresses: vec![Labeled::new(address.clone(), torro_contacts::FieldKind::Home)],
+            geo,
+            ..torro_contacts::Contact::default()
+        };
+        let facts = |contact| Facts {
+            contact: Some(Box::new(ContactFacts { contact: Some(contact), ..ContactFacts::default() })),
+            ..Facts::default()
+        };
+        let at = format!("\"{}\"", address.one_line());
+        assert_eq!(
+            summary(&pin, &facts(stored(None))),
+            trf(
+                "Set the pin of {name} at {address} to {new}",
+                &[("name", &"\"Anna Berg\""), ("address", &at), ("new", &"48.137154, 11.576124")]
+            )
+        );
+        assert_eq!(
+            summary(&pin, &facts(stored(Some(Geo { lat: 51.3397, lon: 12.3731 })))),
+            trf(
+                "Move the pin of {name} at {address}: {old} → {new}",
+                &[
+                    ("name", &"\"Anna Berg\""),
+                    ("address", &at),
+                    ("old", &"51.339700, 12.373100"),
+                    ("new", &"48.137154, 11.576124")
+                ]
+            )
+        );
     }
 
     /// Issue #355: opening an address names the contact from the store, clearing map data says what goes,

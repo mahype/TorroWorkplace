@@ -5259,6 +5259,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("One address a second while the map is open.", "Eine Adresse pro Sekunde, solange die Karte offen ist."),
     ("Addresses not found: {n}", "Nicht gefundene Adressen: {n}"),
     ("Contacts without an address: {n}", "Kontakte ohne Adresse: {n}"),
+    // Issue #854: a pin set by hand.
+    ("Set location on map", "Ort auf der Karte setzen"),
+    ("Move pin", "Pin verschieben"),
+    (
+        "Drag the map until the pin sits on the right spot.",
+        "Ziehe die Karte, bis der Pin an der richtigen Stelle sitzt.",
+    ),
+    ("Pin saved.", "Pin gespeichert."),
     ("The contact's point: {point}", "Der Punkt des Kontakts: {point}"),
     ("Stored map data", "Gespeicherte Kartendaten"),
     ("{size} of map tiles · {places} contact places", "{size} Kartenkacheln · {places} Kontakt-Orte"),
@@ -5267,6 +5275,19 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The map is not available right now.", "Die Karte ist gerade nicht verfügbar."),
     ("The maps app could not be opened.", "Die Karten-App konnte nicht geöffnet werden."),
     ("Open the address of {name} in Maps", "Die Adresse von {name} in Karten öffnen"),
+    // Issue #854: a pin set by hand.
+    ("Set the pin of {name} at {address} to {new}", "Pin von {name} bei {address} auf {new} setzen"),
+    ("Move the pin of {name} at {address}: {old} → {new}", "Pin von {name} bei {address} verschieben: {old} → {new}"),
+    ("no address", "keiner Adresse"),
+    ("The point is not on the map.", "Der Punkt liegt nicht auf der Karte."),
+    (
+        "The contact has a location already; send replace: true to overwrite it.",
+        "Der Kontakt hat schon einen Ort; mit replace: true wird er überschrieben.",
+    ),
+    (
+        "Only the first address has a point in the contact card.",
+        "Nur die erste Adresse hat einen Punkt in der Kontaktkarte.",
+    ),
     ("Clear stored map tiles and contact places", "Gespeicherte Kartenkacheln und Kontakt-Orte löschen"),
     ("Delete the history of postponed tasks", "Verlauf verschobener Aufgaben löschen"),
     ("Turn off address lookup for contacts", "Adresssuche für Kontakte ausschalten"),

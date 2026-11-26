@@ -168,6 +168,14 @@ pub fn error_response(err: &ContactsError) -> Response {
     Response::Error { code: code.into(), message }
 }
 
+/// Whether the card `raw` has a `GEO` line (any group, any case), readable or not (issue #854).
+fn has_geo_line(raw: &str) -> bool {
+    raw.lines().filter(|line| !line.starts_with([' ', '\t'])).any(|line| {
+        let head = line.split([':', ';']).next().unwrap_or_default();
+        head.rsplit('.').next().is_some_and(|name| name.trim().eq_ignore_ascii_case("GEO"))
+    })
+}
+
 fn fields_error(err: FieldsError) -> ContactsError {
     match err {
         FieldsError::BadDate(field) => {
@@ -350,7 +358,8 @@ impl ContactsService {
             | Request::DeleteContact { id, .. }
             | Request::ResolveContactConflict { id, .. }
             | Request::LocateContact { id, .. }
-            | Request::OpenContactInMaps { id, .. } => contact_outside(id),
+            | Request::OpenContactInMaps { id, .. }
+            | Request::SetContactLocation { id, .. } => contact_outside(id),
             Request::MoveContact { id, to_book, .. } => contact_outside(id).or_else(|| book_outside(to_book)),
             // Issues #725 and #726: the book named and every contact named.
             Request::ImportVCards { book, .. } | Request::FindDuplicates { book: Some(book) } => book_outside(book),
@@ -479,6 +488,9 @@ impl ContactsService {
             }
             Request::MarkContactUsed { id } => self.mark_used(&id),
             Request::SetContactPhoto { id, etag, data } => Box::pin(self.set_photo(&id, &etag, data.as_deref())).await,
+            Request::SetContactLocation { id, etag, address, geo, replace } => {
+                Box::pin(self.set_location(&id, &etag, address, geo, replace)).await
+            }
             Request::MoveContact { id, etag, to_book } => Box::pin(self.move_contact(&id, &etag, &to_book)).await,
             Request::DeleteContact { id, etag } => Box::pin(self.delete(&id, &etag)).await,
             Request::ResolveContactConflict { id, keep, etag } => Box::pin(self.resolve(&id, keep, &etag)).await,
@@ -935,6 +947,43 @@ impl ContactsService {
         };
         let found = self.changeable(id, Some(etag))?;
         let raw = vcard::set_photo(&found.card.vcard, photo.as_ref());
+        self.write(found.card, &found.book, raw).await
+    }
+
+    /// `contacts.set_location` (issue #854): `GEO` of the first address, written with [`vcard::patch`] so
+    /// nothing else of the card changes. A `GEO` there is replaced only with `replace`.
+    async fn set_location(
+        &self,
+        id: &str,
+        etag: &str,
+        address: usize,
+        geo: torro_pim::model::Geo,
+        replace: bool,
+    ) -> Result<Response, ContactsError> {
+        let geo = torro_ipc::contacts::written_point(geo);
+        let point = torro_contacts::model::Geo::new(geo.lat, geo.lon)
+            .ok_or_else(|| ContactsError::Other(tr("The point is not on the map.").to_string()))?;
+        let found = self.changeable(id, Some(etag))?;
+        let before = vcard::read(&found.card.vcard).map_err(|_| ContactsError::NotFound)?;
+        match address {
+            // A contact without an address takes the point as it is: the map shows it there (#357).
+            0 => {}
+            n if n < before.addresses.len() => {
+                return Err(ContactsError::Unsupported(
+                    tr("Only the first address has a point in the contact card.").to_string(),
+                ));
+            }
+            _ => return Err(ContactsError::NotFound),
+        }
+        // A `GEO` line the reader cannot read counts as one too: it is only replaced with `replace`.
+        if (before.geo.is_some() || has_geo_line(&found.card.vcard)) && !replace {
+            return Ok(Response::Error {
+                code: "conflict".into(),
+                message: tr("The contact has a location already; send replace: true to overwrite it.").to_string(),
+            });
+        }
+        let after = torro_contacts::Contact { geo: Some(point), ..before.clone() };
+        let raw = vcard::patch(&found.card.vcard, &before, &after);
         self.write(found.card, &found.book, raw).await
     }
 
@@ -1716,7 +1765,8 @@ impl ContactsService {
             | Request::DeleteContact { id, .. }
             | Request::ResolveContactConflict { id, .. }
             | Request::LocateContact { id, .. }
-            | Request::OpenContactInMaps { id, .. } => {
+            | Request::OpenContactInMaps { id, .. }
+            | Request::SetContactLocation { id, .. } => {
                 let (contact, book) = named(id);
                 (contact, book.map(|b| b.display_name), None)
             }
@@ -1983,6 +2033,13 @@ mod tests {
             Request::RemoveContactFromGroup { id: secret.clone(), etag: "x".into(), group: "g".into() },
             Request::MarkContactUsed { id: secret.clone() },
             Request::SetContactPhoto { id: secret.clone(), etag: "x".into(), data: None },
+            Request::SetContactLocation {
+                id: secret.clone(),
+                etag: "x".into(),
+                address: 0,
+                geo: torro_pim::model::Geo { lat: 1.0, lon: 1.0 },
+                replace: false,
+            },
             Request::DeleteContact { id: secret.clone(), etag: "x".into() },
             Request::ResolveContactConflict { id: secret.clone(), keep: Keep::Both, etag: "x".into() },
             Request::MoveContact { id: id("contacts", "anna"), etag: "x".into(), to_book: format!("{ACCOUNT}/privat") },
@@ -2021,6 +2078,83 @@ mod tests {
         assert_eq!(added.state, ContactState::Synced);
         let (_, written) = setup.server.card(&setup.work, &format!("{}anna.vcf", setup.work)).expect("card");
         assert!(written.contains("X-KEEP:me") && written.contains("new@example.org"), "{written}");
+    }
+
+    /// Issue #854: a pin by hand writes `GEO` and nothing else; a `GEO` there is replaced only with
+    /// `replace`; a stale version, a later address and a point off the map are refused.
+    #[tokio::test]
+    async fn a_pin_by_hand_writes_geo_and_replaces_only_when_asked() {
+        let setup = setup().await;
+        let anna = id("contacts", "anna");
+        let href = format!("{}anna.vcf", setup.work);
+        let shown = contact(setup.service.handle(Request::GetContact { id: anna.clone() }, Reach::Suite).await);
+        assert_eq!(shown.geo, None);
+        let pin = |etag: &str, lat: f64, replace: bool| Request::SetContactLocation {
+            id: anna.clone(),
+            etag: etag.into(),
+            address: 0,
+            geo: torro_pim::model::Geo { lat, lon: 13.404_954_123_4 },
+            replace,
+        };
+        let etag = shown.etag.clone().unwrap_or_default();
+
+        // Without `GEO`: written, rounded to six places, every other line as it was.
+        let set = contact(setup.service.handle(pin(&etag, 52.520_008_9, false), Reach::Suite).await);
+        assert_eq!(set.geo, Some(torro_contacts::model::Geo { lat: 52.520009, lon: 13.404954 }));
+        let (_, written) = setup.server.card(&setup.work, &href).expect("card");
+        assert!(written.contains("GEO:52.520009;13.404954\r\n") && written.contains("X-KEEP:me"), "{written}");
+
+        // With `GEO`: `conflict` without `replace`, nothing written.
+        let etag = set.etag.clone().unwrap_or_default();
+        let refused = setup.service.handle(pin(&etag, 48.137154, false), Reach::Suite).await;
+        assert_eq!(code(&refused), "conflict", "a GEO there needs replace");
+        assert_eq!(setup.server.card(&setup.work, &href).expect("card").1, written);
+
+        // With `replace`: the old point goes, still one `GEO` line.
+        let moved = contact(setup.service.handle(pin(&etag, 48.137154, true), Reach::Suite).await);
+        assert_eq!(moved.geo.map(|geo| geo.lat), Some(48.137154));
+        let (_, rewritten) = setup.server.card(&setup.work, &href).expect("card");
+        assert_eq!(rewritten.matches("GEO:").count(), 1, "{rewritten}");
+        assert!(rewritten.contains("GEO:48.137154;13.404954"), "{rewritten}");
+
+        // The version shown, the first address, a point on the map.
+        assert_eq!(code(&setup.service.handle(pin("\"old\"", 50.0, true), Reach::Suite).await), "conflict");
+        let etag = moved.etag.clone().unwrap_or_default();
+        let later = Request::SetContactLocation {
+            id: anna.clone(),
+            etag: etag.clone(),
+            address: 3,
+            geo: torro_pim::model::Geo { lat: 50.0, lon: 10.0 },
+            replace: true,
+        };
+        assert_eq!(code(&setup.service.handle(later, Reach::Suite).await), "not-found");
+        assert_eq!(code(&setup.service.handle(pin(&etag, 91.0, true), Reach::Suite).await), "error");
+        match refused {
+            Response::Error { message, .. } => assert!(message.contains("replace"), "says what to send: {message}"),
+            other => panic!("not refused: {other:?}"),
+        }
+
+        // A second address is there but has no `GEO`; a `GEO` line nobody can read needs `replace` too.
+        let two = card("carl", "Carl Ort", "carl@example.org").replace(
+            "END:VCARD",
+            "ADR;TYPE=HOME:;;Ringstr. 3;Leipzig;;04109;Germany\r\nADR;TYPE=WORK:;;Main St 1;Berlin;;10115;Germany\r\nGEO:north;east\r\nEND:VCARD",
+        );
+        setup.server.put_card(&setup.work, "carl", &two);
+        setup.service.sync_all().await;
+        let carl = id("contacts", "carl");
+        let shown = contact(setup.service.handle(Request::GetContact { id: carl.clone() }, Reach::Suite).await);
+        assert_eq!((shown.addresses.len(), shown.geo), (2, None));
+        let carl_pin = |address: usize, replace: bool| Request::SetContactLocation {
+            id: carl.clone(),
+            etag: shown.etag.clone().unwrap_or_default(),
+            address,
+            geo: torro_pim::model::Geo { lat: 51.3397, lon: 12.3731 },
+            replace,
+        };
+        assert_eq!(code(&setup.service.handle(carl_pin(1, true), Reach::Suite).await), "unsupported");
+        assert_eq!(code(&setup.service.handle(carl_pin(0, false), Reach::Suite).await), "conflict");
+        let placed = contact(setup.service.handle(carl_pin(0, true), Reach::Suite).await);
+        assert_eq!(placed.geo.map(|geo| geo.lat), Some(51.3397));
     }
 
     #[tokio::test]

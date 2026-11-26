@@ -2163,6 +2163,7 @@ impl Request {
             Request::LocateContact { .. } => &LOCATE_CONTACT,
             Request::ListLocations { .. } => &LIST_LOCATIONS,
             Request::OpenContactInMaps { .. } => &OPEN_IN_MAPS,
+            Request::SetContactLocation { .. } => &SET_LOCATION,
             Request::ImportVCards { .. } => &IMPORT_VCARDS,
             Request::ExportVCards { .. } => &EXPORT_VCARDS,
             Request::FindDuplicates { .. } => &FIND_DUPLICATES,
@@ -2234,6 +2235,8 @@ impl Request {
             } => Access::Delete,
             // A trial run of an import only counts (issue #725).
             Request::ImportVCards { dry_run: true, .. } => Access::Read,
+            // A pin set by hand over the vCard's `GEO` drops the old point for good (issue #854).
+            Request::SetContactLocation { replace: true, .. } => Access::Delete,
             _ => command.access,
         };
         Operation { command, access }
@@ -2321,6 +2324,7 @@ pub static CATALOGUE: &[&Command] = &[
     &LOCATE_CONTACT,
     &LIST_LOCATIONS,
     &OPEN_IN_MAPS,
+    &SET_LOCATION,
     &IMPORT_VCARDS,
     &EXPORT_VCARDS,
     &FIND_DUPLICATES,
@@ -3468,6 +3472,19 @@ static OPEN_IN_MAPS: Command = Command {
                   when known, else the address as a search, which sends it to that app's service. Always waits \
                   for the person's approval, whatever your rights say; `conflict` when the address changed \
                   meanwhile.",
+};
+
+// Write while it only adds a point; `replace` over the vCard's `GEO` is `Delete` ([`Request::operation`],
+// issue #854, decision in `docs/kontakte.md`).
+static SET_LOCATION: Command = Command {
+    name: "contacts.set_location",
+    area: Area::Contacts,
+    access: Access::Write,
+    mcp: Mcp::Tool,
+    description: "Sets the pin of a contact by hand: writes `lat`/`lon` as the vCard's `GEO` (the point of the first \
+                  address, so `address` is 0) and syncs it to the server. Needs the contact's `etag`. When the \
+                  contact has a `GEO` already the answer is `conflict`, unless `replace` is true, which overwrites \
+                  the old point for good and waits for the person's approval more often.",
 };
 
 static IMPORT_VCARDS: Command = Command {
@@ -8124,6 +8141,13 @@ mod tests {
                 query: Some("berlin".into()),
             },
             Request::OpenContactInMaps { id: CONTACT.into(), address: 0 },
+            Request::SetContactLocation {
+                id: CONTACT.into(),
+                etag: "\"1\"".into(),
+                address: 0,
+                geo: torro_pim::model::Geo { lat: 52.52, lon: 13.405 },
+                replace: false,
+            },
             Request::ListContactGroups { book: None },
             Request::SuggestRecipients { query: "jo".into(), limit: Some(8), contacts_only: false },
             Request::UpcomingBirthdays { days: Some(7) },
@@ -8473,6 +8497,16 @@ mod tests {
         assert!(!waits(Request::AddContactToGroup { id: CONTACT.into(), etag: etag(), group: "Friends".into() }));
         assert!(waits(Request::UpdateContact { id: CONTACT.into(), etag: etag(), fields: contact_fields() }));
         assert!(waits(Request::SetContactPhoto { id: CONTACT.into(), etag: etag(), data: None }));
+        // Issue #854: a first pin goes through, replacing the vCard's `GEO` waits.
+        let pin = |replace| Request::SetContactLocation {
+            id: CONTACT.into(),
+            etag: etag(),
+            address: 0,
+            geo: torro_pim::model::Geo { lat: 52.52, lon: 13.405 },
+            replace,
+        };
+        assert!(!waits(pin(false)));
+        assert!(waits(pin(true)));
         assert!(waits(Request::RemoveContactFromGroup { id: CONTACT.into(), etag: etag(), group: "Friends".into() }));
         assert!(waits(Request::DeleteContact { id: CONTACT.into(), etag: etag() }));
         assert!(waits(Request::ResolveContactConflict {

@@ -6,7 +6,8 @@
 //! them the window asks the core what it reads of the settings ([`Backend::settings`],
 //! `settings.get_settings`: the hidden address books, maps and the lookup of contact addresses) and,
 //! for the map under an address (issue #355), `contacts.locate_contact`, `calendar.map_preview` and
-//! `contacts.open_in_maps` ([`Backend::locate`], [`Backend::map`], [`Backend::open_in_maps`]).
+//! `contacts.open_in_maps` ([`Backend::locate`], [`Backend::map`], [`Backend::open_in_maps`]), and
+//! `contacts.set_location` for a pin set by hand ([`Backend::set_location`], issue #854).
 //!
 //! [`load`] is what the window shows: the books, every contact of them (all pages), the birthdays of
 //! the coming year and the contacts used last.
@@ -152,6 +153,25 @@ impl Backend {
         match self {
             Backend::Core(client) => client.open_in_maps(id, address).await,
             Backend::Demo(_) => Ok(()),
+        }
+    }
+
+    /// `contacts.set_location` (issue #854): the pin of the first address, written as the vCard's `GEO`.
+    /// The demo answers with the contact at the new point and keeps nothing.
+    pub async fn set_location(
+        &self,
+        id: String,
+        etag: String,
+        geo: Geo,
+        replace: bool,
+    ) -> Result<Contact, ContactsError> {
+        match self {
+            Backend::Core(client) => client.set_location(id, etag, geo, replace).await,
+            Backend::Demo(demo) => {
+                let contact = demo.get_contact(id).await?;
+                let point = torro_contacts::model::Geo::new(geo.lat, geo.lon);
+                Ok(Contact { geo: point, ..contact })
+            }
         }
     }
 }

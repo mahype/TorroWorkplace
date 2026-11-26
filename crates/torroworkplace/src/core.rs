@@ -6816,6 +6816,7 @@ impl Core {
             | Request::DeleteContact { .. }
             | Request::ResolveContactConflict { .. }
             | Request::OpenContactInMaps { .. }
+            | Request::SetContactLocation { .. }
             | Request::ImportVCards { .. }
             | Request::MergeContacts { .. }
             | Request::DismissDuplicates { .. }) => {
@@ -8550,6 +8551,8 @@ impl Core {
             // The place of an address (issue #355): with the settings and the place search of the core.
             | Request::LocateContact { .. }
             | Request::OpenContactInMaps { .. }
+            // A pin set by hand (issue #854): `GEO` written like any other change of the card.
+            | Request::SetContactLocation { .. }
             // The map of all contacts (issue #357): only what this device keeps.
             | Request::ListLocations { .. }
             // Import, export and duplicates (issues #725, #726).
