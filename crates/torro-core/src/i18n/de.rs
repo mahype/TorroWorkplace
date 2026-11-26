@@ -2510,6 +2510,28 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Bring no GitHub notifications of {source} to the Notification Hub",
         "Keine GitHub-Benachrichtigungen von {source} in die Mitteilungszentrale bringen",
     ),
+    // Choosing the repositories of a GitHub source (issue #946): why it was refused.
+    (
+        "\"{name}\" is no repository (owner/name) or owner (owner/*)",
+        "„{name}“ ist kein Repository (owner/name) und kein Besitzer (owner/*)",
+    ),
+    ("At most {n} repositories and owners", "Höchstens {n} Repositories und Besitzer"),
+    (
+        "Only a GitHub account brings notifications of repositories",
+        "Nur ein GitHub-Konto bringt Benachrichtigungen aus Repositories",
+    ),
+    (
+        "This key may only choose repositories it reaches",
+        "Dieser Schlüssel darf nur Repositories wählen, die er erreicht",
+    ),
+    (
+        "The repositories chosen hold some this key does not reach; only the person can change them",
+        "Die gewählten Repositories enthalten welche, die dieser Schlüssel nicht erreicht; ändern kann sie nur der Mensch",
+    ),
+    (
+        "The repositories chosen for this source cannot be read; only the person can choose them anew",
+        "Die gewählten Repositories dieser Quelle sind nicht lesbar; neu wählen kann sie nur der Mensch",
+    ),
     ("Stop sending notices of {source} to {lane}", "Meldungen von {source} nicht mehr nach „{lane}“ schicken"),
     ("Remove an unknown rule of the Notification Hub", "Eine unbekannte Regel der Mitteilungszentrale entfernen"),
     ("an unknown entry of the Notification Hub", "einen unbekannten Eintrag der Mitteilungszentrale"),

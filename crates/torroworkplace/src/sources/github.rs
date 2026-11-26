@@ -74,7 +74,7 @@ use torro_pim_github::notifications::{self, Listing, NotificationsError, RunResu
 
 use super::Sources;
 use crate::account::github::GithubAccounts;
-use crate::inbox::{Health, Inbox, Remote};
+use crate::inbox::{ChosenRepos, Health, Inbox, Remote};
 
 /// How often the loop looks whether an account is due. Short, so a new sign-in or an unmuted
 /// source is read soon; it asks GitHub only when an account's own pace allows.
@@ -90,7 +90,7 @@ const FIRST_DAYS: i64 = 3;
 const RETRY_REFUSED: Duration = Duration::from_secs(15 * 60);
 
 /// The cursor that holds GitHub's `Last-Modified` of the last listing.
-const LAST_MODIFIED: &str = "last-modified";
+const LAST_MODIFIED: &str = crate::inbox::LAST_MODIFIED_CURSOR;
 
 /// The cursor that holds when the account was first listed (RFC 3339): every listing reaches back
 /// to [`FIRST_DAYS`] before it. Without it the next listing is the first one.
@@ -495,7 +495,7 @@ fn file(inbox: &Inbox, source: &SourceRef, threads: Threads, reach: Reach, now: 
     let mut filed = true;
     // Without the choice nothing is filed and the cursors stay: the threads are listed again,
     // and none of a repository the person left out comes in meanwhile.
-    let Some(chosen) = chosen(inbox, source, now) else { return };
+    let Some(chosen) = chosen(inbox, source) else { return };
     let wanted = |thread: &&Thread| chosen.as_deref().is_none_or(|chosen| rules::repo_chosen(chosen, &thread.repo));
     for thread in threads.threads.iter().rev().filter(|thread| thread.updated_at >= reach.since).filter(wanted) {
         if let Err(err) = inbox.file_remote(&report(source, thread), now) {
@@ -570,20 +570,19 @@ fn muted(inbox: &Inbox, source: &SourceRef, now: DateTime<Utc>) -> bool {
     }
 }
 
-/// The repositories the person chose for `source` (`inbox.set_source_repos`, issue #946), as
-/// `inbox.list_sources` says it: `Some(None)` for every repository, `None` when the inbox could not
-/// say (logged).
-fn chosen(inbox: &Inbox, source: &SourceRef, now: DateTime<Utc>) -> Option<Option<Vec<String>>> {
-    match inbox.handle(Request::ListSources, None, now) {
-        Response::Sources { sources } => {
-            Some(sources.into_iter().find(|info| info.source == *source).and_then(|info| info.repos))
+/// The repositories the person chose for `source` (`inbox.set_source_repos`, issue #946):
+/// `Some(None)` for every repository, `None` when the inbox could not say or the choice kept
+/// cannot be read (logged) – never every repository then.
+fn chosen(inbox: &Inbox, source: &SourceRef) -> Option<Option<Vec<String>>> {
+    match inbox.chosen_repos(source) {
+        Ok(ChosenRepos::All) => Some(None),
+        Ok(ChosenRepos::Only(repos)) => Some(Some(repos)),
+        Ok(ChosenRepos::Unreadable) => {
+            eprintln!("torroworkplace: inbox: the repositories chosen for {} cannot be read", source.key());
+            None
         }
-        other => {
-            eprintln!(
-                "torroworkplace: inbox: the repositories chosen for {} were not read: {}",
-                source.key(),
-                code(&other)
-            );
+        Err(err) => {
+            eprintln!("torroworkplace: inbox: the repositories chosen for {} were not read: {err}", source.key());
             None
         }
     }
@@ -1175,6 +1174,52 @@ mod tests {
         world.round(10).await;
         assert_eq!(world.items().len(), 3, "every repository again");
         assert_eq!(deletes.calls_async().await, 0, "nothing reaches GitHub");
+    }
+
+    /// Review of #998: a repository chosen later comes although GitHub would answer the listing with
+    /// the old `Last-Modified` `304`: the changed choice forgets it, the next listing asks afresh.
+    #[tokio::test]
+    async fn a_repository_chosen_later_comes_without_a_change_on_github() {
+        let world = World::new().await;
+        let choose = |repos: &[&str]| Request::SetSourceRepos {
+            source: source(),
+            repos: Some(repos.iter().map(|name| name.to_string()).collect()),
+        };
+        assert_eq!(world.inbox().handle(choose(&["torro/workplace"]), None, at(0)), Response::Ok);
+        let fresh = world.lists(None, on(&world.server, json!([review(-5), comment(-20)])), 60, STAMP).await;
+        let unchanged = world
+            .server
+            .mock_async(|when, then| {
+                when.method(GET).path("/notifications").header("if-modified-since", STAMP);
+                then.status(304).header("X-Poll-Interval", "60");
+            })
+            .await;
+        world.round(0).await;
+        let filed: Vec<String> = world.items().into_iter().map(|item| item.thread_key).collect();
+        assert_eq!(filed, ["101"], "torro/site stays out");
+        world.round(2).await;
+        assert_eq!((fresh.calls_async().await, unchanged.calls_async().await), (1, 1), "unchanged on GitHub: 304");
+
+        assert_eq!(world.inbox().handle(choose(&["torro/*"]), None, at(3)), Response::Ok);
+        world.round(4).await;
+        assert_eq!(fresh.calls_async().await, 2, "asked afresh, without If-Modified-Since");
+        let mut filed: Vec<String> = world.items().into_iter().map(|item| item.thread_key).collect();
+        filed.sort();
+        assert_eq!(filed, ["101", "103"], "torro/site comes now");
+    }
+
+    /// Review of #998: while the choice kept cannot be read nothing is filed and the cursors stay,
+    /// so nothing of a repository the person left out comes and nothing is lost either.
+    #[tokio::test]
+    async fn an_unreadable_choice_files_nothing_and_keeps_the_cursors() {
+        let world = World::new().await;
+        crate::inbox::tests::keep_raw_repos(world.inbox(), &source().key(), "not JSON");
+        let listing = world.lists_always(on(&world.server, json!([review(-5), comment(-20)])), STAMP).await;
+        world.round(0).await;
+        assert_eq!(listing.calls_async().await, 1, "GitHub is asked");
+        assert!(world.items().is_empty(), "nothing filed");
+        assert_eq!(world.inbox().cursor(&source(), LAST_MODIFIED).expect("read"), None, "no cursor moved");
+        assert_eq!(world.inbox().cursor(&source(), FIRST_POLL).expect("read"), None);
     }
 
     /// The statistics of the week up to the fixed clock's day have rows of the source.

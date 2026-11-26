@@ -665,6 +665,11 @@ CREATE TABLE IF NOT EXISTS source_repos (
 );
 ";
 
+/// The cursor of a remote source's module that holds the `Last-Modified` of its last listing, sent
+/// back as `If-Modified-Since` (`crate::sources::github`). The inbox forgets it when the
+/// repositories chosen for the source change ([`set_source_repos`], issue #946).
+pub const LAST_MODIFIED_CURSOR: &str = "last-modified";
+
 /// How many months the statistics keep the day sums of a source (task E8.8a).
 pub const KEEP_STATS_MONTHS: u32 = 13;
 
@@ -2288,6 +2293,13 @@ impl Inbox {
         .map_err(|failure| failure.to_string())
     }
 
+    /// The repositories chosen for `source` (issue #946, `inbox.set_source_repos`), as the GitHub
+    /// module files by them: a choice that cannot be read is [`ChosenRepos::Unreadable`], never
+    /// every repository. `Err` holds the message for the log.
+    pub fn chosen_repos(&self, source: &SourceRef) -> Result<ChosenRepos, String> {
+        self.work(false, |db| kept_repos(db, source)).map_err(|failure| failure.to_string())
+    }
+
     /// Where the module of the remote source `source` stopped reading, under `name`
     /// (`last-modified`, `etag`, `since`: the module's own names), as [`Inbox::set_cursor`] kept it;
     /// `None` before the first. Survives a restart, goes with [`Inbox::forget_source`]. `Err` holds
@@ -3278,11 +3290,15 @@ fn list_sources(db: &Connection, client: Option<&ClientInfo>) -> Result<Vec<Sour
         if !scope.sees(&source) {
             continue;
         }
-        // A row no version of the core writes is skipped, not shown half, and the source keeps
-        // the rest of the list readable.
-        let Ok(repos) = serde_json::from_str::<Vec<String>>(&repos) else {
-            eprintln!("torroworkplace: inbox: the repositories chosen for {key} cannot be read");
-            continue;
+        // A row no version of the core writes is listed as what the poller does with it: nothing
+        // is filed ([`ChosenRepos::Unreadable`]), never as every repository; the rest of the list
+        // stays readable.
+        let repos = match decode_repos(&repos) {
+            ChosenRepos::Only(repos) => repos,
+            ChosenRepos::All | ChosenRepos::Unreadable => {
+                eprintln!("torroworkplace: inbox: the repositories chosen for {key} cannot be read");
+                Vec::new()
+            }
         };
         let reached: Vec<String> = repos.into_iter().filter(|name| scope.reaches_repo(name)).collect();
         sources
@@ -3771,27 +3787,54 @@ fn checked_source_repos(
 ) -> Result<Option<Vec<String>>, Failure> {
     changeable_source(source, client)?;
     if source.kind != SourceKind::Github {
-        return Err(Failure::Unsupported("only a GitHub account brings notifications of repositories".into()));
+        return Err(Failure::Unsupported(tr("Only a GitHub account brings notifications of repositories").into()));
     }
-    let repos = repos.map(rules::source_repos).transpose().map_err(Failure::Invalid)?;
+    let repos = repos.map(rules::source_repos).transpose().map_err(|err| Failure::Invalid(err.to_string()))?;
     let scope = Scope::of(client);
     if repos.iter().flatten().any(|name| !scope.reaches_repo(name)) {
-        return Err(Failure::Forbidden(InboxForbidden("this key may only choose repositories it reaches")));
+        return Err(Failure::Forbidden(InboxForbidden(tr("This key may only choose repositories it reaches"))));
     }
-    if source_repos(db, source)?.iter().flatten().any(|name| !scope.reaches_repo(name)) {
-        return Err(Failure::Forbidden(InboxForbidden(
-            "the repositories chosen hold some this key does not reach; only the person can change them",
-        )));
+    match kept_repos(db, source)? {
+        ChosenRepos::Only(kept) if kept.iter().any(|name| !scope.reaches_repo(name)) => {
+            Err(Failure::Forbidden(InboxForbidden(tr(
+                "The repositories chosen hold some this key does not reach; only the person can change them",
+            ))))
+        }
+        // What cannot be read may hold any name: only the app key replaces it.
+        ChosenRepos::Unreadable if !matches!(scope, Scope::All) => Err(Failure::Forbidden(InboxForbidden(tr(
+            "The repositories chosen for this source cannot be read; only the person can choose them anew",
+        )))),
+        _ => Ok(repos),
     }
-    Ok(repos)
 }
 
-/// The repositories chosen for `source` (issue #946), as kept; `None` for every repository.
-fn source_repos(db: &Connection, source: &SourceRef) -> Result<Option<Vec<String>>, Failure> {
+/// The repositories chosen for a source, as kept (issue #946, [`Inbox::chosen_repos`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChosenRepos {
+    /// No choice: every repository the token reaches, the default.
+    All,
+    /// Only these, `owner/name` and `owner/*` ([`rules::repo_chosen`]); empty brings none.
+    Only(Vec<String>),
+    /// A choice is kept but cannot be read (no JSON list of names any version writes): the
+    /// poller files nothing then, and only the app key may choose anew. Never taken for
+    /// [`ChosenRepos::All`], which would bring the repositories the person left out.
+    Unreadable,
+}
+
+/// The choice kept as `repos` in `source_repos`: a JSON list of names that are still valid.
+fn decode_repos(repos: &str) -> ChosenRepos {
+    match serde_json::from_str::<Vec<String>>(repos).ok().map(|repos| rules::source_repos(&repos)) {
+        Some(Ok(repos)) => ChosenRepos::Only(repos),
+        _ => ChosenRepos::Unreadable,
+    }
+}
+
+/// The repositories chosen for `source` (issue #946), as kept.
+fn kept_repos(db: &Connection, source: &SourceRef) -> Result<ChosenRepos, Failure> {
     let kept: Option<String> = db
         .query_row("SELECT repos FROM source_repos WHERE source = ?1", params![source.key()], |row| row.get(0))
         .optional()?;
-    Ok(kept.map(|repos| serde_json::from_str(&repos)).transpose()?)
+    Ok(kept.as_deref().map_or(ChosenRepos::All, decode_repos))
 }
 
 /// Keeps `repos` as the choice of `source` at `now` (issue #946) – `None` removes it, so every
@@ -3799,12 +3842,25 @@ fn source_repos(db: &Connection, source: &SourceRef) -> Result<Option<Vec<String
 /// leaves out, as muting a trait with "hide" does ([`mute_by`]), in every repository of the account,
 /// also those the caller does not reach; nothing reaches GitHub. `repos` as
 /// [`checked_source_repos`] made it.
+///
+/// A choice that changes forgets where the GitHub module's conditional listing stood
+/// ([`LAST_MODIFIED_CURSOR`]): GitHub would answer the next one `304` while nothing changed there,
+/// and the threads of a repository chosen now, left out of every listing before, would never come.
 fn set_source_repos(
     db: &Connection,
     source: &SourceRef,
     repos: Option<Vec<String>>,
     now: DateTime<Utc>,
 ) -> Result<(), Failure> {
+    // GitHub's names ignore case, so "Torro/workplace" for "torro/workplace" changes nothing.
+    let folded = |chosen: ChosenRepos| match chosen {
+        ChosenRepos::Only(names) => ChosenRepos::Only(names.iter().map(|name| name.to_ascii_lowercase()).collect()),
+        other => other,
+    };
+    let wanted = folded(repos.clone().map_or(ChosenRepos::All, ChosenRepos::Only));
+    if folded(kept_repos(db, source)?) != wanted {
+        db.execute("DELETE FROM cursors WHERE source = ?1 AND name = ?2", params![source.key(), LAST_MODIFIED_CURSOR])?;
+    }
     let Some(repos) = repos else {
         db.execute("DELETE FROM source_repos WHERE source = ?1", params![source.key()])?;
         return Ok(());
@@ -9307,7 +9363,11 @@ pub(crate) mod tests {
 
         assert_eq!(code(&inbox.handle(choose_repos(Some(&["anna"])), None, at(9, 1))), "error");
         let script = Request::SetSourceRepos { source: SourceRef::script("ci"), repos: None };
-        assert_eq!(code(&inbox.handle(script, None, at(9, 1))), "unsupported");
+        let Response::Error { code, message } = inbox.handle(script, None, at(9, 1)) else { panic!("refused") };
+        assert_eq!(
+            (code.as_str(), message.as_str()),
+            ("unsupported", tr("Only a GitHub account brings notifications of repositories"))
+        );
         assert_eq!(chosen_repos(&inbox, None), Some(vec!["Torro/*".to_string()]), "nothing changed");
 
         assert_eq!(inbox.handle(choose_repos(None), None, at(9, 2)), Response::Ok);
@@ -9349,6 +9409,8 @@ pub(crate) mod tests {
         assert!(inbox.refusal(&mine, Some(&exact)).is_none(), "every name in reach");
         let beyond = choose_repos(Some(&["torro/workplace", "torro/site"]));
         assert_eq!(inbox.refusal(&beyond, Some(&exact)).as_ref().map(code), Some("forbidden"));
+        let Some(Response::Error { message, .. }) = inbox.refusal(&beyond, Some(&exact)) else { panic!("refused") };
+        assert_eq!(message, tr("This key may only choose repositories it reaches"), "in the person's language");
         let owner = choose_repos(Some(&["torro/*"]));
         assert_eq!(inbox.refusal(&owner, Some(&exact)).as_ref().map(code), Some("forbidden"));
         assert_eq!(inbox.handle(choose_repos(None), Some(&exact), at(9, 3)), Response::Ok);
@@ -9357,6 +9419,59 @@ pub(crate) mod tests {
         let script = Request::SetSourceRepos { source: SourceRef::script("ci"), repos: None };
         assert_eq!(inbox.refusal(&script, Some(&exact)).as_ref().map(code), Some("unsupported"));
         assert_eq!(inbox.refusal(&choose_repos(None), Some(&no_github)).as_ref().map(code), Some("not-found"));
+    }
+
+    /// Keeps `raw` as the repositories chosen for `source` as it stands, unchecked: a row no version
+    /// of the core writes (review of #998).
+    pub(crate) fn keep_raw_repos(inbox: &Inbox, source: &str, raw: &str) {
+        let kept = "INSERT OR REPLACE INTO source_repos (source, repos) VALUES (?1, ?2)";
+        inbox.with(|db| Ok(db.execute(kept, params![source, raw])?)).expect("written");
+    }
+
+    /// Review of #998: a choice kept that cannot be read – broken JSON, or names no version takes –
+    /// is never every repository. The poller reads it apart ([`ChosenRepos::Unreadable`]), the list
+    /// says nothing comes, only the app key may choose anew, and that makes it readable again.
+    #[test]
+    fn an_unreadable_choice_is_no_choice_of_every_repository() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        filed_remote(&inbox, &in_repo("1", "torro/workplace", at(8, 0)), at(8, 0));
+        let exact = with_rights(|rights| rights.github_repos = Selection::Only(vec!["torro/workplace".into()]));
+        for broken in ["[\"torro/workplace\"", "{\"repos\": []}", "[\"torro\"]"] {
+            keep_raw_repos(&inbox, GITHUB, broken);
+            assert_eq!(inbox.chosen_repos(&github()), Ok(ChosenRepos::Unreadable), "{broken}");
+            assert_eq!(chosen_repos(&inbox, None), Some(Vec::new()), "nothing comes, not all: {broken}");
+            let mine = choose_repos(Some(&["torro/workplace"]));
+            assert_eq!(inbox.refusal(&mine, Some(&exact)).as_ref().map(code), Some("forbidden"), "{broken}");
+        }
+        assert_eq!(inbox.handle(choose_repos(Some(&["torro/workplace"])), None, at(9, 0)), Response::Ok);
+        assert_eq!(inbox.chosen_repos(&github()), Ok(ChosenRepos::Only(vec!["torro/workplace".into()])));
+        assert_eq!(inbox.chosen_repos(&SourceRef::github("nobody")), Ok(ChosenRepos::All), "no choice kept");
+    }
+
+    /// Review of #998: a choice that changes forgets the `Last-Modified` of the GitHub listing, so
+    /// the next listing is not answered `304` without the threads of a repository chosen now; the
+    /// same choice again and every other cursor keep theirs.
+    #[test]
+    fn a_changed_choice_forgets_the_last_listing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let last = || inbox.cursor(&github(), LAST_MODIFIED_CURSOR).expect("read");
+        let stamp = "Tue, 13 Oct 2026 10:00:00 GMT";
+        let keep = |name: &str| inbox.set_cursor(&github(), name, Some(stamp)).expect("kept");
+        keep(LAST_MODIFIED_CURSOR);
+        keep("first-poll");
+        assert_eq!(inbox.handle(choose_repos(Some(&["torro/workplace"])), None, at(9, 0)), Response::Ok);
+        assert_eq!(last(), None, "every repository to one");
+        keep(LAST_MODIFIED_CURSOR);
+        assert_eq!(inbox.handle(choose_repos(Some(&["Torro/workplace"])), None, at(9, 1)), Response::Ok);
+        assert_eq!(last(), Some(stamp.to_string()), "the same choice: the listing still holds");
+        assert_eq!(inbox.handle(choose_repos(Some(&["torro/*"])), None, at(9, 2)), Response::Ok);
+        assert_eq!(last(), None, "wider");
+        keep(LAST_MODIFIED_CURSOR);
+        assert_eq!(inbox.handle(choose_repos(None), None, at(9, 3)), Response::Ok);
+        assert_eq!(last(), None, "every repository again");
+        assert_eq!(inbox.cursor(&github(), "first-poll").expect("read"), Some(stamp.to_string()), "the reach stays");
     }
 
     #[test]
