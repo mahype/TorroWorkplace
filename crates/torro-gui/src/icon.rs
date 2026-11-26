@@ -264,6 +264,8 @@ pub enum Icon {
     Play,
     /// A file dragged over a chat window (issue #643): dropping sends it.
     Upload,
+    /// Pausing a job of the assistant and a paused job (issue #962); `Square` stays "Stop".
+    Pause,
     // Added for the assistant's composer (issue #699).
     /// Dictating into the assistant's input field.
     Mic,
@@ -429,6 +431,7 @@ impl Icon {
         Icon::ALargeSmall,
         Icon::Play,
         Icon::Upload,
+        Icon::Pause,
         Icon::Mic,
         Icon::Volume2,
         Icon::VolumeX,
@@ -594,6 +597,7 @@ impl Icon {
             Icon::ALargeSmall => include_bytes!("../assets/icons/a-large-small.svg"),
             Icon::Play => include_bytes!("../assets/icons/play.svg"),
             Icon::Upload => include_bytes!("../assets/icons/upload.svg"),
+            Icon::Pause => include_bytes!("../assets/icons/pause.svg"),
             Icon::Mic => include_bytes!("../assets/icons/mic.svg"),
             Icon::Volume2 => include_bytes!("../assets/icons/volume-2.svg"),
             Icon::VolumeX => include_bytes!("../assets/icons/volume-x.svg"),
