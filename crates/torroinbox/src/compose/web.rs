@@ -41,8 +41,6 @@ use wry::http::{Request, Response, header::CONTENT_TYPE};
 use wry::{DragDropEvent, WebViewBuilder};
 
 #[cfg(target_os = "linux")]
-use tao::platform::unix::WindowBuilderExtUnix;
-#[cfg(target_os = "linux")]
 use tao::platform::unix::WindowExtUnix;
 #[cfg(target_os = "linux")]
 use wry::WebViewBuilderExtUnix;
@@ -285,6 +283,12 @@ fn own_origin(uri: &str) -> bool {
 
 /// Opens the compose window on `source` and runs until it closes.
 pub fn run<S: ComposeSource + 'static>(source: Arc<S>, suite: Source, start: Start) -> Result<(), WebError> {
+    // The window class `torro-compose` that rules of a tiling manager match on. tao has no setter for it: its
+    // `with_app_id` is GTK's application ID, which must contain a dot and makes the program a single instance over
+    // D-Bus. GTK takes the Wayland app ID and the X11 class from the program name instead, so it is set before
+    // the event loop starts GTK.
+    #[cfg(target_os = "linux")]
+    glib::set_prgname(Some(super::COMPOSE.window_class));
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
     let title = start.kind.title();
@@ -292,8 +296,6 @@ pub fn run<S: ComposeSource + 'static>(source: Arc<S>, suite: Source, start: Sta
         .with_title(title)
         .with_inner_size(LogicalSize::new(WINDOW.0, WINDOW.1))
         .with_min_inner_size(LogicalSize::new(320.0, 320.0));
-    #[cfg(target_os = "linux")]
-    let builder = builder.with_name(super::COMPOSE.window_class, super::COMPOSE.window_class);
     let window = builder.build(&event_loop).map_err(|err| WebError::Window(err.to_string()))?;
 
     let store = Arc::new(Store::default());

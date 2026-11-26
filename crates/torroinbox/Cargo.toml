@@ -75,3 +75,5 @@ muda.workspace = true
 tao = { workspace = true, features = ["x11"] }
 wry = { workspace = true, features = ["os-webview", "x11"] }
 arboard = { workspace = true, features = ["wayland-data-control"] }
+# The compose window's class `torro-compose` comes from GLib's program name (`compose::web::run`).
+glib.workspace = true
