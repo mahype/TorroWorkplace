@@ -18,8 +18,8 @@ Der Sprachchat läuft streng nacheinander (`crates/torroassistant/src/voice/list
 
 Ein Gespräch per Stimme hält seit [#1023](https://github.com/mahype/TorroWorkplace/issues/1023) ein Mikrofon vom Start
 bis zum Ende offen, auch beim Erkennen, Nachdenken und Vorlesen, mit oder ohne laufende Echo-Unterdrückung. Der Ton spielt
-nur beim Start und beim Ende, nie vor einem Satz. Wer weiterspricht, unterbricht die Antwort, und das Gesagte kommt als
-nächste Nachricht an. Das Gespräch endet nach 5 Minuten Schweigen (`TALK_WAIT_SECONDS`, 300 s), mit einem Schlusswort
+nur beim Start und beim Ende, nie vor einem Satz. Wer weiterspricht, unterbricht die Antwort, die gerade entsteht oder
+vorgelesen wird (ohne „Speak answers“ läuft sie zu Ende), und das Gesagte kommt als nächste Nachricht an. Das Gespräch endet nach 5 Minuten Schweigen (`TALK_WAIT_SECONDS`, 300 s), mit einem Schlusswort
 oder mit „End talk“. Nur beim Warten auf das Weckwort ist das Mikrofon beim Vorlesen ohne Echo-Unterdrückung zu, danach
 folgen 300 ms Pause (`Listener::quiet`, Feld `pause`).
 
