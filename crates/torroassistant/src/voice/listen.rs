@@ -2938,7 +2938,10 @@ mod tests {
         let interrupt = run.sent.iter().position(|request| matches!(request, Request::InterruptAnswer { .. }));
         let second = run.sent.iter().rposition(|request| matches!(request, Request::SendMessage { .. }));
         assert!(interrupt < second, "interrupted first, then sent: {:?}", run.sent);
-        assert_eq!(run.chimes, 2, "the start and the end only (issue #1023)");
+        // Issue #1023: one opening, so a tone only with the start and, unless the fast test microphone ran out while
+        // the second answer was read, the end; none before the sentence that interrupted.
+        assert_eq!(run.opened, 1, "one microphone for the whole conversation");
+        assert!((1..=2).contains(&run.chimes), "the start, perhaps the end: {}", run.chimes);
         // What was recognised the second time begins just before the speech and goes on without a gap. On the one
         // microphone of the conversation (issue #1023) the silence after the first sentence comes before it.
         let quiet = 3 * super::super::audio::FRAMES_PER_SECOND * FRAME;
@@ -3017,9 +3020,11 @@ mod tests {
         assert_eq!(count(&run.sent, &Request::InterruptAnswer { conversation: "a1".into() }), 1, "{:?}", run.sent);
         assert_eq!(messages(&run.sent).len(), 2, "{:?}", run.sent);
         assert_eq!(given.borrow().len(), 2, "both sentences recognised");
-        // The test's microphone is far faster than a real one: reading the second answer takes all the silence after
-        // it, and the recording ends there. No tone came before either sentence.
-        assert_eq!((run.opened, run.chimes), (1, 1), "one microphone, the tone of the start only");
+        // One opening: a tone could come only with the start and the end of the conversation, never before a
+        // sentence. The test's microphone is far faster than a real one: reading the second answer may take all the
+        // silence after it, and the recording ends there without the end's tone.
+        assert_eq!(run.opened, 1, "one microphone for the whole conversation");
+        assert!((1..=2).contains(&run.chimes), "the start, perhaps the end: {}", run.chimes);
     }
 
     /// Issue #1023, done 2 and 3: without reading aloud, the microphone stays open while the answer is thought;
