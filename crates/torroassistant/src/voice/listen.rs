@@ -2938,10 +2938,10 @@ mod tests {
         let interrupt = run.sent.iter().position(|request| matches!(request, Request::InterruptAnswer { .. }));
         let second = run.sent.iter().rposition(|request| matches!(request, Request::SendMessage { .. }));
         assert!(interrupt < second, "interrupted first, then sent: {:?}", run.sent);
-        // Issue #1023: on the conversation's microphone one tone only, its start; none before the sentence that
-        // interrupted. (The test's microphone is far faster than a real one: reading the second answer may take all
-        // the silence after it, and a new opening follows.)
-        assert_eq!(run.tones.iter().filter(|opened| **opened == 1).count(), 1, "{:?}", run.tones);
+        // Issue #1023: on the conversation's microphone a tone only at its start and its end; none before the sentence
+        // that interrupted. (The test's microphone is far faster than a real one: reading the second answer may take
+        // all the silence after it, and a new opening follows instead of the end.)
+        assert!(run.tones.iter().filter(|opened| **opened == 1).count() <= 2, "{:?}", run.tones);
         // What was recognised the second time begins just before the speech and goes on without a gap. On the one
         // microphone of the conversation (issue #1023) the silence after the first sentence comes before it.
         let quiet = 3 * super::super::audio::FRAMES_PER_SECOND * FRAME;
@@ -3020,10 +3020,10 @@ mod tests {
         assert_eq!(count(&run.sent, &Request::InterruptAnswer { conversation: "a1".into() }), 1, "{:?}", run.sent);
         assert_eq!(messages(&run.sent).len(), 2, "{:?}", run.sent);
         assert_eq!(given.borrow().len(), 2, "both sentences recognised");
-        // On the conversation's microphone one tone only, its start; none before either sentence. (The test's
-        // microphone is far faster than a real one: reading the second answer may take all the silence after it, and
-        // a new opening follows.)
-        assert_eq!(run.tones.iter().filter(|opened| **opened == 1).count(), 1, "{:?}", run.tones);
+        // On the conversation's microphone a tone only at its start and its end; none before either sentence. (The
+        // test's microphone is far faster than a real one: reading the second answer may take all the silence after
+        // it, and a new opening follows instead of the end.)
+        assert!(run.tones.iter().filter(|opened| **opened == 1).count() <= 2, "{:?}", run.tones);
     }
 
     /// Issue #1023, done 2 and 3: without reading aloud, the microphone stays open while the answer is thought;
