@@ -128,10 +128,11 @@ es nicht“ meldet (Exit 113); scheitert die Abfrage selbst, bricht es ab. Fehlt
 Programm, schaltet `torroworkplace login-item enable` des neuen Dienstes die Einstellung ein (dieselbe Logik wie in der
 Oberfläche, Plist atomar ersetzt). Das geschieht erst, wenn der Dienst-Lock nachweislich frei ist, und `login-item
 enable` nimmt und hält den Lock selbst, solange es die Einstellung ändert; lässt er sich nicht nehmen (ein Dienst
-läuft, die Datei lässt sich nicht öffnen oder sperren), ändert es nichts. Vor jedem Start, auch bei unverändertem
-Agent, endet zuerst jeder Dienst, der den Lock hält, launchds eigener eingeschlossen, und der Lock muss zweimal frei
-sein. Erst dann folgt `launchctl kickstart -k` bzw. `bootstrap`, mit bis zu drei Versuchen, weil macOS den ersten
-Start eines ersetzten Programms abbrechen kann (`OS_REASON_CODESIGNING`).
+läuft, die Datei lässt sich nicht öffnen oder sperren), ändert es nichts. Unmittelbar vor jedem Startversuch, also
+auch nach `login-item enable`, bei unverändertem Agent und vor jeder Wiederholung, endet zuerst jeder Dienst, der den
+Lock hält (launchds eigener eingeschlossen, ebenso einer, den ein Takeover nach einem gescheiterten Versuch
+gestartet hat), und der Lock muss zweimal frei sein. Erst dann folgt `launchctl kickstart -k` bzw. `bootstrap`, mit bis
+zu drei Versuchen, weil macOS den ersten Start eines ersetzten Programms abbrechen kann (`OS_REASON_CODESIGNING`).
 
 Jeder Dienst des Benutzers, der den Dienst-Lock hält (von einer App gestartet, per Takeover oder von launchd), wird
 vor dem Start beendet. Erkannt wird er am Lock (`torroworkplace service-lock`, die Datei `service.lock` im

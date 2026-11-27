@@ -605,15 +605,21 @@ restart_service_macos() {
                 return 0
             fi
         fi
-    # Otherwise launchd's own service ends here too, so the lock is shown free before kickstart starts the new
-    # one: a takeover successor waiting for it cannot slip in between.
-    elif [ -z "$lock" ] || ! end_services "$lock" "$svc"; then
+    elif [ -z "$lock" ]; then
         warn "the service was not restarted"
         status=1
         return 0
     fi
     attempt=1
     while [ "$attempt" -le 3 ]; do
+        # Right before every start, also after `login-item enable` and after a failed attempt: whatever holds the
+        # lock now (launchd's own service, one an app or a takeover started meanwhile) ends, and the lock must be
+        # free twice, so nothing can slip in between.
+        if ! end_services "$lock" "$svc"; then
+            warn "attempt $attempt: the lock is not free; the service was not restarted"
+            status=1
+            return 0
+        fi
         old="$(launchd_pid "$target")"
         rc=0
         case "$(agent_state "$target")" in
