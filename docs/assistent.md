@@ -1131,7 +1131,9 @@ ist; das Mikrofon ist dann nur für dieses Gespräch offen. Statt des Eingabefel
   wartende Freigaben bleiben offen. Sprache erkennt Silero VAD, ohne das Modell die Lautstärke; beides gilt auch ohne
   laufende Echo-Unterdrückung (#1023). Was die Person sagt, während ihr Satz noch erkannt wird, wartet im offenen
   Mikrofon und unterbricht die Antwort, sobald sie beginnt: Der Satz davor ist dann schon geschickt, das Weitergesagte
-  kommt als nächste Nachricht, kein Wort geht verloren. „Stopp“ im Fenster kürzt nichts, weil man dort alles lesen kann.
+  kommt als nächste Nachricht, kein Wort geht verloren. Ohne „Speak answers“ unterbricht der Hörer nichts, damit eine
+  wartende Freigabe oder „End talk“ nicht an ihm hängt; das Mikrofon bleibt trotzdem offen, und was die Person
+  währenddessen sagt, kommt als nächste Nachricht. „Stopp“ im Fenster kürzt nichts, weil man dort alles lesen kann.
 - **Technisch:** Der Dienst hält das Gespräch (`assistant.start_talk`, Unterhaltung oder neue, die der erste
   Satz anlegt) und startet dafür den Hörer, auch wenn „Hey Torro“ aus ist. Der Hörer fragt zweimal in der
   Sekunde `assistant.talk_status` und meldet seinen Stand (`conversing`, `recording`, `recognizing`,

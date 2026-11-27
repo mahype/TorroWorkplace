@@ -584,8 +584,16 @@ impl<A: Assistant> Listener<'_, A> {
                 (stream, VecDeque::new(), self.chime())
             }
         };
-        // Something read aloud now without the echo cancellation drops the sentence ([`Listener::answer`]).
-        let readings = self.assistant.talk().map_or(0, |now| now.readings);
+        // A reading that begins while the sentence is said drops it ([`Listener::answer`]), and so does one that
+        // runs already without the echo cancellation: its voice may be what the microphone hears. No count of
+        // readings is `u64::MAX`, so then the sentence never matches.
+        // Not after an interruption: the reading it stopped may still count as running for a moment.
+        let interrupted = !early_frames.is_empty();
+        let readings = match self.assistant.talk() {
+            Ok(now) if now.speaking && !self.echo_runs() && !interrupted => u64::MAX,
+            Ok(now) => now.readings,
+            Err(_) => 0,
+        };
         (self.report)(VoiceState::Conversing);
         // The wait for the first word comes on top of the longest sentence.
         let wait = TALK_WAIT_SECONDS * FRAMES_PER_SECOND;
@@ -976,6 +984,7 @@ impl<A: Assistant> Listener<'_, A> {
             // In a conversation by voice the microphone stays open and nothing waits (issue #1023): what it heard
             // meanwhile would pile up.
             if talk.is_none() {
+                self.carried = None;
                 self.quiet();
             }
             return Ended::Nothing;
@@ -1016,8 +1025,10 @@ impl<A: Assistant> Listener<'_, A> {
         self.read_answer(&sent.conversation, voice.speak_answers);
         match self.assistant.follow(&sent) {
             // Interrupted (issue #835): the answer stopped, and what the person says goes on in this conversation
-            // by voice; the approval stays in the window.
-            Ok(reply) if reply.approval && self.carried.is_none() => {
+            // by voice; the approval stays in the window. Not interrupted, the conversation ends, and its microphone
+            // closes with it (issue #1023).
+            Ok(reply) if reply.approval && self.carried.as_ref().is_none_or(|carried| carried.frames.is_empty()) => {
+                self.carried = None;
                 if let Err(err) = self.assistant.end_talk() {
                     eprintln!("torroassistant: {err}");
                 }
@@ -1028,53 +1039,42 @@ impl<A: Assistant> Listener<'_, A> {
         Ended::Answered
     }
 
-    /// Follows the answer of `conversation` with the microphone of the conversation by voice open (issue #1023):
-    /// it reads it aloud when `speak` says so (`assistant.start_answer`), else it waits until it no longer runs.
-    /// While the answer is thought, written and read, [`INTERRUPT_AFTER`] frames of speech in a row interrupt it
-    /// (issue #835, `assistant.interrupt`): it ends at once, and what the person began to say is
-    /// [`Listener::carried`] into the next sentence. Speech is told by Silero VAD, else by loudness, and counts
-    /// whether or not the echo cancellation runs: the microphone is open on purpose (issue #1023). What was said
-    /// while the sentence was recognised waits in the microphone and is heard first, so it interrupts the answer
-    /// just begun. Shorter speech is dropped. Without the conversation's microphone (none was carried here, or it
-    /// failed) it only waits for the answer.
+    /// Reads the answer of `conversation` aloud when `speak` says so, with the microphone of the conversation by
+    /// voice open (issue #1023). While the answer is thought, written and read ([`Assistant::start_answer`] waits
+    /// for it), [`INTERRUPT_AFTER`] frames of speech in a row interrupt it (issue #835, `assistant.interrupt`): it
+    /// ends at once, and what the person began to say is [`Listener::carried`] into the next sentence. Speech is
+    /// told by Silero VAD, else by loudness, and counts whether or not the echo cancellation runs: the microphone
+    /// is open on purpose (issue #1023). What was said while the sentence was recognised waits in the microphone and
+    /// is heard first, so it interrupts the answer just begun. Speech begun as the reading ends goes on in the next
+    /// sentence, shorter speech before is dropped. Without `speak` nothing is watched: the microphone keeps what is
+    /// said meanwhile for the next sentence, and an answer waiting for an approval or a talk ended in the window
+    /// are not held up by it. Without the conversation's microphone (none was carried here, or it failed) it only
+    /// waits for the reading.
     fn read_answer(&mut self, conversation: &str, speak: bool) {
+        if !speak {
+            return;
+        }
         let mut stream = self.carried.take().map(|carried| carried.stream);
-        let done = if speak { Some(self.assistant.start_answer(conversation)) } else { None };
+        let done = self.assistant.start_answer(conversation);
         // Issue #835: the last frames heard, how many of them were speech in a row, and whether the core
         // refused to interrupt (then this answer is not interrupted again).
         let mut recent: VecDeque<Vec<i16>> = VecDeque::with_capacity(INTERRUPT_BEFORE + INTERRUPT_AFTER + 1);
-        let (mut spoken, mut refused, mut frames) = (0usize, false, 0usize);
+        let (mut spoken, mut refused) = (0usize, false);
         let level = self.floor.speech();
         if let Some(vad) = &mut self.vad {
             vad.reset();
         }
         let read = loop {
-            match &done {
-                Some(done) => match done.try_recv() {
-                    Ok(read) => break read,
-                    Err(TryRecvError::Disconnected) => break Ok(()),
-                    Err(TryRecvError::Empty) => {}
-                },
-                // Not read aloud: over once it no longer runs.
-                None if frames.is_multiple_of(self.check_every.max(1))
-                    && !self.assistant.running(conversation).unwrap_or(false) =>
-                {
-                    break Ok(());
-                }
-                None => {}
+            match done.try_recv() {
+                Ok(read) => break read,
+                Err(TryRecvError::Disconnected) => break Ok(()),
+                Err(TryRecvError::Empty) => {}
             }
-            frames += 1;
             let Some(open) = stream.as_mut() else {
-                match &done {
-                    Some(done) => match done.recv_timeout(ANSWER_LOOK) {
-                        Ok(read) => break read,
-                        Err(RecvTimeoutError::Disconnected) => break Ok(()),
-                        Err(RecvTimeoutError::Timeout) => continue,
-                    },
-                    None => {
-                        std::thread::sleep(self.pause.max(ANSWER_LOOK));
-                        continue;
-                    }
+                match done.recv_timeout(ANSWER_LOOK) {
+                    Ok(read) => break read,
+                    Err(RecvTimeoutError::Disconnected) => break Ok(()),
+                    Err(RecvTimeoutError::Timeout) => continue,
                 }
             };
             match open.frame() {
@@ -1120,9 +1120,11 @@ impl<A: Assistant> Listener<'_, A> {
         if let Err(err) = read {
             eprintln!("torroassistant: cannot speak the answer: {err}");
         }
-        // Open for the next sentence; what was said meanwhile waits in it.
+        // Open for the next sentence; what was said meanwhile waits in it. Speech begun just before the reading ended
+        // was taken from the microphone already: it begins the next sentence.
         if let Some(stream) = stream {
-            self.carried = Some(Carried { frames: Vec::new(), stream });
+            let frames = if spoken > 0 && !refused { recent.into() } else { Vec::new() };
+            self.carried = Some(Carried { frames, stream });
         }
     }
 }
@@ -2078,6 +2080,8 @@ mod tests {
         assert_eq!(text, "And tomorrow?");
         assert_eq!(count(&run.sent, &Request::EndTalk), 1, "the noise did not end it");
         assert_eq!(run.chimes, 2, "the wake word and the end, none before a sentence (issue #1023)");
+        assert_eq!(run.opened, 2, "one microphone for the conversation, then the wake word's again");
+        assert_eq!(run.heard.len(), 2, "each round read aloud is timed once (#828)");
     }
 
     /// Issue #747, done 2 and decision 4: a short closing sentence ends the conversation by voice
@@ -2182,6 +2186,12 @@ mod tests {
         // In a conversation by voice too: what was said while a reading began is not sent, but the microphone
         // stays open (issue #1023).
         let core = Core { talk: talk_in(Some("a1")), readings: [0, 0, 1].into(), ..Core::new(Voice::default()) };
+        let run = self::run(core, &["utterance.wav+pause"], None, &["Read this aloud for me."]);
+        assert!(messages(&run.sent).is_empty(), "{:?}", run.sent);
+        assert_eq!(run.opened, 1, "never closed");
+
+        // And so is what was said while a reading without the echo cancellation ran already (review of #1023).
+        let core = Core { talk: talk_in(Some("a1")), speaking: [false, true].into(), ..Core::new(Voice::default()) };
         let run = self::run(core, &["utterance.wav+pause"], None, &["Read this aloud for me."]);
         assert!(messages(&run.sent).is_empty(), "{:?}", run.sent);
         assert_eq!(run.opened, 1, "never closed");
@@ -3026,23 +3036,35 @@ mod tests {
         assert!(run.tones.iter().filter(|opened| **opened == 1).count() <= 2, "{:?}", run.tones);
     }
 
-    /// Issue #1023, done 2 and 3: without reading aloud, the microphone stays open while the answer is thought;
-    /// speech then interrupts it and goes in as the next message.
+    /// Issue #1023, done 2 and 3: without reading aloud, nothing interrupts the answer while it is thought (an
+    /// approval or "End talk" must not wait on the listener), but the microphone stays open and what is said
+    /// meanwhile goes in whole as the next message.
     #[test]
-    fn speech_while_the_answer_is_thought_interrupts_it() {
+    fn without_reading_aloud_what_is_said_meanwhile_is_the_next_sentence() {
         let given = Rc::new(RefCell::new(Vec::new()));
         let keeps = Box::new(Keeps { text: "Move the meeting.", given: Rc::clone(&given) });
         let ahead = Ahead { vad: Some(Box::new(Loud)), ..Ahead::default() };
         let quiet = Voice { speak_answers: false, ..Voice::default() };
-        let mut core = Core { talk: talk_in(Some("a1")), ..Core::new(quiet) };
-        // Not running before the first sentence; then thinking for a while.
-        core.running = std::iter::once(false).chain(std::iter::repeat_n(true, 20)).collect();
-        let run = run_parts(core, &["speaks+speaks+pause+pause"], None, keeps, Duration::ZERO, ahead);
-        assert_eq!(count(&run.sent, &Request::InterruptAnswer { conversation: "a1".into() }), 1, "{:?}", run.sent);
+        let core = Core { talk: talk_in(Some("a1")), ..Core::new(quiet) };
+        let run = run_parts(core, &["speaks+speaks+pause"], None, keeps, Duration::ZERO, ahead);
+        assert_eq!(count(&run.sent, &Request::InterruptAnswer { conversation: "a1".into() }), 0, "{:?}", run.sent);
         assert_eq!(messages(&run.sent).len(), 2, "{:?}", run.sent);
         assert!(!run.sent.iter().any(|request| matches!(request, Request::SpeakAnswer { .. })), "nothing read aloud");
-        assert_eq!((run.opened, run.chimes), (1, 2));
+        assert_eq!((run.opened, run.chimes), (1, 2), "one microphone, the tones of the start and the end");
         assert!(run.heard.is_empty(), "a round not read aloud is not timed (#828)");
+    }
+
+    /// Review of #1023: an answer that waits for an approval, not interrupted, still ends the conversation by voice
+    /// (#747, decision 5), and its microphone closes with it.
+    #[test]
+    fn an_answer_waiting_for_an_approval_ends_the_conversation_and_its_microphone() {
+        let mut core = Core { talk: talk_in(Some("a1")), ..Core::new(Voice::default()) };
+        core.answer.push(EntryContent::Approval { id: "ap1".into() });
+        let run = run(core, &["utterance.wav+pause"], None, &["Delete the mail."]);
+        assert_eq!(messages(&run.sent).len(), 1);
+        assert_eq!(count(&run.sent, &Request::EndTalk), 1, "{:?}", run.sent);
+        assert_eq!(run.ended, Ok(Ended::VoiceOff), "\"Hey Torro\" is off: the listener stops");
+        assert_eq!(run.chimes, 1, "the start only: the window says why it ended");
     }
 
     /// Review of #835: interrupted while the answer that waits for an approval is read, the person's words still
