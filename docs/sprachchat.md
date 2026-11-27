@@ -16,9 +16,12 @@ Der Sprachchat läuft streng nacheinander (`crates/torroassistant/src/voice/list
 3. Die **KI** bekommt den vollen Prompt und antwortet.
 4. **Vorlesen** Satz für Satz (`assistant.speak_answer`, Pocket, Qwen oder OpenAI).
 
-Beim Vorlesen ist das Mikrofon zu, danach folgen 300 ms Pause (`Listener::quiet`, Feld `pause`); das Gespräch endet nach 8 s
-Schweigen (`TALK_WAIT_SECONDS`). Das ist sicher, der Assistent hört sich nicht selbst, hat aber drei Nachteile: Es dauert
-lange bis zur Antwort, man kann ihn nicht unterbrechen, und eine Denkpause („ähm“, „warte mal kurz“) beendet den Satz.
+Ein Gespräch per Stimme hält seit [#1023](https://github.com/mahype/TorroWorkplace/issues/1023) ein Mikrofon vom Start
+bis zum Ende offen, auch beim Erkennen, Nachdenken und Vorlesen, mit oder ohne laufende Echo-Unterdrückung. Der Ton spielt
+nur beim Start und beim Ende, nie vor einem Satz. Wer weiterspricht, unterbricht die Antwort, und das Gesagte kommt als
+nächste Nachricht an. Das Gespräch endet nach 5 Minuten Schweigen (`TALK_WAIT_SECONDS`, 300 s), mit einem Schlusswort
+oder mit „End talk“. Nur beim Warten auf das Weckwort ist das Mikrofon beim Vorlesen ohne Echo-Unterdrückung zu, danach
+folgen 300 ms Pause (`Listener::quiet`, Feld `pause`).
 
 ## Zielbild
 
@@ -129,9 +132,12 @@ Sie gelten für jedes Issue dieses Konzepts.
    prüft danach mit `torro-api-review`.
 6. **Texte englisch über `tr()`.** Die deutschen Übersetzungen trägt nur die Koordination in
    `crates/torro-core/src/i18n/de.rs` ein; jedes Issue nennt seine Texte im Bericht.
-7. **Kein Selbstgespräch:** Seine eigene Stimme löst nie einen Satz aus. Mit laufender Echo-Unterdrückung (#834) wird
-   sie aus dem Mikrofon herausgerechnet, das offen bleibt; läuft sie nicht, ist das Mikrofon beim Vorlesen zu wie
-   früher.
+7. **Kein Selbstgespräch, so weit möglich:** Mit laufender Echo-Unterdrückung (#834) wird seine eigene Stimme aus dem
+   Mikrofon herausgerechnet. In einem Gespräch per Stimme bleibt das Mikrofon auch ohne laufende Echo-Unterdrückung
+   offen (Entscheidung von Sven, #1023, bewusst offen, später ggf. restriktiver): Über Lautsprecher kann er sich dann
+   selbst unterbrechen, mit Kopfhörer nicht. Ein Satz, der fällt, während etwas anderes ohne Echo-Unterdrückung
+   vorgelesen wird, wird verworfen. Beim Warten auf das Weckwort ist das Mikrofon beim Vorlesen ohne
+   Echo-Unterdrückung zu wie früher.
 
 ## Wellen
 
