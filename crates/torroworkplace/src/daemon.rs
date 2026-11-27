@@ -625,6 +625,49 @@ async fn serve(shows: Shows, takeover: bool) -> Result<(), String> {
 /// The file in the core's state directory that the running service holds locked ([`claim_service`]).
 const SERVICE_LOCK: &str = "service.lock";
 
+/// Where the running service holds [`SERVICE_LOCK`] (`torroworkplace service-lock`, issue #1001): the
+/// installer ends a service started outside systemd or launchd by finding the process that holds this file
+/// open, which only the service does (files are opened close-on-exec, so its helpers do not inherit it).
+/// `None` without a home directory.
+pub fn service_lock_path() -> Option<PathBuf> {
+    AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.state.join(SERVICE_LOCK))
+}
+
+/// Whether no service holds the lock now (`torroworkplace service-lock free`, review of #1004): the lock is
+/// taken and let go at once, which proves more than a process holding the file open. A lock file that is not
+/// there is free.
+pub fn service_lock_free() -> Result<bool, String> {
+    lock_free_at(&service_lock_path().ok_or("no home directory, so no service lock")?)
+}
+
+/// [`service_lock_free`] for the lock file at `path`.
+fn lock_free_at(path: &Path) -> Result<bool, String> {
+    let file = match std::fs::OpenOptions::new().write(true).open(path) {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(err) => return Err(format!("cannot open {}: {err}", path.display())),
+    };
+    // Dropping the file lets the lock go again.
+    match file.try_lock() {
+        Ok(()) => Ok(true),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+        Err(std::fs::TryLockError::Error(err)) => Err(format!("cannot lock {}: {err}", path.display())),
+    }
+}
+
+/// Takes the service's lock for as long as the returned file lives (`login-item enable`, review of #1004):
+/// while the installer changes "Start at login", no service can start and write the settings too. "already
+/// running" while a service holds it. Unlike the service's own start ([`claim_service`]) a lock that cannot be
+/// opened or taken is an error: without it nothing keeps a service from writing at the same time.
+pub fn hold_service_lock() -> Result<std::fs::File, String> {
+    held_lock_in(&AppPaths::for_app(AppId::WORKPLACE).ok_or("no home directory")?.state)
+}
+
+/// [`hold_service_lock`] in the state directory `state`.
+fn held_lock_in(state: &Path) -> Result<std::fs::File, String> {
+    claim_service(state)?.ok_or_else(|| format!("cannot take the lock {}", state.join(SERVICE_LOCK).display()))
+}
+
 /// The locked [`SERVICE_LOCK`] of this process, kept until the process ends (the system then drops the
 /// lock, also when the process is killed).
 static HELD_LOCK: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
@@ -1556,6 +1599,43 @@ fn log(what: &str, response: &Response) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review of #1004: `service-lock free` tells a held lock from a free one, and a missing file is free.
+    #[test]
+    fn the_service_lock_is_free_until_someone_holds_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join(SERVICE_LOCK);
+        assert_eq!(lock_free_at(&path), Ok(true), "no file");
+        let held = claim_service(dir.path()).expect("claimed").expect("a file system with locks");
+        assert_eq!(lock_free_at(&path), Ok(false), "held");
+        assert!(claim_service(dir.path()).is_err(), "a second claim is refused");
+        assert!(held_lock_in(dir.path()).is_err(), "login-item enable refuses while it is held");
+        drop(held);
+        assert_eq!(lock_free_at(&path), Ok(true), "let go");
+        let mine = held_lock_in(dir.path()).expect("free, so held");
+        assert_eq!(lock_free_at(&path), Ok(false));
+        drop(mine);
+    }
+
+    /// Review of #1004: a lock that cannot even be opened is an error for `login-item enable`, not a quiet
+    /// "go on without": a file where the state directory belongs makes it fail.
+    #[test]
+    fn a_lock_that_cannot_be_taken_is_an_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let state = dir.path().join("state");
+        std::fs::write(&state, "a file, not a folder").expect("block the folder");
+        assert!(held_lock_in(&state).is_err());
+    }
+
+    /// Review of #1004: `service-lock` names the file `claim_service` locks, in the core's state directory.
+    /// Only the path is built; nothing of the user's is read or written.
+    #[test]
+    fn the_service_lock_is_the_claimed_file_in_the_state_directory() {
+        if let (Some(path), Some(paths)) = (service_lock_path(), AppPaths::for_app(AppId::WORKPLACE)) {
+            assert_eq!(path, paths.state.join(SERVICE_LOCK));
+            assert_eq!(path.file_name().and_then(|name| name.to_str()), Some("service.lock"));
+        }
+    }
 
     /// A core over `dir` with nothing of the user's: keys, approvals and inbox in `dir`, no window
     /// manager, no notifications.

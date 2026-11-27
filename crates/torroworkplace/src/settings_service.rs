@@ -578,6 +578,82 @@ impl SettingsStore {
     fn follows_login_item(&self) -> bool {
         self.applies_login_item && self.current().start_at_login
     }
+
+    /// Switches "Start at login" on and points the system's login item at the running program
+    /// (`torroworkplace login-item enable`, issue #1001): the installer sets the service up to start at
+    /// login with the same entry the setting writes, instead of writing one of its own. Unlike
+    /// [`Self::set`] it also writes the item when the setting is on already, since the item may be gone
+    /// (removed in the system's settings) or start another copy. A test store only changes its file.
+    pub fn enable_login_item(&self) -> Result<(), String> {
+        self.enable_login_item_with(apply_start_at_login)
+    }
+
+    /// [`Self::enable_login_item`] with `apply` writing the system's item. Setting and item change
+    /// together, under the lock of every change and once each: the setting is saved first and taken back
+    /// when the item cannot be written, so the file never says "on" for an item that is not there. The
+    /// installer ends the running service before it calls this, so no other process writes the file
+    /// meanwhile (the lock holds within one process only).
+    fn enable_login_item_with(&self, apply: impl FnOnce(bool) -> Result<(), String>) -> Result<(), String> {
+        let _writing = WRITING.lock().unwrap_or_else(PoisonError::into_inner);
+        let old = self.current();
+        let file = self.file.as_deref().ok_or("no home directory, so no settings file")?;
+        if !old.start_at_login {
+            save_to(file, &Settings { start_at_login: true, ..old.clone() })?;
+        }
+        if !self.applies_login_item {
+            return Ok(());
+        }
+        let Err(err) = apply(true) else { return Ok(()) };
+        if !old.start_at_login
+            && let Err(undo) = save_to(file, &old)
+        {
+            return Err(format!("{err}; and \"Start at login\" stays on in the settings: {undo}"));
+        }
+        Err(err)
+    }
+}
+
+/// Where the system's login item stands for the running program (`torroworkplace login-item status`,
+/// issue #1001). [`LoginItemState::word`] is what the command prints, for the installer to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginItemState {
+    /// The item is there and starts the running program as the setting would write it.
+    Current,
+    /// The item is there but starts another program, or is an older form of the entry.
+    Outdated,
+    /// There is no item.
+    Missing,
+}
+
+impl LoginItemState {
+    /// The word `login-item status` prints: `current`, `outdated` or `missing`.
+    pub fn word(self) -> &'static str {
+        match self {
+            LoginItemState::Current => "current",
+            LoginItemState::Outdated => "outdated",
+            LoginItemState::Missing => "missing",
+        }
+    }
+}
+
+/// The login item at `path` as text, `None` when there is none. Any other error (no right to read it, a
+/// folder in its place) is one: such an item is not missing, and writing over it would fail too.
+fn read_login_item(path: &Path) -> Result<Option<String>, String> {
+    match fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!("cannot read {}: {err}", path.display())),
+    }
+}
+
+/// Where a login item that reads `current` (`None`: there is none) stands against `wanted`, the entry
+/// for the running program ([`login_item_status`]).
+fn login_item_state(current: Option<&str>, wanted: &str) -> LoginItemState {
+    match current {
+        None => LoginItemState::Missing,
+        Some(current) if current == wanted => LoginItemState::Current,
+        Some(_) => LoginItemState::Outdated,
+    }
 }
 
 /// Whether a login item that reads `current` (`None`: there is none) must be rewritten to `wanted`, the
@@ -1130,6 +1206,20 @@ fn write_synced(path: &Path, content: &str) -> io::Result<()> {
     file.sync_all()
 }
 
+/// Writes the login item at `path` (review of #1004): first a hidden file beside it, then renamed over the
+/// item, so a failed write never leaves an empty or half item behind. The directory is made when missing.
+fn replace_login_item(path: &Path, content: &str) -> io::Result<()> {
+    let dir = path.parent().ok_or_else(|| io::Error::other("login item has no directory"))?;
+    let name = path.file_name().ok_or_else(|| io::Error::other("login item has no file name"))?;
+    fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!(".{}.{}.tmp", name.to_string_lossy(), std::process::id()));
+    let written = write_synced(&tmp, content).and_then(|()| fs::rename(&tmp, path));
+    if written.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    written
+}
+
 /// Turns the start-at-login entry of this system on or off (see the module docs for where it is).
 /// The entry points at the running program, so switching the setting off and on again after the
 /// program moved updates it.
@@ -1177,6 +1267,25 @@ fn follow_start_at_login() -> Result<bool, String> {
     Ok(false)
 }
 
+/// The start-at-login entry of this system (see the module docs for where it is) and where it stands
+/// for the running program (`torroworkplace login-item status`, issue #1001).
+#[cfg(target_os = "linux")]
+pub fn login_item_status() -> Result<(LoginItemState, PathBuf), String> {
+    autostart::status()
+}
+
+#[cfg(target_os = "macos")]
+pub fn login_item_status() -> Result<(LoginItemState, PathBuf), String> {
+    launch_agent::status()
+}
+
+/// Windows and the rest: the installer that asks (`scripts/install-local.sh`) runs on Linux and macOS only.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn login_item_status() -> Result<(LoginItemState, PathBuf), String> {
+    let _ = (login_item_state, read_login_item, replace_login_item);
+    Err("the login item's status is not supported on this system yet".into())
+}
+
 /// The XDG autostart entry (Linux): desktop environments and Hyprland's session start every
 /// `.desktop` file found in `autostart/` at login.
 #[cfg(target_os = "linux")]
@@ -1209,6 +1318,21 @@ mod autostart {
         let Some(path) = entry_path(xdg.as_deref(), home.as_deref()) else { return Ok(false) };
         let exe = env::current_exe().map_err(|err| format!("cannot find the executable: {err}"))?;
         follow_at(&path, &exe).map_err(|err| format!("cannot write {}: {err}", path.display()))
+    }
+
+    /// The entry and where it stands for the running program (issue #1001). Uses the real environment.
+    pub fn status() -> Result<(super::LoginItemState, PathBuf), String> {
+        let xdg = env::var_os("XDG_CONFIG_HOME");
+        let home = env::var_os("HOME").map(PathBuf::from);
+        let path = entry_path(xdg.as_deref(), home.as_deref()).ok_or("no home directory, so no autostart entry")?;
+        let exe = env::current_exe().map_err(|err| format!("cannot find the executable: {err}"))?;
+        Ok((status_at(&path, &exe)?, path))
+    }
+
+    /// [`status`] for the entry at `path` and the program `exe`.
+    fn status_at(path: &Path, exe: &Path) -> Result<super::LoginItemState, String> {
+        let current = super::read_login_item(path)?;
+        Ok(super::login_item_state(current.as_deref(), &desktop_entry(exe)))
     }
 
     /// [`follow`] for the entry at `path` and the program `exe`.
@@ -1270,9 +1394,7 @@ mod autostart {
     }
 
     fn write_entry(path: &Path, content: &str) -> io::Result<()> {
-        let dir = path.parent().ok_or_else(|| io::Error::other("autostart entry has no directory"))?;
-        fs::create_dir_all(dir)?;
-        fs::write(path, content)
+        super::replace_login_item(path, content)
     }
 
     /// Removing an entry that is not there is fine: the goal is that it is gone.
@@ -1367,6 +1489,31 @@ mod autostart {
             assert_eq!(fs::read_to_string(&path).expect("read entry"), desktop_entry(running));
             assert!(!follow_at(&path, running).expect("already right"));
         }
+
+        /// Issue #1001: the installer learns whether the entry is missing, starts another copy or this one.
+        #[test]
+        fn status_tells_missing_outdated_and_current() {
+            use super::super::LoginItemState;
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = entry_path(Some(dir.path().as_os_str()), None).expect("path");
+            let running = Path::new("/home/anna/.local/bin/torroworkplace");
+
+            assert_eq!(status_at(&path, running), Ok(LoginItemState::Missing));
+            write_entry(&path, &desktop_entry(Path::new("/opt/old/torroworkplace"))).expect("create entry");
+            assert_eq!(status_at(&path, running), Ok(LoginItemState::Outdated));
+            write_entry(&path, &desktop_entry(running)).expect("rewrite entry");
+            assert_eq!(status_at(&path, running), Ok(LoginItemState::Current));
+        }
+
+        /// An entry that cannot be read is an error, not a missing entry (review of #1004).
+        #[test]
+        fn an_unreadable_entry_is_an_error_not_missing() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let path = entry_path(Some(dir.path().as_os_str()), None).expect("path");
+            fs::create_dir_all(&path).expect("a folder where the entry belongs");
+            let state = status_at(&path, Path::new("/usr/bin/torroworkplace"));
+            assert!(state.as_ref().is_err_and(|err| err.starts_with("cannot read")), "{state:?}");
+        }
     }
 }
 
@@ -1406,6 +1553,17 @@ mod launch_agent {
         let Some(path) = plist_path(home.as_deref()) else { return Ok(false) };
         let exe = env::current_exe().map_err(|err| format!("cannot find the executable: {err}"))?;
         follow_at(&path, &exe)
+    }
+
+    /// The agent and where it stands for the running program (issue #1001). The installer reads the
+    /// label from the file name and starts the agent with `launchctl` itself. Uses the real home directory.
+    pub fn status() -> Result<(super::LoginItemState, PathBuf), String> {
+        let home = env::var_os("HOME").map(PathBuf::from);
+        let path = plist_path(home.as_deref()).ok_or("no home directory, so no login item")?;
+        let exe = env::current_exe().map_err(|err| format!("cannot find the executable: {err}"))?;
+        let wanted = plist(&exe)?;
+        let current = super::read_login_item(&path)?;
+        Ok((super::login_item_state(current.as_deref(), &wanted), path))
     }
 
     /// [`follow`] for the agent at `path` and the program `exe`.
@@ -1468,9 +1626,7 @@ mod launch_agent {
     }
 
     fn write_plist(path: &Path, content: &str) -> io::Result<()> {
-        let dir = path.parent().ok_or_else(|| io::Error::other("login item has no directory"))?;
-        fs::create_dir_all(dir)?;
-        fs::write(path, content)
+        super::replace_login_item(path, content)
     }
 
     /// Removing a file that is not there is fine: the goal is that it is gone.
@@ -3007,6 +3163,75 @@ mod tests {
         assert!(login_item_outdated(Some("old program"), "this program"));
         assert!(!login_item_outdated(Some("this program"), "this program"));
         assert!(!login_item_outdated(None, "this program"), "a removed item stays away");
+    }
+
+    /// Issue #1001: `login-item status` tells the three states apart, with the words the installer reads.
+    #[test]
+    fn the_login_item_state_is_missing_outdated_or_current() {
+        assert_eq!(login_item_state(None, "this program"), LoginItemState::Missing);
+        assert_eq!(login_item_state(Some("old program"), "this program"), LoginItemState::Outdated);
+        assert_eq!(login_item_state(Some("this program"), "this program"), LoginItemState::Current);
+        let words =
+            [LoginItemState::Current, LoginItemState::Outdated, LoginItemState::Missing].map(LoginItemState::word);
+        assert_eq!(words, ["current", "outdated", "missing"]);
+    }
+
+    /// Issue #1001: `login-item enable` switches the setting on, and a second call (the setting is on
+    /// already) is fine too. A test store keeps it in its file and never writes the system's login item.
+    #[test]
+    fn enabling_the_login_item_switches_the_setting_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        assert!(!store.current().start_at_login, "off by default");
+        store.enable_login_item().expect("on");
+        assert!(store.current().start_at_login);
+        store.enable_login_item().expect("on again");
+        assert!(store.current().start_at_login);
+    }
+
+    /// Review of #1004: the daemon's store writes the item once per call, also when the setting is on
+    /// already (the item may be gone), always with `true`.
+    #[test]
+    fn enabling_writes_the_item_once_also_when_the_setting_is_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let daemons = SettingsStore { applies_login_item: true, ..SettingsStore::at(dir.path().join("settings.json")) };
+        for _ in 0..2 {
+            let mut calls = Vec::new();
+            daemons
+                .enable_login_item_with(|enabled| {
+                    calls.push(enabled);
+                    Ok(())
+                })
+                .expect("on");
+            assert_eq!(calls, [true]);
+            assert!(daemons.current().start_at_login);
+        }
+    }
+
+    /// Review of #1004: the item is replaced whole, through a hidden file that does not stay behind.
+    #[test]
+    fn a_login_item_is_replaced_whole() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("LaunchAgents").join("agent.plist");
+        replace_login_item(&path, "old").expect("first write, with the directory");
+        replace_login_item(&path, "new").expect("replace");
+        assert_eq!(fs::read_to_string(&path).expect("read"), "new");
+        let names: Vec<_> =
+            fs::read_dir(path.parent().expect("dir")).expect("list").flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names, ["agent.plist"], "no temporary file left");
+        fs::create_dir_all(dir.path().join("blocked")).expect("a folder where the item belongs");
+        assert!(replace_login_item(&dir.path().join("blocked"), "x").is_err());
+        assert!(dir.path().join("blocked").is_dir(), "the folder is left as it was");
+    }
+
+    /// Review of #1004: an item that cannot be written leaves the setting as it was, off stays off.
+    #[test]
+    fn a_failed_item_leaves_the_setting_off() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let daemons = SettingsStore { applies_login_item: true, ..SettingsStore::at(dir.path().join("settings.json")) };
+        let failed = daemons.enable_login_item_with(|_| Err("cannot write the item".into()));
+        assert_eq!(failed, Err("cannot write the item".into()));
+        assert!(!daemons.current().start_at_login, "the setting was taken back");
     }
 
     #[test]

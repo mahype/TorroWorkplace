@@ -106,6 +106,51 @@ So war es, bevor #279 umgesetzt wurde. Was daraus wurde, steht unter „Entschei
 | MCP-Server (`torroworkplace mcp`) | den Dienst | wenn er nicht antwortet, nicht nach Quit durch einen Menschen |
 | der Dienst | Apps | Tray, `apps.open_app`, Vorlagen, Erinnerungsfenster |
 | der Dienst | Einrichtung | erster Start ohne Konto, erst wenn sein Socket antwortet; nur mit Hauptanwendung |
+| `scripts/install-local.sh` | den Dienst neu | bei jeder Installation aus dem Quellbaum (#1001), siehe unten |
+
+**Installation aus dem Quellbaum** (#1001): `scripts/install-local.sh` startet den Dienst nach jeder Installation
+neu und prüft, dass ein neuer Prozess genau die eben installierte Datei ausführt: auf Linux Gerät und Inode von
+`/proc/<pid>/exe`, auf macOS argv[0] und dazu Gerät und Inode desselben Eintrags unter den Programmdateien, die `lsof`
+für den Prozess nennt (eine Inode allein kann sich auf einem anderen Volume wiederholen).
+
+Auf Linux gleicht es die systemd-User-Unit `torroworkplace.service` vor dem Stop ab: `daemon-reload` nur bei geänderter
+Unit oder `NeedDaemonReload=yes`. Danach prüft es die geladene Unit samt Drop-ins: `ExecStart` strukturiert über D-Bus
+(`busctl`: genau ein Befehl, Pfad `~/.local/bin/torroworkplace`, genau die Argumente `torroworkplace daemon`) und
+`KillMode=process`. Weicht etwas ab, bricht es mit Verweis auf die Drop-ins ab, bevor etwas aktiviert, gestoppt oder
+installiert wird. `KillMode=process` heißt: Stop und Neustart beenden nur den Dienst, nicht die Apps, die er gestartet
+hat und die in seiner cgroup laufen. Helfer und ein Nachfolger aus `daemon --takeover` (#411) laufen dann ebenfalls
+weiter; den Nachfolger findet das Skript über den Dienst-Lock (siehe unten).
+
+Auf macOS startet es den Dienst über den LaunchAgent von „Start at login“. Hat launchd einen Agent geladen, dessen
+Definition nicht genau `program <neuer Dienst>` mit den Argumenten `<neuer Dienst> daemon` ist oder die es nicht
+zeigt, entlädt es ihn vorher (`bootout`, bei jedem Lauf geprüft). Als entladen gilt er nur, wenn `launchctl print` „gibt
+es nicht“ meldet (Exit 113); scheitert die Abfrage selbst, bricht es ab. Fehlt der Agent oder startet er ein anderes
+Programm, schaltet `torroworkplace login-item enable` des neuen Dienstes die Einstellung ein (dieselbe Logik wie in der
+Oberfläche, Plist atomar ersetzt). Das geschieht erst, wenn der Dienst-Lock nachweislich frei ist, und `login-item
+enable` nimmt und hält den Lock selbst, solange es die Einstellung ändert; lässt er sich nicht nehmen (ein Dienst
+läuft, die Datei lässt sich nicht öffnen oder sperren), ändert es nichts. Unmittelbar vor jedem Startversuch, also
+auch nach `login-item enable`, bei unverändertem Agent und vor jeder Wiederholung, endet zuerst jeder Dienst, der den
+Lock hält (launchds eigener eingeschlossen, ebenso einer, den ein Takeover nach einem gescheiterten Versuch
+gestartet hat), und der Lock muss zweimal frei sein. Erst dann folgt `launchctl kickstart -k` bzw. `bootstrap`, mit bis
+zu drei Versuchen, weil macOS den ersten Start eines ersetzten Programms abbrechen kann (`OS_REASON_CODESIGNING`).
+
+Jeder Dienst des Benutzers, der den Dienst-Lock hält (von einer App gestartet, per Takeover oder von launchd), wird
+vor dem Start beendet. Erkannt wird er am Lock (`torroworkplace service-lock`, die Datei `service.lock` im
+State-Verzeichnis): auf Linux an einem Deskriptor, der dieselbe Datei ist (Gerät und Inode nach Auflösung von Links,
+ein State-Verzeichnis hinter einem Symlink zählt also), und dessen `fdinfo` eine exklusive flock-Sperre dieses
+Prozesses zeigt (`FLOCK ADVISORY WRITE <pid>`; wartende Sperren sind mit `->` markiert und zählen nicht); auf macOS an
+der offenen Datei, weil `lsof` dort keine Sperren zeigt. Dazu kommen Eigentümer, Programmname und Subkommando `daemon`; die Argumente werden
+gelesen, nicht an der Dateigröße gemessen (procfs meldet für `cmdline` 0). Seine Identität (Startzeit, Programm) wird
+zwischen zwei Lesungen der Startzeit erfasst und direkt vor dem Signal noch einmal geprüft. Ein Signal, das einen noch
+laufenden Dienst nicht erreicht, ist ein Fehler. Erfolg gilt erst, wenn `torroworkplace service-lock free` (eine echte
+Sperrprobe) den Lock zweimal im Abstand einer Pause frei findet, auf jedem Weg: Ein Takeover-Nachfolger fragt alle 250 ms nach dem
+Lock und bekommt ihn, sobald der alte endet. Ihn findet die nächste Runde (bis zu fünf). Bleibt der Lock belegt, bricht
+das Skript ab, ohne neu zu starten oder die Einstellung zu ändern.
+
+Apps, die noch ein ersetztes Programm ausführen, nennt das Skript mit Programm, Rolle und PID. `--restart-apps` beendet
+sie mit SIGTERM und startet sie neu. SIGTERM umgeht die eigene Rückfrage einer App vor dem Schließen, ungespeicherte
+Eingaben gehen also verloren. Schreibfenster (`--compose`, auch nach `--view mail`), Erinnerungen (`--reminders`,
+`--open reminder…`, `torro-reminder`), MCP-Server, Helfer des Dienstes und Prozesse, deren Argumente sich nicht lesen lassen, nennt es nur.
 
 Ein Tray-Icon und die Einrichtung zeigt der Dienst nur, wenn die Hauptanwendung installiert ist, egal wer
 ihn startet. Ohne sie läuft er still wie mit `--headless` (#408, [einzelne-apps.md](einzelne-apps.md),
